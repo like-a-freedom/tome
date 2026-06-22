@@ -180,6 +180,7 @@ pub fn execute(
                 style::styled(GREEN, "\u{2713}"),
                 installed.len(),
             );
+
             for name in &installed {
                 eprintln!("    {}", name);
             }
