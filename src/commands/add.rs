@@ -131,11 +131,11 @@ pub fn execute(
         entry.branch = branch.clone();
         manifest.add_skill(&frontmatter.name, entry);
 
-        installed.push(format!(
-            "{} v{}",
-            frontmatter.name,
-            frontmatter.version.as_deref().unwrap_or("0.0.0")
-        ));
+        let version_tag = frontmatter.version.as_deref()
+            .filter(|v| !v.is_empty())
+            .map(|v| format!(" v{}", v))
+            .unwrap_or_default();
+        installed.push(format!("{}{}", frontmatter.name, version_tag));
     }
 
     manifest.save(manifest_path)?;

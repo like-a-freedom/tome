@@ -39,7 +39,7 @@ impl SkillEntry {
             path: path.to_string(),
             installed: now.clone(),
             updated: now,
-            version: frontmatter.version.clone().unwrap_or("0.0.0".into()),
+            version: frontmatter.version.clone().unwrap_or_default(),
             description: frontmatter.description.clone(),
             commit: commit.to_string(),
             branch: "main".to_string(),
@@ -315,6 +315,23 @@ mod tests {
         // installed and updated should be recent timestamps
         assert!(!entry.installed.is_empty());
         assert_eq!(entry.installed, entry.updated);
+    }
+
+    #[test]
+    fn test_skill_entry_new_no_version() {
+        let fm = SkillFrontmatter {
+            name: "NoVersion".into(),
+            description: "Skill without version field".into(),
+            version: None,
+            authors: None, tags: None, platforms: None, license: None, repository: None, docs: None,
+        };
+        let entry = SkillEntry::new("test/repo", "skills/test", &fm, "abcdef7", "url");
+        assert!(
+            entry.version.is_empty(),
+            "Version should be empty when frontmatter has no version, got: {:?}",
+            entry.version
+        );
+        assert_eq!(entry.description, "Skill without version field");
     }
 
     #[test]

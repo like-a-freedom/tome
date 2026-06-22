@@ -127,6 +127,10 @@ fn truncate_with_ellipsis(s: &str, max_width: usize) -> String {
     }
 }
 
+fn display_version(v: &str) -> &str {
+    if v.is_empty() || v == "0.0.0" { "-" } else { v }
+}
+
 fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
     if manifest.skills.is_empty() && untracked.is_empty() {
         println!("No skills installed.");
@@ -142,12 +146,12 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
 
     for (name, entry) in &manifest.skills {
         max_name = max_name.max(name.len());
-        max_version = max_version.max(entry.version.len());
+        max_version = max_version.max(display_version(&entry.version).len());
         max_source = max_source.max(entry.source.len());
     }
     for skill in untracked {
         max_name = max_name.max(skill.name.len());
-        max_version = max_version.max(skill.version.len());
+        max_version = max_version.max(display_version(&skill.version).len());
         max_source = max_source.max(1);
     }
 
@@ -188,7 +192,7 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
         println!(
             "{:<name_w$} {:<version_w$} {:<source_w$} {:<tracked_w$}",
             truncate_with_ellipsis(name, name_w),
-            truncate_with_ellipsis(&entry.version, version_w),
+            truncate_with_ellipsis(display_version(&entry.version), version_w),
             truncate_with_ellipsis(&entry.source, source_w),
             "yes",
             name_w = name_w,
@@ -202,7 +206,7 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
         println!(
             "{:<name_w$} {:<version_w$} {:<source_w$} {:<tracked_w$}",
             truncate_with_ellipsis(&skill.name, name_w),
-            truncate_with_ellipsis(&skill.version, version_w),
+            truncate_with_ellipsis(display_version(&skill.version), version_w),
             truncate_with_ellipsis("?", source_w),
             "no",
             name_w = name_w,
@@ -421,5 +425,29 @@ mod tests {
 
         let result = execute(true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_display_version_empty() {
+        assert_eq!(display_version(""), "-");
+    }
+
+    #[test]
+    fn test_display_version_legacy_zero() {
+        // Backward compat: "0.0.0" stored by older versions
+        assert_eq!(display_version("0.0.0"), "-");
+    }
+
+    #[test]
+    fn test_display_version_real() {
+        assert_eq!(display_version("1.0.0"), "1.0.0");
+        assert_eq!(display_version("2.3.4-beta"), "2.3.4-beta");
+    }
+
+    #[test]
+    fn test_display_version_not_zero_prefix() {
+        // Should not match partial "0.0.0" in longer strings
+        assert_eq!(display_version("0.0.1"), "0.0.1");
+        assert_eq!(display_version("10.0.0"), "10.0.0");
     }
 }

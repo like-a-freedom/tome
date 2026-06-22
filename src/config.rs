@@ -56,11 +56,18 @@ pub enum Commands {
     },
 }
 
+fn default_skills_dir() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".agents").join("skills")
+    } else {
+        // Fallback: current working directory (unlikely on macOS/Linux)
+        PathBuf::from(".agents/skills")
+    }
+}
+
 impl Cli {
     pub fn skills_dir(&self) -> PathBuf {
-        self.dir.clone().unwrap_or_else(|| {
-            PathBuf::from(".agents/skills")
-        })
+        self.dir.clone().unwrap_or_else(default_skills_dir)
     }
 
     pub fn manifest_path(&self) -> PathBuf {
@@ -74,9 +81,19 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn test_skills_dir_default() {
+    fn test_skills_dir_default_is_home_based() {
         let cli = Cli::parse_from(["tome", "list"]);
-        assert_eq!(cli.skills_dir(), PathBuf::from(".agents/skills"));
+        let dir = cli.skills_dir();
+        assert!(
+            dir.is_absolute(),
+            "Default skills dir should be absolute (home-based), got: {:?}",
+            dir
+        );
+        assert!(
+            dir.ends_with(".agents/skills"),
+            "Default skills dir should end with `.agents/skills`, got: {:?}",
+            dir
+        );
     }
 
     #[test]
@@ -88,7 +105,17 @@ mod tests {
     #[test]
     fn test_manifest_path_default() {
         let cli = Cli::parse_from(["tome", "list"]);
-        assert_eq!(cli.manifest_path(), PathBuf::from(".agents/skills/.skills.json"));
+        let path = cli.manifest_path();
+        assert!(
+            path.is_absolute(),
+            "Default manifest path should be absolute, got: {:?}",
+            path
+        );
+        assert!(
+            path.ends_with(".skills.json"),
+            "Default manifest path should end with .skills.json, got: {:?}",
+            path
+        );
     }
 
     #[test]
