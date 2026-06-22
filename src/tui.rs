@@ -8,6 +8,21 @@ use crossterm::{
 };
 use std::io::{self, Write};
 
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enable() -> Result<Self> {
+        enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+    }
+}
+
 const ELLIPSIS_LEN: usize = 3;
 const DEFAULT_NAME_WIDTH: usize = 20;
 const MAX_NAME_WIDTH: usize = 30;
@@ -106,8 +121,12 @@ fn build_render_buffer(items: &[SelectItem], cursor: usize, desc_width: usize) -
     let selected_count = items.iter().filter(|i| i.selected).count();
 
     let mut buf = String::new();
-    Clear(ClearType::All).write_ansi(&mut buf).ok();
-    MoveTo(0, 0).write_ansi(&mut buf).ok();
+    Clear(ClearType::All)
+        .write_ansi(&mut buf)
+        .expect("writing to String is infallible");
+    MoveTo(0, 0)
+        .write_ansi(&mut buf)
+        .expect("writing to String is infallible");
     buf.push_str(&format!(
         "Select skills to install ({}/{}):\r\n",
         selected_count,
@@ -120,11 +139,15 @@ fn build_render_buffer(items: &[SelectItem], cursor: usize, desc_width: usize) -
     for (i, item) in items.iter().enumerate() {
         let focused = i == cursor;
         if focused {
-            SetAttribute(Attribute::Bold).write_ansi(&mut buf).ok();
+            SetAttribute(Attribute::Bold)
+                .write_ansi(&mut buf)
+                .expect("writing to String is infallible");
         }
         buf.push_str(&format_item(i, item, name_width, desc_width, focused));
         if focused {
-            SetAttribute(Attribute::Reset).write_ansi(&mut buf).ok();
+            SetAttribute(Attribute::Reset)
+                .write_ansi(&mut buf)
+                .expect("writing to String is infallible");
         }
         buf.push_str("\r\n");
     }
@@ -163,7 +186,7 @@ pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
         item.selected = true;
     }
 
-    enable_raw_mode()?;
+    let _raw = RawModeGuard::enable()?;
     let mut stdout = io::stdout();
     let mut cursor = 0usize;
 
@@ -174,7 +197,7 @@ pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
         .saturating_sub(name_width)
         .clamp(MIN_DESC_WIDTH, MAX_DESC_WIDTH);
 
-    let result = (|| -> Result<()> {
+    (|| -> Result<()> {
         loop {
             render_all(items, cursor, desc_width, &mut stdout)?;
 
@@ -216,10 +239,7 @@ pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
                 }
             }
         }
-    })();
-
-    disable_raw_mode()?;
-    result
+    })()
 }
 
 #[cfg(test)]
