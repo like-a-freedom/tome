@@ -14,6 +14,7 @@ fn format_commit(commit: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn format_date(rfc3339: &str) -> String {
     if let Some(date_part) = rfc3339.split('T').next() {
         date_part.to_string()
@@ -28,83 +29,89 @@ fn line(c: char, width: usize) -> String {
     std::iter::repeat_n(c, width).collect()
 }
 
-/// Top border of a box:  ╭── ... ──╮
+/// Top border:  ╭── label ── ... ──╮  (padded to `width`)
 fn box_top(label: &str, width: usize) -> String {
-    let inner = width.saturating_sub(4); // "╭─ " + " ─╮"
-    let label_trunc: String = label.chars().take(inner.saturating_sub(2)).collect();
-    let pad = inner.saturating_sub(label_trunc.len() + 2); // +2 for "─ "
-    format!(
-        "╭─ {} {}{}─╮",
-        label_trunc,
-        line('─', pad),
-        if label_trunc.len() < inner.saturating_sub(2) {
-            "─"
-        } else {
-            ""
-        }
-    )
+    // "╭─ " (3 visible) + label + " " + dashes + "─╮" (2 visible)
+    let prefix = 3; // "╭─ "
+    let suffix = 2; // "─╮"
+    let inner = width.saturating_sub(prefix + suffix);
+    let label_trunc: String = label.chars().take(inner.saturating_sub(1)).collect();
+    let pad = inner.saturating_sub(label_trunc.len() + 1); // +1 for the space after label
+    format!("╭─ {} {}─╮", label_trunc, line('─', pad),)
 }
 
-/// Bottom border:  ╰── ... ──╯
+/// Bottom border:  ╰── ... ──╯  (padded to `width`)
 fn box_bottom(width: usize) -> String {
     format!("╰{}╯", line('─', width.saturating_sub(2)))
 }
 
-// ── result ────────────────────────────────────────────────────────
-
-#[derive(Debug)]
-struct UpdateResult {
-    updated: Vec<(String, String, String, String)>, // (name, old_commit, new_commit, date)
-    skipped: Vec<(String, String)>,                 // (name, commit)
-    failed: Vec<(String, String)>,                  // (name, reason)
+/// A content line inside a box:  │  text + pad  │
+///
+/// `plain` is the visible text (no ANSI), `styled` may include ANSI codes.
+fn box_line(plain: &str, styled: &str, width: usize) -> String {
+    let inner = width.saturating_sub(6); // "│  " + "  │"
+    let pad = inner.saturating_sub(plain.len());
+    format!("│  {}{}  │", styled, " ".repeat(pad))
 }
 
-fn print_concise(result: &UpdateResult) {
-    if result.updated.is_empty() && result.skipped.is_empty() && result.failed.is_empty() {
-        return;
+// ── per-group result printing ─────────────────────────────────────
+
+#[derive(Debug, Default)]
+struct GroupResult {
+    updated: Vec<(String, String, String)>, // (name, old_commit, new_commit)
+    skipped: Vec<(String, String)>,         // (name, commit)
+    failed: Vec<(String, String)>,          // (name, reason)
+}
+
+impl GroupResult {
+    fn is_empty(&self) -> bool {
+        self.updated.is_empty() && self.skipped.is_empty() && self.failed.is_empty()
     }
 
-    let max_name_width = result
-        .updated
-        .iter()
-        .map(|(n, _, _, _)| n.len())
-        .chain(result.skipped.iter().map(|(n, _)| n.len()))
-        .chain(result.failed.iter().map(|(n, _)| n.len()))
-        .max()
-        .unwrap_or(10);
-
-    // --- updated skills (green checkmark) ---
-    for (name, old_commit, new_commit, _date) in &result.updated {
-        println!(
-            "  {} {:<name_w$}  {} -> {}",
-            style::styled(GREEN, "\u{2713}"),
-            name,
-            format_commit(old_commit),
-            format_commit(new_commit),
-            name_w = max_name_width,
-        );
+    fn max_name_width(&self) -> usize {
+        self.updated
+            .iter()
+            .map(|(n, _, _)| n.len())
+            .chain(self.skipped.iter().map(|(n, _)| n.len()))
+            .chain(self.failed.iter().map(|(n, _)| n.len()))
+            .max()
+            .unwrap_or(10)
     }
 
-    // --- skipped skills (dimmed) ---
-    for (name, commit) in &result.skipped {
-        println!(
-            "  {} {:<name_w$}  up to date ({})",
-            style::styled(DIM, "\u{2713}"),
-            name,
-            format_commit(commit),
-            name_w = max_name_width,
-        );
-    }
+    fn print(&self) {
+        if self.is_empty() {
+            return;
+        }
+        let w = self.max_name_width();
 
-    // --- failed skills (yellow warning) ---
-    for (name, reason) in &result.failed {
-        println!(
-            "  {} {:<name_w$}  {}",
-            style::styled(YELLOW, "\u{2717}"),
-            name,
-            reason,
-            name_w = max_name_width,
-        );
+        for (name, old_commit, new_commit) in &self.updated {
+            println!(
+                "  {} {:<name_w$}  {} → {}",
+                style::styled(GREEN, "\u{2713}"),
+                name,
+                format_commit(old_commit),
+                format_commit(new_commit),
+                name_w = w,
+            );
+        }
+        for (name, commit) in &self.skipped {
+            println!(
+                "  {} {:<name_w$}  up to date ({})",
+                style::styled(DIM, "\u{2713}"),
+                name,
+                format_commit(commit),
+                name_w = w,
+            );
+        }
+        for (name, reason) in &self.failed {
+            println!(
+                "  {} {:<name_w$}  {}",
+                style::styled(YELLOW, "\u{2717}"),
+                name,
+                reason,
+                name_w = w,
+            );
+        }
     }
 }
 
@@ -172,31 +179,33 @@ pub fn execute(
     // --- Header ---
     let total_skills: usize = group_list.iter().map(|(_, v)| v.len()).sum();
     let total_repos = group_list.len();
-    let header = format!(
+    let header_plain = format!(
         "{} skill{} across {} repositor{}",
         total_skills,
         if total_skills == 1 { "" } else { "s" },
         total_repos,
         if total_repos == 1 { "y" } else { "ies" },
     );
+    let header_styled = format!("{}{}{}", style::BOLD, header_plain, style::RESET);
 
-    let term_width = 60usize; // conservative width that looks good
-    let top = box_top("tome update", term_width);
-    let mid = format!("│  {}{}{}  │", style::BOLD, header, style::RESET);
-    let bot = box_bottom(term_width);
+    let term_width = 60usize;
 
-    println!("\n{}{}\n{}{}\n{}", CYAN, top, CYAN, mid, CYAN);
-    println!("{}{}", CYAN, bot);
+    println!(
+        "\n{}{}\n{}{}\n{}{}",
+        CYAN,
+        box_top("tome update", term_width),
+        CYAN,
+        box_line(&header_plain, &header_styled, term_width),
+        CYAN,
+        box_bottom(term_width),
+    );
     println!("{}", style::RESET);
 
     // --- Process groups ---
     let group_count = group_list.len();
-    let mut result = UpdateResult {
-        updated: Vec::new(),
-        skipped: Vec::new(),
-        failed: Vec::new(),
-    };
-    let mut update_date: Option<String> = None;
+    let mut total_updated = 0usize;
+    let mut total_skipped = 0usize;
+    let mut total_failed = 0usize;
 
     for (group_idx, (remote, skill_names)) in group_list.iter().enumerate() {
         let repo_label = remote
@@ -206,28 +215,35 @@ pub fn execute(
             .unwrap_or(remote);
 
         // Print group header
+        println!();
         if group_count > 1 {
-            println!(
-                "\n{} [{}/{}] {}Cloning{} {} ({} skill{})",
+            print!(
+                "{} [{}/{}] {}Cloning{} {}",
                 style::styled(CYAN, "\u{25b8}"),
                 group_idx + 1,
                 group_count,
                 style::BOLD,
                 style::RESET,
                 repo_label,
-                skill_names.len(),
-                if skill_names.len() == 1 { "" } else { "s" },
             );
         } else {
-            println!(
-                "\n{} {}Cloning{} {} ({} skill{})",
+            print!(
+                "{} {}Cloning{} {}",
                 style::styled(CYAN, "\u{25b8}"),
                 style::BOLD,
                 style::RESET,
                 repo_label,
+            );
+        }
+        // Show skill count only if >1 repo or the repo has multiple skills
+        if group_count > 1 || skill_names.len() > 1 {
+            println!(
+                " ({} skill{})",
                 skill_names.len(),
                 if skill_names.len() == 1 { "" } else { "s" },
             );
+        } else {
+            println!();
         }
 
         // --- Clone ---
@@ -239,6 +255,7 @@ pub fn execute(
                     style::styled(YELLOW, "\u{2717}"),
                     e,
                 );
+                total_failed += skill_names.len();
                 continue;
             }
         };
@@ -249,6 +266,7 @@ pub fn execute(
                 style::styled(YELLOW, "\u{2717}"),
                 e,
             );
+            total_failed += skill_names.len();
             continue;
         }
 
@@ -257,7 +275,9 @@ pub fn execute(
             git::get_commit_hash(temp_dir.path()).unwrap_or_else(|_| "unknown".to_string());
         let branch = git::get_branch(temp_dir.path()).unwrap_or_else(|_| "main".to_string());
 
-        // --- Process each skill ---
+        // --- Process each skill in this group ---
+        let mut group_result = GroupResult::default();
+
         for skill_name in skill_names {
             let entry = match manifest.skills.get(skill_name) {
                 Some(e) => e,
@@ -276,7 +296,7 @@ pub fn execute(
                         skill_name,
                         e,
                     );
-                    result
+                    group_result
                         .failed
                         .push((skill_name.clone(), "invalid SKILL.md".to_string()));
                     continue;
@@ -293,7 +313,7 @@ pub fn execute(
                         format_commit(&new_commit),
                     );
                 }
-                result
+                group_result
                     .skipped
                     .push((skill_name.clone(), new_commit.clone()));
                 continue;
@@ -307,7 +327,7 @@ pub fn execute(
                     skill_name,
                     e,
                 );
-                result
+                group_result
                     .failed
                     .push((skill_name.clone(), "copy failed".to_string()));
                 continue;
@@ -318,16 +338,11 @@ pub fn execute(
                 entry.branch = branch.clone();
                 entry.description = frontmatter.description;
 
-                let date_str = format_date(&entry.updated);
-                if update_date.is_none() {
-                    update_date = Some(date_str.clone());
-                }
-
                 if verbose {
                     let ver = &entry.version;
                     if ver.is_empty() {
                         println!(
-                            "  {} Updated: {} ({} -> {})",
+                            "  {} Updated: {} ({} → {})",
                             style::styled(GREEN, "\u{2713}"),
                             skill_name,
                             format_commit(&old_commit),
@@ -335,7 +350,7 @@ pub fn execute(
                         );
                     } else {
                         println!(
-                            "  {} Updated: {} {} ({} -> {})",
+                            "  {} Updated: {} {} ({} → {})",
                             style::styled(GREEN, "\u{2713}"),
                             skill_name,
                             ver,
@@ -345,59 +360,76 @@ pub fn execute(
                     }
                 }
 
-                result
+                group_result
                     .updated
-                    .push((skill_name.clone(), old_commit, new_commit.clone(), date_str));
+                    .push((skill_name.clone(), old_commit, new_commit.clone()));
             }
         }
+
+        // Print per-repo results immediately
+        if !verbose {
+            group_result.print();
+        }
+
+        total_updated += group_result.updated.len();
+        total_skipped += group_result.skipped.len();
+        total_failed += group_result.failed.len();
     }
 
     // --- Save manifest ---
     manifest.save(manifest_path)?;
 
-    // --- Final report ---
-    if !verbose
-        && (!result.updated.is_empty() || !result.skipped.is_empty() || !result.failed.is_empty())
-    {
-        println!();
-        print_concise(&result);
-    }
-
     println!();
 
     // --- Summary footer ---
     let mut parts: Vec<String> = Vec::new();
-    if !result.updated.is_empty() {
-        parts.push(style::styled(
-            GREEN,
-            &format!("{} updated", result.updated.len()),
-        ));
+    if total_updated > 0 {
+        parts.push(style::styled(GREEN, &format!("{} updated", total_updated)));
     }
-    if !result.skipped.is_empty() {
-        parts.push(style::styled(
-            DIM,
-            &format!("{} up to date", result.skipped.len()),
-        ));
+    if total_skipped > 0 {
+        parts.push(style::styled(DIM, &format!("{} up to date", total_skipped)));
     }
-    if !result.failed.is_empty() {
-        parts.push(style::styled(
-            YELLOW,
-            &format!("{} failed", result.failed.len()),
-        ));
+    if total_failed > 0 {
+        parts.push(style::styled(YELLOW, &format!("{} failed", total_failed)));
     }
 
-    let summary = if parts.is_empty() {
+    let summary_plain = if parts.is_empty() {
         "nothing to update".to_string()
     } else {
-        parts.join(" · ")
+        // Join plain text for width calculation
+        let plain_parts: Vec<String> = vec![
+            if total_updated > 0 {
+                format!("{} updated", total_updated)
+            } else {
+                String::new()
+            },
+            if total_skipped > 0 {
+                format!("{} up to date", total_skipped)
+            } else {
+                String::new()
+            },
+            if total_failed > 0 {
+                format!("{} failed", total_failed)
+            } else {
+                String::new()
+            },
+        ]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect();
+        plain_parts.join(" · ")
     };
+    let summary_styled = parts.join(" · ");
 
-    let footer_line = format!("│  {}{}{}  │", style::BOLD, summary, style::RESET,);
-    let footer_bot = box_bottom(term_width);
-
-    println!("{}{}", CYAN, box_top("Result", term_width));
-    println!("{}{}", CYAN, footer_line);
-    println!("{}{}", CYAN, footer_bot);
+    println!(
+        "{}{}\n{}{}\n{}{}",
+        CYAN,
+        box_top("Result", term_width),
+        CYAN,
+        box_line(&summary_plain, &summary_styled, term_width),
+        CYAN,
+        box_bottom(term_width),
+    );
     println!("{}", style::RESET);
 
     Ok(())
