@@ -1,0 +1,8 @@
+/target
+*.bak
+*.swp
+*.swo
+*~
+.DS_Store
+.pi/
+docs/
