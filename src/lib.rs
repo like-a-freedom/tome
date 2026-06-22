@@ -19,8 +19,8 @@ pub fn run(cli: Cli) -> Result<()> {
         config::Commands::Remove { name, force } => {
             commands::remove::execute(&name, force, &skills_dir, &manifest_path)
         }
-        config::Commands::Update { name } => {
-            commands::update::execute(name.as_deref(), &skills_dir, &manifest_path)
+        config::Commands::Update { name, verbose } => {
+            commands::update::execute(name.as_deref(), verbose, &skills_dir, &manifest_path)
         }
         config::Commands::List { json } => {
             commands::list::execute(json, &skills_dir, &manifest_path)

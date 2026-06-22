@@ -4,8 +4,48 @@ use std::path::Path;
 use crate::core::{git, manifest::Manifest, normalize, spec};
 use crate::fs;
 
+fn format_commit(commit: &str) -> String {
+    if commit.len() >= 7 {
+        commit[..7].to_string()
+    } else {
+        commit.to_string()
+    }
+}
+
+fn format_date(rfc3339: &str) -> String {
+    // Parse RFC 3339 and return YYYY-MM-DD
+    if let Some(date_part) = rfc3339.split('T').next() {
+        date_part.to_string()
+    } else {
+        rfc3339.to_string()
+    }
+}
+
+fn print_concise(skills: &[(String, String, String, String)]) {
+    // skills: (name, old_commit, new_commit, date)
+    if skills.is_empty() {
+        return;
+    }
+
+    // Find column widths for alignment
+    let name_width = skills.iter().map(|(n, _, _, _)| n.len()).max().unwrap_or(10);
+    let commit_width = 7; // hashes are 7 chars
+
+    for (name, old_commit, new_commit, _date) in skills {
+        println!(
+            "  {:<width$}  {:>commit_width$} -> {}",
+            name,
+            format_commit(old_commit),
+            format_commit(new_commit),
+            width = name_width,
+            commit_width = commit_width,
+        );
+    }
+}
+
 pub fn execute(
     name: Option<&str>,
+    verbose: bool,
     skills_dir: &Path,
     manifest_path: &Path,
 ) -> Result<()> {
@@ -33,13 +73,21 @@ pub fn execute(
         manifest.skills.keys().cloned().collect()
     };
 
+    let mut updated_skills: Vec<(String, String, String, String)> = Vec::new();
+    // date is determined by the first successful update (all happen at roughly the same time)
+    let mut update_date: Option<String> = None;
+
     for skill_name in &skills_to_update {
         let entry = manifest.skills.get(skill_name).unwrap();
         let remote = entry.remote.clone();
+        let old_commit = entry.commit.clone();
 
         let temp_dir = fs::create_temp_dir()?;
 
-        println!("Updating {} from {}...", skill_name, remote);
+        if verbose {
+            println!("Updating {} from {}...", skill_name, remote);
+        }
+
         if let Err(e) = git::clone_repo(&remote, temp_dir.path()) {
             eprintln!("Warning: Failed to update {}: {}", skill_name, e);
             continue;
@@ -78,17 +126,44 @@ pub fn execute(
             entry.update(&commit, &frontmatter.version.unwrap_or_default());
             entry.branch = branch;
             entry.description = frontmatter.description;
-            if entry.version.is_empty() {
-                println!("  Updated: {} ({})", skill_name, commit);
-            } else {
-                println!("  Updated: {} -> {} ({})", skill_name, entry.version, commit);
+
+            let date_str = format_date(&entry.updated);
+            if update_date.is_none() {
+                update_date = Some(date_str.clone());
             }
+
+            if verbose {
+                let ver = &entry.version;
+                if ver.is_empty() {
+                    println!("  Updated: {} ({} -> {})", skill_name, format_commit(&old_commit), format_commit(&commit));
+                } else {
+                    println!("  Updated: {} {} ({} -> {})", skill_name, ver, format_commit(&old_commit), format_commit(&commit));
+                }
+            }
+
+            updated_skills.push((
+                skill_name.clone(),
+                old_commit,
+                commit,
+                date_str,
+            ));
         }
     }
 
     manifest.save(manifest_path)?;
 
-    println!("Update complete. {} skill(s) updated.", skills_to_update.len());
+    if !verbose && !updated_skills.is_empty() {
+        print_concise(&updated_skills);
+    }
+
+    let date_suffix = update_date
+        .map(|d| format!(" at {}", d))
+        .unwrap_or_default();
+    println!("Update complete. {} skill(s) updated{}.",
+        updated_skills.len(),
+        date_suffix,
+    );
+
     Ok(())
 }
 
@@ -126,7 +201,7 @@ mod tests {
         let manifest_path = skills_dir.join(".skills.json");
         fs::write(&manifest_path, r#"{"version":1,"skills":{}}"#).unwrap();
 
-        let result = execute(None, &skills_dir, &manifest_path);
+        let result = execute(None, false, &skills_dir, &manifest_path);
         assert!(result.is_ok());
     }
 
@@ -138,7 +213,7 @@ mod tests {
         let manifest_path = skills_dir.join(".skills.json");
         fs::write(&manifest_path, r#"{"version":1,"skills":{}}"#).unwrap();
 
-        let result = execute(Some("nonexistent"), &skills_dir, &manifest_path);
+        let result = execute(Some("nonexistent"), false, &skills_dir, &manifest_path);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -156,7 +231,7 @@ mod tests {
         manifest.save(&manifest_path).unwrap();
 
         // execute will try to clone from the remote, which will fail, but stale entries are cleaned
-        let result = execute(None, &skills_dir, &manifest_path);
+        let result = execute(None, false, &skills_dir, &manifest_path);
         assert!(result.is_ok());
     }
 
@@ -196,12 +271,38 @@ mod tests {
             "---\nname: TestSkill\ndescription: old\nversion: 1.0.0\n---\n",
         ).unwrap();
 
-        let result = execute(None, &skills_dir, &manifest_path);
+        let result = execute(None, false, &skills_dir, &manifest_path);
         assert!(result.is_ok());
 
         // Verify manifest was updated
         let loaded = Manifest::load(&manifest_path).unwrap();
         let entry = loaded.skills.get("TestSkill").unwrap();
         assert_eq!(entry.version, "2.0.0");
+    }
+
+    #[test]
+    fn test_update_verbose_flag_accepted() {
+        // Just check that verbose=true doesn't crash on empty manifest
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let manifest_path = skills_dir.join(".skills.json");
+        fs::write(&manifest_path, r#"{"version":1,"skills":{}}"#).unwrap();
+
+        let result = execute(None, true, &skills_dir, &manifest_path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_format_commit() {
+        assert_eq!(format_commit("abcdef12345"), "abcdef1");
+        assert_eq!(format_commit("abc"), "abc");
+        assert_eq!(format_commit(""), "");
+    }
+
+    #[test]
+    fn test_format_date() {
+        assert_eq!(format_date("2026-06-22T12:34:56Z"), "2026-06-22");
+        assert_eq!(format_date("2026-06-22"), "2026-06-22");
     }
 }
