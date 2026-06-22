@@ -1,11 +1,14 @@
 use anyhow::{Context, Result};
 use crossterm::terminal;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
 use crate::core::manifest::Manifest;
+use crate::core::parse_source;
 use crate::core::spec;
+use crate::style::{self, DIM};
 
 pub fn execute(json: bool, skills_dir: &Path, manifest_path: &Path) -> Result<()> {
     // 1. Load or rebuild manifest
@@ -206,6 +209,34 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
     let (cols, _) = terminal::size().unwrap_or((DEFAULT_COLS, DEFAULT_ROWS));
     let w = TableWidths::calculate(manifest, untracked, cols as usize);
 
+    // Build rows and group by source
+    let mut groups: BTreeMap<String, Vec<(String, String, String, bool)>> = BTreeMap::new();
+
+    for (name, entry) in &manifest.skills {
+        let label = parse_source::repo_label(&entry.source);
+        groups.entry(label.to_string()).or_default().push((
+            name.clone(),
+            entry.version.clone(),
+            entry.source.clone(),
+            true,
+        ));
+    }
+
+    for skill in untracked {
+        groups.entry(String::new()).or_default().push((
+            skill.name.clone(),
+            skill.version.clone(),
+            String::new(),
+            false,
+        ));
+    }
+
+    // Sort skills within each group by name
+    for rows in groups.values_mut() {
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+
+    // Print header
     println!(
         "{:<name_w$} {:<version_w$} {:<source_w$} {:<tracked_w$}",
         "NAME",
@@ -219,32 +250,47 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
     );
     println!("{}", "-".repeat(w.total()));
 
-    for (name, entry) in &manifest.skills {
-        println!(
-            "{:<name_w$} {:<version_w$} {:<source_w$} {:<tracked_w$}",
-            truncate_with_ellipsis(name, w.name),
-            truncate_with_ellipsis(display_version(&entry.version), w.version),
-            truncate_with_ellipsis(&entry.source, w.source),
-            "yes",
-            name_w = w.name,
-            version_w = w.version,
-            source_w = w.source,
-            tracked_w = w.tracked,
-        );
+    // Print tracked groups (non-empty key = has source)
+    for (source, rows) in &groups {
+        if source.is_empty() {
+            continue;
+        }
+        // Group header
+        println!("{}", style::styled(DIM, &format!("── {} ──", source)),);
+        for (name, version, _, tracked) in rows {
+            let tracked_str = if *tracked { "yes" } else { "no" };
+            println!(
+                "{:<name_w$} {:<version_w$} {:<source_w$} {:<tracked_w$}",
+                truncate_with_ellipsis(name, w.name),
+                truncate_with_ellipsis(display_version(version), w.version),
+                "",
+                tracked_str,
+                name_w = w.name,
+                version_w = w.version,
+                source_w = w.source,
+                tracked_w = w.tracked,
+            );
+        }
     }
 
-    for skill in untracked {
-        println!(
-            "{:<name_w$} {:<version_w$} {:<source_w$} {:<tracked_w$}",
-            truncate_with_ellipsis(&skill.name, w.name),
-            truncate_with_ellipsis(display_version(&skill.version), w.version),
-            truncate_with_ellipsis("?", w.source),
-            "no",
-            name_w = w.name,
-            version_w = w.version,
-            source_w = w.source,
-            tracked_w = w.tracked,
-        );
+    // Print untracked group (empty key)
+    if let Some(rows) = groups.get(&String::new())
+        && !rows.is_empty()
+    {
+        println!("{}", style::styled(DIM, "── no repository ──"),);
+        for (name, version, _, _) in rows {
+            println!(
+                "{:<name_w$} {:<version_w$} {:<source_w$} {:<tracked_w$}",
+                truncate_with_ellipsis(name, w.name),
+                truncate_with_ellipsis(display_version(version), w.version),
+                "",
+                "no",
+                name_w = w.name,
+                version_w = w.version,
+                source_w = w.source,
+                tracked_w = w.tracked,
+            );
+        }
     }
 }
 

@@ -309,12 +309,7 @@ fn format_duration(secs: f64) -> String {
     format!("Completed in {}", time)
 }
 
-fn print_summary(
-    total_updated: usize,
-    total_skipped: usize,
-    total_failed: usize,
-    elapsed: f64,
-) {
+fn print_summary(total_updated: usize, total_skipped: usize, total_failed: usize, elapsed: f64) {
     let mut parts: Vec<String> = Vec::new();
     if total_updated > 0 {
         parts.push(style::styled(GREEN, &format!("{} updated", total_updated)));
@@ -443,7 +438,12 @@ pub fn execute(
     manifest.save(manifest_path)?;
 
     print_results(&repo_results, verbose);
-    print_summary(total_updated, total_skipped, total_failed, start.elapsed().as_secs_f64());
+    print_summary(
+        total_updated,
+        total_skipped,
+        total_failed,
+        start.elapsed().as_secs_f64(),
+    );
 
     Ok(())
 }
