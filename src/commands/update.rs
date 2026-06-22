@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use crate::core::{git, manifest::Manifest, normalize, spec};
 use crate::fs;
@@ -299,7 +300,21 @@ fn print_results(repo_results: &[(String, GroupResult)], verbose: bool) {
     }
 }
 
-fn print_summary(total_updated: usize, total_skipped: usize, total_failed: usize) {
+fn format_duration(secs: f64) -> String {
+    let time = if secs < 60.0 {
+        format!("{:.1} s", secs)
+    } else {
+        format!("{:.0}m {:.0} s", secs / 60.0, secs % 60.0)
+    };
+    format!("Completed in {}", time)
+}
+
+fn print_summary(
+    total_updated: usize,
+    total_skipped: usize,
+    total_failed: usize,
+    elapsed: f64,
+) {
     let mut parts: Vec<String> = Vec::new();
     if total_updated > 0 {
         parts.push(style::styled(GREEN, &format!("{} updated", total_updated)));
@@ -338,12 +353,16 @@ fn print_summary(total_updated: usize, total_skipped: usize, total_failed: usize
     };
     let summary_styled = parts.join(" · ");
 
+    let time_str = format_duration(elapsed);
+
     println!(
-        "{}{}\n{}{}\n{}{}",
+        "{}{}\n{}{}\n{}{}\n{}{}",
         CYAN,
         style::box_top("Result", TERM_WIDTH),
         CYAN,
         style::box_line(&summary_plain, &summary_styled, TERM_WIDTH),
+        CYAN,
+        style::box_line(&time_str, &time_str, TERM_WIDTH),
         CYAN,
         style::box_bottom(TERM_WIDTH),
     );
@@ -403,6 +422,8 @@ pub fn execute(
     let mut total_failed = 0usize;
     let mut repo_results: Vec<(String, GroupResult)> = Vec::new();
 
+    let start = Instant::now();
+
     for (group_idx, (remote, skill_names)) in group_list.iter().enumerate() {
         let (label, group_result) = update_group(
             remote,
@@ -422,7 +443,7 @@ pub fn execute(
     manifest.save(manifest_path)?;
 
     print_results(&repo_results, verbose);
-    print_summary(total_updated, total_skipped, total_failed);
+    print_summary(total_updated, total_skipped, total_failed, start.elapsed().as_secs_f64());
 
     Ok(())
 }
