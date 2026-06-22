@@ -14,3 +14,33 @@ pub const RED: &str = "\x1b[31m";
 pub fn styled(code: &str, s: &str) -> String {
     format!("{}{}{}", code, s, RESET)
 }
+
+// ── Box-drawing helpers ──────────────────────────────────────────
+
+pub fn line(c: char, width: usize) -> String {
+    std::iter::repeat_n(c, width).collect()
+}
+
+/// Top border:  ╭── label ── ... ──╮  (padded to `width`)
+pub fn box_top(label: &str, width: usize) -> String {
+    let prefix = 3; // "╭─ "
+    let suffix = 2; // "─╮"
+    let inner = width.saturating_sub(prefix + suffix);
+    let label_trunc: String = label.chars().take(inner.saturating_sub(1)).collect();
+    let pad = inner.saturating_sub(label_trunc.len() + 1);
+    format!("╭─ {} {}─╮", label_trunc, line('─', pad))
+}
+
+/// Bottom border:  ╰── ... ──╯  (padded to `width`)
+pub fn box_bottom(width: usize) -> String {
+    format!("╰{}╯", line('─', width.saturating_sub(2)))
+}
+
+/// A content line inside a box:  │  text + pad  │
+///
+/// `plain` is the visible text (no ANSI), `styled` may include ANSI codes.
+pub fn box_line(plain: &str, styled_text: &str, width: usize) -> String {
+    let inner = width.saturating_sub(6); // "│  " + "  │"
+    let pad = inner.saturating_sub(plain.len());
+    format!("│  {}{}  │", styled_text, " ".repeat(pad))
+}

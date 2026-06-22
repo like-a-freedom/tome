@@ -125,6 +125,65 @@ fn display_version(v: &str) -> &str {
     if v.is_empty() || v == "0.0.0" { "-" } else { v }
 }
 
+struct TableWidths {
+    name: usize,
+    version: usize,
+    source: usize,
+    tracked: usize,
+}
+
+impl TableWidths {
+    const TRACKED_WIDTH: usize = 7;
+    const GAPS: usize = 3;
+
+    fn calculate(manifest: &Manifest, untracked: &[UntrackedSkill], term_width: usize) -> Self {
+        let mut max_name = 4usize;
+        let mut max_version = 7usize;
+        let mut max_source = 6usize;
+
+        for (name, entry) in &manifest.skills {
+            max_name = max_name.max(name.len());
+            max_version = max_version.max(display_version(&entry.version).len());
+            max_source = max_source.max(entry.source.len());
+        }
+        for skill in untracked {
+            max_name = max_name.max(skill.name.len());
+            max_version = max_version.max(display_version(&skill.version).len());
+            max_source = max_source.max(1);
+        }
+
+        let mut name_w = max_name.min(30);
+        let version_w = max_version.min(15);
+        let mut source_w = max_source.min(40);
+
+        let total = name_w + version_w + source_w + Self::TRACKED_WIDTH + Self::GAPS;
+        if total > term_width.saturating_sub(1) {
+            let overflow = total - term_width.saturating_sub(1);
+            let source_slack = source_w.saturating_sub(6);
+            let name_slack = name_w.saturating_sub(8);
+            let cut_source = overflow.min(source_slack);
+            let remaining = overflow.saturating_sub(cut_source);
+            let cut_name = remaining.min(name_slack);
+            source_w -= cut_source;
+            name_w -= cut_name;
+        } else {
+            let available = term_width.saturating_sub(1) - total;
+            source_w += available.min(max_source.saturating_sub(source_w));
+        }
+
+        TableWidths {
+            name: name_w,
+            version: version_w,
+            source: source_w,
+            tracked: Self::TRACKED_WIDTH,
+        }
+    }
+
+    fn total(&self) -> usize {
+        self.name + self.version + self.source + self.tracked + Self::GAPS
+    }
+}
+
 fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
     if manifest.is_empty() && untracked.is_empty() {
         println!("No skills installed.");
@@ -132,44 +191,7 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
     }
 
     let (cols, _) = terminal::size().unwrap_or((100, 24));
-    let term_width = cols as usize;
-
-    let mut max_name = 4usize;
-    let mut max_version = 7usize;
-    let mut max_source = 6usize;
-
-    for (name, entry) in &manifest.skills {
-        max_name = max_name.max(name.len());
-        max_version = max_version.max(display_version(&entry.version).len());
-        max_source = max_source.max(entry.source.len());
-    }
-    for skill in untracked {
-        max_name = max_name.max(skill.name.len());
-        max_version = max_version.max(display_version(&skill.version).len());
-        max_source = max_source.max(1);
-    }
-
-    let tracked_w = 7usize;
-    let gaps = 3usize;
-
-    let mut name_w = max_name.min(30);
-    let version_w = max_version.min(15);
-    let mut source_w = max_source.min(40);
-
-    let total = name_w + version_w + source_w + tracked_w + gaps;
-    if total > term_width.saturating_sub(1) {
-        let overflow = total - term_width.saturating_sub(1);
-        let source_slack = source_w.saturating_sub(6);
-        let name_slack = name_w.saturating_sub(8);
-        let cut_source = overflow.min(source_slack);
-        let remaining = overflow.saturating_sub(cut_source);
-        let cut_name = remaining.min(name_slack);
-        source_w -= cut_source;
-        name_w -= cut_name;
-    } else {
-        let available = term_width.saturating_sub(1) - total;
-        source_w += available.min(max_source.saturating_sub(source_w));
-    }
+    let w = TableWidths::calculate(manifest, untracked, cols as usize);
 
     println!(
         "{:<name_w$} {:<version_w$} {:<source_w$} {:<tracked_w$}",
@@ -177,39 +199,38 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
         "VERSION",
         "SOURCE",
         "TRACKED",
-        name_w = name_w,
-        version_w = version_w,
-        source_w = source_w,
-        tracked_w = tracked_w,
+        name_w = w.name,
+        version_w = w.version,
+        source_w = w.source,
+        tracked_w = w.tracked,
     );
-    let sep_len = name_w + version_w + source_w + tracked_w + gaps;
-    println!("{}", "-".repeat(sep_len));
+    println!("{}", "-".repeat(w.total()));
 
     for (name, entry) in &manifest.skills {
         println!(
             "{:<name_w$} {:<version_w$} {:<source_w$} {:<tracked_w$}",
-            truncate_with_ellipsis(name, name_w),
-            truncate_with_ellipsis(display_version(&entry.version), version_w),
-            truncate_with_ellipsis(&entry.source, source_w),
+            truncate_with_ellipsis(name, w.name),
+            truncate_with_ellipsis(display_version(&entry.version), w.version),
+            truncate_with_ellipsis(&entry.source, w.source),
             "yes",
-            name_w = name_w,
-            version_w = version_w,
-            source_w = source_w,
-            tracked_w = tracked_w,
+            name_w = w.name,
+            version_w = w.version,
+            source_w = w.source,
+            tracked_w = w.tracked,
         );
     }
 
     for skill in untracked {
         println!(
             "{:<name_w$} {:<version_w$} {:<source_w$} {:<tracked_w$}",
-            truncate_with_ellipsis(&skill.name, name_w),
-            truncate_with_ellipsis(display_version(&skill.version), version_w),
-            truncate_with_ellipsis("?", source_w),
+            truncate_with_ellipsis(&skill.name, w.name),
+            truncate_with_ellipsis(display_version(&skill.version), w.version),
+            truncate_with_ellipsis("?", w.source),
             "no",
-            name_w = name_w,
-            version_w = version_w,
-            source_w = source_w,
-            tracked_w = tracked_w,
+            name_w = w.name,
+            version_w = w.version,
+            source_w = w.source,
+            tracked_w = w.tracked,
         );
     }
 }
