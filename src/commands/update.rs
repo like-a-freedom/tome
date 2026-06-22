@@ -372,6 +372,7 @@ pub fn execute(
     // Phase 2: Print results grouped by repo
     let has_results = repo_results.iter().any(|(_, r)| !r.is_empty());
     if has_results && !verbose {
+    println!();
         for (i, (repo_label, group_result)) in repo_results.iter().enumerate() {
             if group_result.is_empty() {
                 continue;
