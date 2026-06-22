@@ -13,11 +13,9 @@ pub fn parse_source(source: &str) -> Result<ParsedSource> {
         None => (source, None),
     };
 
-    let (owner, repo) = repo_part
-        .split_once('/')
-        .ok_or_else(|| anyhow::anyhow!(
-            "Invalid source format. Expected: owner/repo or owner/repo@skill-name"
-        ))?;
+    let (owner, repo) = repo_part.split_once('/').ok_or_else(|| {
+        anyhow::anyhow!("Invalid source format. Expected: owner/repo or owner/repo@skill-name")
+    })?;
 
     if owner.is_empty() || repo.is_empty() {
         anyhow::bail!("Invalid source format. Expected: owner/repo or owner/repo@skill-name");

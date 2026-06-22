@@ -143,19 +143,33 @@ mod tests {
     #[test]
     fn test_update_command_parsing() {
         let cli = Cli::parse_from(["tome", "update"]);
-        assert!(matches!(cli.command, Commands::Update { name: None, verbose: false }));
+        assert!(matches!(
+            cli.command,
+            Commands::Update {
+                name: None,
+                verbose: false
+            }
+        ));
     }
 
     #[test]
     fn test_update_verbose_parsing() {
         let cli = Cli::parse_from(["tome", "update", "--verbose"]);
-        assert!(matches!(cli.command, Commands::Update { name: None, verbose: true }));
+        assert!(matches!(
+            cli.command,
+            Commands::Update {
+                name: None,
+                verbose: true
+            }
+        ));
     }
 
     #[test]
     fn test_update_specific_parsing() {
         let cli = Cli::parse_from(["tome", "update", "my-skill"]);
-        assert!(matches!(cli.command, Commands::Update { name: Some(ref n), verbose: false } if n == "my-skill"));
+        assert!(
+            matches!(cli.command, Commands::Update { name: Some(ref n), verbose: false } if n == "my-skill")
+        );
     }
 
     #[test]

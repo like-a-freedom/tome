@@ -3,33 +3,7 @@ use predicates::prelude::*;
 use std::fs;
 use tempfile::TempDir;
 
-fn init_git_repo(repo_dir: &std::path::Path) {
-    std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(repo_dir)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["config", "user.email", "test@test.com"])
-        .current_dir(repo_dir)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["config", "user.name", "Test"])
-        .current_dir(repo_dir)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(repo_dir)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["commit", "-m", "init"])
-        .current_dir(repo_dir)
-        .output()
-        .unwrap();
-}
+mod common;
 
 #[test]
 fn test_add_single_skill_at_root() {
@@ -42,7 +16,7 @@ fn test_add_single_skill_at_root() {
         "---\nname: Root Skill\ndescription: At root\n---\n\n# Root\n",
     )
     .unwrap();
-    init_git_repo(&repo_dir);
+    common::init_git_repo(&repo_dir);
 
     let skills_dir = temp.path().join(".agents/skills");
     let repo_url = format!("file://{}", repo_dir.display());
@@ -98,7 +72,7 @@ fn test_add_existing_skill_skips() {
         "---\nname: Existing Skill\ndescription: New desc\n---\n",
     )
     .unwrap();
-    init_git_repo(&repo_dir);
+    common::init_git_repo(&repo_dir);
 
     let mut cmd = Command::cargo_bin("tome").unwrap();
     cmd.env("SKILLS_DIR", skills_dir.to_str().unwrap())
@@ -148,7 +122,7 @@ fn test_add_force_overwrite() {
         "---\nname: Force Skill\ndescription: New desc\n---\n",
     )
     .unwrap();
-    init_git_repo(&repo_dir);
+    common::init_git_repo(&repo_dir);
 
     let mut cmd = Command::cargo_bin("tome").unwrap();
     cmd.env("SKILLS_DIR", skills_dir.to_str().unwrap())

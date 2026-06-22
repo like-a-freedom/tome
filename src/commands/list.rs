@@ -7,11 +7,7 @@ use std::path::Path;
 use crate::core::manifest::Manifest;
 use crate::core::spec;
 
-pub fn execute(
-    json: bool,
-    skills_dir: &Path,
-    manifest_path: &Path,
-) -> Result<()> {
+pub fn execute(json: bool, skills_dir: &Path, manifest_path: &Path) -> Result<()> {
     // 1. Load or rebuild manifest
     let mut manifest = if !manifest_path.exists() {
         let rebuilt = Manifest::rebuild_from_directory(skills_dir)?;
@@ -59,10 +55,7 @@ pub fn execute(
     Ok(())
 }
 
-fn scan_untracked_skills(
-    skills_dir: &Path,
-    manifest: &Manifest,
-) -> Result<Vec<UntrackedSkill>> {
+fn scan_untracked_skills(skills_dir: &Path, manifest: &Manifest) -> Result<Vec<UntrackedSkill>> {
     let mut untracked = Vec::new();
 
     if !skills_dir.exists() {
@@ -77,10 +70,10 @@ fn scan_untracked_skills(
             continue;
         }
 
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if name.starts_with('.') {
-                continue;
-            }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && name.starts_with('.')
+        {
+            continue;
         }
 
         let skill_md = path.join("SKILL.md");
@@ -88,7 +81,8 @@ fn scan_untracked_skills(
             continue;
         }
 
-        let dir_name = path.file_name()
+        let dir_name = path
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
 
@@ -98,19 +92,19 @@ fn scan_untracked_skills(
         }
 
         // Try to parse frontmatter for display
-        if let Ok(content) = fs::read_to_string(&skill_md) {
-            if let Ok(fm) = spec::parse_frontmatter(&content) {
-                // Check if tracked by frontmatter name too
-                if manifest.is_tracked(&fm.name) {
-                    continue;
-                }
-                untracked.push(UntrackedSkill {
-                    name: fm.name,
-                    dir_name: dir_name.to_string(),
-                    description: fm.description,
-                    version: fm.version.unwrap_or("0.0.0".into()),
-                });
+        if let Ok(content) = fs::read_to_string(&skill_md)
+            && let Ok(fm) = spec::parse_frontmatter(&content)
+        {
+            // Check if tracked by frontmatter name too
+            if manifest.is_tracked(&fm.name) {
+                continue;
             }
+            untracked.push(UntrackedSkill {
+                name: fm.name,
+                dir_name: dir_name.to_string(),
+                description: fm.description,
+                version: fm.version.unwrap_or("0.0.0".into()),
+            });
         }
     }
 
@@ -132,7 +126,7 @@ fn display_version(v: &str) -> &str {
 }
 
 fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
-    if manifest.skills.is_empty() && untracked.is_empty() {
+    if manifest.is_empty() && untracked.is_empty() {
         println!("No skills installed.");
         return;
     }
@@ -179,7 +173,10 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
 
     println!(
         "{:<name_w$} {:<version_w$} {:<source_w$} {:<tracked_w$}",
-        "NAME", "VERSION", "SOURCE", "TRACKED",
+        "NAME",
+        "VERSION",
+        "SOURCE",
+        "TRACKED",
         name_w = name_w,
         version_w = version_w,
         source_w = source_w,
@@ -249,8 +246,7 @@ fn output_json(manifest: &Manifest, untracked: &[UntrackedSkill]) -> Result<()> 
         });
     }
 
-    let output = serde_json::to_string(&skills)
-        .context("Failed to serialize output")?;
+    let output = serde_json::to_string(&skills).context("Failed to serialize output")?;
     println!("{}", output);
     Ok(())
 }
@@ -267,23 +263,9 @@ struct UntrackedSkill {
 mod tests {
     use super::*;
     use crate::core::manifest::SkillEntry;
-    use crate::core::spec::SkillFrontmatter;
+    use crate::testutil;
     use std::fs;
     use tempfile::TempDir;
-
-    fn make_fm(name: &str) -> SkillFrontmatter {
-        SkillFrontmatter {
-            name: name.to_string(),
-            description: format!("{} desc", name),
-            version: Some("1.0.0".into()),
-            authors: None,
-            tags: None,
-            platforms: None,
-            license: None,
-            repository: None,
-            docs: None,
-        }
-    }
 
     #[test]
     fn test_list_empty_skills_dir() {
@@ -302,7 +284,11 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(skills_dir.join("Orphan")).unwrap();
-        fs::write(skills_dir.join("Orphan").join("SKILL.md"), "---\nname: Orphan\ndescription: no manifest\n---\n").unwrap();
+        fs::write(
+            skills_dir.join("Orphan").join("SKILL.md"),
+            "---\nname: Orphan\ndescription: no manifest\n---\n",
+        )
+        .unwrap();
         // No .skills.json
         let manifest_path = skills_dir.join(".skills.json");
 
@@ -316,13 +302,27 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(skills_dir.join("Tracked")).unwrap();
-        fs::write(skills_dir.join("Tracked").join("SKILL.md"), "---\nname: Tracked\ndescription: t\n---\n").unwrap();
+        fs::write(
+            skills_dir.join("Tracked").join("SKILL.md"),
+            "---\nname: Tracked\ndescription: t\n---\n",
+        )
+        .unwrap();
         fs::create_dir_all(skills_dir.join("Untracked")).unwrap();
-        fs::write(skills_dir.join("Untracked").join("SKILL.md"), "---\nname: Untracked\ndescription: u\n---\n").unwrap();
+        fs::write(
+            skills_dir.join("Untracked").join("SKILL.md"),
+            "---\nname: Untracked\ndescription: u\n---\n",
+        )
+        .unwrap();
 
         let manifest_path = skills_dir.join(".skills.json");
-        let mut manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
-        manifest.add_skill("Tracked", SkillEntry::new("test/repo", "", &make_fm("Tracked"), "abc", "url"));
+        let mut manifest = Manifest {
+            version: 1,
+            skills: std::collections::HashMap::new(),
+        };
+        manifest.add_skill(
+            "Tracked",
+            SkillEntry::new("test/repo", "", &testutil::make_fm("Tracked"), "abc", "url"),
+        );
         manifest.save(&manifest_path).unwrap();
 
         let result = execute(false, &skills_dir, &manifest_path);
@@ -348,8 +348,14 @@ mod tests {
         let manifest_path = skills_dir.join(".skills.json");
 
         // Manifest references a skill that doesn't exist on disk
-        let mut manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
-        manifest.add_skill("Ghost", SkillEntry::new("test/repo", "", &make_fm("Ghost"), "abc", "url"));
+        let mut manifest = Manifest {
+            version: 1,
+            skills: std::collections::HashMap::new(),
+        };
+        manifest.add_skill(
+            "Ghost",
+            SkillEntry::new("test/repo", "", &testutil::make_fm("Ghost"), "abc", "url"),
+        );
         manifest.save(&manifest_path).unwrap();
 
         let result = execute(false, &skills_dir, &manifest_path);
@@ -365,7 +371,10 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
-        let manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
+        let manifest = Manifest {
+            version: 1,
+            skills: std::collections::HashMap::new(),
+        };
 
         let untracked = scan_untracked_skills(&skills_dir, &manifest).unwrap();
         assert!(untracked.is_empty());
@@ -376,8 +385,15 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(skills_dir.join(".hidden")).unwrap();
-        fs::write(skills_dir.join(".hidden").join("SKILL.md"), "---\nname: Hidden\ndescription: d\n---\n").unwrap();
-        let manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
+        fs::write(
+            skills_dir.join(".hidden").join("SKILL.md"),
+            "---\nname: Hidden\ndescription: d\n---\n",
+        )
+        .unwrap();
+        let manifest = Manifest {
+            version: 1,
+            skills: std::collections::HashMap::new(),
+        };
 
         let untracked = scan_untracked_skills(&skills_dir, &manifest).unwrap();
         assert!(untracked.is_empty());
@@ -389,7 +405,10 @@ mod tests {
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(skills_dir.join("no-skill")).unwrap();
         fs::write(skills_dir.join("no-skill").join("README.md"), "not a skill").unwrap();
-        let manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
+        let manifest = Manifest {
+            version: 1,
+            skills: std::collections::HashMap::new(),
+        };
 
         let untracked = scan_untracked_skills(&skills_dir, &manifest).unwrap();
         assert!(untracked.is_empty());
@@ -400,10 +419,20 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(skills_dir.join("dir-name")).unwrap();
-        fs::write(skills_dir.join("dir-name").join("SKILL.md"), "---\nname: FmName\ndescription: d\n---\n").unwrap();
-        let mut manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
+        fs::write(
+            skills_dir.join("dir-name").join("SKILL.md"),
+            "---\nname: FmName\ndescription: d\n---\n",
+        )
+        .unwrap();
+        let mut manifest = Manifest {
+            version: 1,
+            skills: std::collections::HashMap::new(),
+        };
         // Track by frontmatter name (not dir name)
-        manifest.add_skill("FmName", SkillEntry::new("test/repo", "", &make_fm("FmName"), "abc", "url"));
+        manifest.add_skill(
+            "FmName",
+            SkillEntry::new("test/repo", "", &testutil::make_fm("FmName"), "abc", "url"),
+        );
 
         let untracked = scan_untracked_skills(&skills_dir, &manifest).unwrap();
         assert!(untracked.is_empty());
@@ -416,12 +445,22 @@ mod tests {
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
 
-        let mut manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
-        manifest.add_skill("Tracked", SkillEntry::new("test/repo", "", &make_fm("Tracked"), "abc", "url"));
+        let mut manifest = Manifest {
+            version: 1,
+            skills: std::collections::HashMap::new(),
+        };
+        manifest.add_skill(
+            "Tracked",
+            SkillEntry::new("test/repo", "", &testutil::make_fm("Tracked"), "abc", "url"),
+        );
         manifest.save(&manifest_path).unwrap();
 
         fs::create_dir_all(skills_dir.join("Manual")).unwrap();
-        fs::write(skills_dir.join("Manual").join("SKILL.md"), "---\nname: Manual\ndescription: m\n---\n").unwrap();
+        fs::write(
+            skills_dir.join("Manual").join("SKILL.md"),
+            "---\nname: Manual\ndescription: m\n---\n",
+        )
+        .unwrap();
 
         let result = execute(true, &skills_dir, &manifest_path);
         assert!(result.is_ok());

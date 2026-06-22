@@ -1,15 +1,10 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::Path;
 
 use crate::core::manifest::Manifest;
 use crate::fs;
 
-pub fn execute(
-    name: &str,
-    force: bool,
-    skills_dir: &Path,
-    manifest_path: &Path,
-) -> Result<()> {
+pub fn execute(name: &str, force: bool, skills_dir: &Path, manifest_path: &Path) -> Result<()> {
     let mut manifest = Manifest::load(manifest_path)?;
 
     if !manifest.is_tracked(name) {
@@ -45,23 +40,9 @@ pub fn execute(
 mod tests {
     use super::*;
     use crate::core::manifest::SkillEntry;
-    use crate::core::spec::SkillFrontmatter;
+    use crate::testutil;
     use std::fs;
     use tempfile::TempDir;
-
-    fn make_fm(name: &str) -> SkillFrontmatter {
-        SkillFrontmatter {
-            name: name.to_string(),
-            description: format!("{} desc", name),
-            version: Some("1.0.0".into()),
-            authors: None,
-            tags: None,
-            platforms: None,
-            license: None,
-            repository: None,
-            docs: None,
-        }
-    }
 
     #[test]
     fn test_remove_untracked_errors() {
@@ -73,7 +54,12 @@ mod tests {
 
         let result = execute("ghost", true, &skills_dir, &manifest_path);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not installed by tome"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not installed by tome")
+        );
     }
 
     #[test]
@@ -81,10 +67,26 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(skills_dir.join("ToRemove")).unwrap();
-        fs::write(skills_dir.join("ToRemove").join("SKILL.md"), "---\nname: ToRemove\ndescription: d\n---\n").unwrap();
+        fs::write(
+            skills_dir.join("ToRemove").join("SKILL.md"),
+            "---\nname: ToRemove\ndescription: d\n---\n",
+        )
+        .unwrap();
         let manifest_path = skills_dir.join(".skills.json");
-        let mut manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
-        manifest.add_skill("ToRemove", SkillEntry::new("test/repo", "", &make_fm("ToRemove"), "abc", "url"));
+        let mut manifest = Manifest {
+            version: 1,
+            skills: std::collections::HashMap::new(),
+        };
+        manifest.add_skill(
+            "ToRemove",
+            SkillEntry::new(
+                "test/repo",
+                "",
+                &testutil::make_fm("ToRemove"),
+                "abc",
+                "url",
+            ),
+        );
         manifest.save(&manifest_path).unwrap();
 
         let result = execute("ToRemove", true, &skills_dir, &manifest_path);
@@ -98,8 +100,14 @@ mod tests {
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
-        let mut manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
-        manifest.add_skill("NoDir", SkillEntry::new("test/repo", "", &make_fm("NoDir"), "abc", "url"));
+        let mut manifest = Manifest {
+            version: 1,
+            skills: std::collections::HashMap::new(),
+        };
+        manifest.add_skill(
+            "NoDir",
+            SkillEntry::new("test/repo", "", &testutil::make_fm("NoDir"), "abc", "url"),
+        );
         manifest.save(&manifest_path).unwrap();
 
         // Remove tracked skill whose directory doesn't exist — should still succeed

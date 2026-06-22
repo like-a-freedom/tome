@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
@@ -70,17 +70,35 @@ fn parse_frontmatter_fallback(yaml: &str) -> Result<SkillFrontmatter> {
         }
 
         // Split on the FIRST colon
-        let Some((key, value)) = trimmed.split_once(':') else { continue };
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
         let key = key.trim();
         let value = value.trim();
 
         match key {
             "name" => fm.name = unquote(value),
             "description" => fm.description = unquote(value),
-            "version" => { if !value.is_empty() { fm.version = Some(unquote(value)); } }
-            "license" => { if !value.is_empty() { fm.license = Some(unquote(value)); } }
-            "repository" => { if !value.is_empty() { fm.repository = Some(unquote(value)); } }
-            "docs" => { if !value.is_empty() { fm.docs = Some(unquote(value)); } }
+            "version" => {
+                if !value.is_empty() {
+                    fm.version = Some(unquote(value));
+                }
+            }
+            "license" => {
+                if !value.is_empty() {
+                    fm.license = Some(unquote(value));
+                }
+            }
+            "repository" => {
+                if !value.is_empty() {
+                    fm.repository = Some(unquote(value));
+                }
+            }
+            "docs" => {
+                if !value.is_empty() {
+                    fm.docs = Some(unquote(value));
+                }
+            }
             "authors" => {
                 if value.is_empty() || value == "-" {
                     // Multi-line YAML list starting
@@ -90,8 +108,12 @@ fn parse_frontmatter_fallback(yaml: &str) -> Result<SkillFrontmatter> {
                     fm.authors = Some(parse_list_value(value));
                 }
             }
-            "tags" if !value.is_empty() => { fm.tags = Some(parse_list_value(value)); }
-            "platforms" if !value.is_empty() => { fm.platforms = Some(parse_list_value(value)); }
+            "tags" if !value.is_empty() => {
+                fm.tags = Some(parse_list_value(value));
+            }
+            "platforms" if !value.is_empty() => {
+                fm.platforms = Some(parse_list_value(value));
+            }
             _ => {}
         }
     }
@@ -140,18 +162,14 @@ pub fn validate_skill(dir_path: &Path) -> Result<SkillFrontmatter> {
     if !skill_md.exists() {
         bail!("SKILL.md not found at {}", skill_md.display());
     }
-    let content = fs::read_to_string(&skill_md)
-        .context("Failed to read SKILL.md")?;
+    let content = fs::read_to_string(&skill_md).context("Failed to read SKILL.md")?;
     let frontmatter = parse_frontmatter(&content)?;
 
-    if frontmatter.name.is_empty() {
-        bail!("Skill name is required");
-    }
-    if frontmatter.description.is_empty() {
-        bail!("Skill description is required");
-    }
     if frontmatter.name.len() > 50 {
-        bail!("Skill name must be under 50 characters (got {})", frontmatter.name.len());
+        bail!(
+            "Skill name must be under 50 characters (got {})",
+            frontmatter.name.len()
+        );
     }
 
     Ok(frontmatter)
@@ -219,7 +237,11 @@ This is the body.
         fs::create_dir(&skill_dir).unwrap();
 
         let skill_md = skill_dir.join("SKILL.md");
-        fs::write(&skill_md, "---\nname: My Skill\ndescription: A test\n---\n\n# My Skill\n").unwrap();
+        fs::write(
+            &skill_md,
+            "---\nname: My Skill\ndescription: A test\n---\n\n# My Skill\n",
+        )
+        .unwrap();
 
         let fm = validate_skill(&skill_dir).unwrap();
         assert_eq!(fm.name, "My Skill");
@@ -261,7 +283,8 @@ user-invocable: true
         let fm = parse_frontmatter(content).unwrap();
         assert_eq!(fm.name, "diagnose");
         assert!(
-            fm.description.contains("methodology: it finds all the risks"),
+            fm.description
+                .contains("methodology: it finds all the risks"),
             "Should preserve full description with colons: {:?}",
             fm.description
         );
@@ -280,7 +303,10 @@ version: 1.0.0
 "#;
         let fm = parse_frontmatter(content).unwrap();
         assert_eq!(fm.name, "test");
-        assert_eq!(fm.tags, Some(vec!["rust".into(), "cli".into(), "yaml".into()]));
+        assert_eq!(
+            fm.tags,
+            Some(vec!["rust".into(), "cli".into(), "yaml".into()])
+        );
         assert_eq!(fm.authors, Some(vec!["Alice".into(), "Bob".into()]));
         assert_eq!(fm.version.as_deref(), Some("1.0.0"));
     }
@@ -297,10 +323,7 @@ authors:
 "#;
         let fm = parse_frontmatter(content).unwrap();
         assert_eq!(fm.name, "test");
-        assert_eq!(
-            fm.authors,
-            Some(vec!["Alice".into(), "Bob".into()])
-        );
+        assert_eq!(fm.authors, Some(vec!["Alice".into(), "Bob".into()]));
     }
 
     #[test]
@@ -313,7 +336,8 @@ user-invocable: true
         let fm = parse_frontmatter_fallback(yaml).unwrap();
         assert_eq!(fm.name, "diagnose");
         assert!(
-            fm.description.contains("methodology can find: all the risks"),
+            fm.description
+                .contains("methodology can find: all the risks"),
             "Fallback should handle colons inside description, got: {}",
             &fm.description[..fm.description.len().min(200)]
         );
@@ -342,7 +366,11 @@ user-invocable: true
 
         let long_name = "a".repeat(51);
         let skill_md = skill_dir.join("SKILL.md");
-        fs::write(&skill_md, format!("---\nname: {}\ndescription: Test\n---\n", long_name)).unwrap();
+        fs::write(
+            &skill_md,
+            format!("---\nname: {}\ndescription: Test\n---\n", long_name),
+        )
+        .unwrap();
 
         let result = validate_skill(&skill_dir);
         assert!(result.is_err());

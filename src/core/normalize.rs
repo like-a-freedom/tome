@@ -1,11 +1,23 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const SKIP_DIRS_IN_SCAN: &[&str] = &[
-    ".git", ".github", ".claude-plugin", ".cursor", ".agents",
-    "node_modules", "target", "dist", "build", "__pycache__",
-    ".claude", ".gemini", ".opencode", ".codex", ".windsurf",
+    ".git",
+    ".github",
+    ".claude-plugin",
+    ".cursor",
+    ".agents",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "__pycache__",
+    ".claude",
+    ".gemini",
+    ".opencode",
+    ".codex",
+    ".windsurf",
 ];
 
 #[derive(Debug, Clone)]
@@ -58,10 +70,10 @@ fn find_skills_in_dir(dir: &Path) -> Result<Vec<SkillInfo>> {
             continue;
         }
 
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if SKIP_DIRS_IN_SCAN.contains(&name) || name.starts_with('.') {
-                continue;
-            }
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && (SKIP_DIRS_IN_SCAN.contains(&name) || name.starts_with('.'))
+        {
+            continue;
         }
 
         let skill_md = path.join("SKILL.md");
@@ -91,17 +103,19 @@ pub fn select_skills(skills: &[SkillInfo]) -> Result<Vec<SkillInfo>> {
         return Ok(vec![skills[0].clone()]);
     }
 
-    let mut items: Vec<crate::tui::SelectItem> = skills.iter().map(|s| {
-        crate::tui::SelectItem {
+    let mut items: Vec<crate::tui::SelectItem> = skills
+        .iter()
+        .map(|s| crate::tui::SelectItem {
             name: s.name.clone(),
             description: s.description.clone().unwrap_or_default(),
             selected: true,
-        }
-    }).collect();
+        })
+        .collect();
 
     crate::tui::multi_select(&mut items)?;
 
-    let selected: Vec<SkillInfo> = skills.iter()
+    let selected: Vec<SkillInfo> = skills
+        .iter()
         .zip(items.iter())
         .filter(|(_, item)| item.selected)
         .map(|(skill, _)| skill.clone())
@@ -116,12 +130,10 @@ pub fn select_skills(skills: &[SkillInfo]) -> Result<Vec<SkillInfo>> {
 
 pub fn copy_skill(src: &Path, dest: &Path) -> Result<()> {
     if dest.exists() {
-        fs::remove_dir_all(dest)
-            .context("Failed to remove existing skill")?;
+        fs::remove_dir_all(dest).context("Failed to remove existing skill")?;
     }
 
-    copy_dir_recursive(src, dest)
-        .context("Failed to copy skill directory")?;
+    copy_dir_recursive(src, dest).context("Failed to copy skill directory")?;
 
     Ok(())
 }
@@ -151,7 +163,8 @@ mod tests {
         fs::write(
             dir.join("SKILL.md"),
             format!("---\nname: {}\ndescription: {}\n---\n", name, desc),
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     #[test]
@@ -270,7 +283,11 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(skills_dir.join("not-a-skill")).unwrap();
-        fs::write(skills_dir.join("not-a-skill").join("README.md"), "not a skill").unwrap();
+        fs::write(
+            skills_dir.join("not-a-skill").join("README.md"),
+            "not a skill",
+        )
+        .unwrap();
 
         let result = detect_repo_type(temp.path());
         assert!(result.is_err());
