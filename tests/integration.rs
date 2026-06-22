@@ -53,7 +53,7 @@ fn test_add_single_skill_at_root() {
         .arg(repo_url)
         .assert()
         .success()
-        .stdout(predicate::str::contains("Installed: Root Skill"));
+        .stderr(predicate::str::contains("Installed").and(predicate::str::contains("Root Skill")));
 
     assert!(skills_dir.join("Root Skill").join("SKILL.md").exists());
 
@@ -221,7 +221,8 @@ fn test_list_json_output() {
     fs::write(
         skill_dir.join("SKILL.md"),
         "---\nname: JSON Skill\ndescription: JSON test\n---\n# JSON Skill\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let manifest = skills_dir.join(".skills.json");
     let manifest_data = r#"{
@@ -259,7 +260,8 @@ fn test_list_shows_untracked_skills() {
     fs::write(
         manual_dir.join("SKILL.md"),
         "---\nname: Manual Skill\ndescription: Placed manually, not in manifest\n---\n# Manual\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     // Empty manifest — no skills tracked
     let manifest = skills_dir.join(".skills.json");
@@ -287,7 +289,8 @@ fn test_list_rebuilds_missing_manifest() {
     fs::write(
         skill_dir.join("SKILL.md"),
         "---\nname: Orphan Skill\ndescription: No manifest here\n---\n# Orphan\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     // No .skills.json — list should rebuild it
     let mut cmd = Command::cargo_bin("tome").unwrap();
@@ -314,7 +317,8 @@ fn test_remove_tracked_skill() {
     fs::write(
         skill_dir.join("SKILL.md"),
         "---\nname: ToRemove\ndescription: Will be removed\n---\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     let manifest = skills_dir.join(".skills.json");
     let manifest_data = r#"{
@@ -357,7 +361,8 @@ fn test_remove_untracked_skill_error() {
     fs::write(
         skill_dir.join("SKILL.md"),
         "---\nname: ManualRemove\ndescription: Manual\n---\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     // Empty manifest
     let manifest = skills_dir.join(".skills.json");
