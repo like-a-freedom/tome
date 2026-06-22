@@ -2,6 +2,7 @@ pub mod commands;
 pub mod config;
 pub mod core;
 pub mod fs;
+pub mod progress;
 pub mod tui;
 
 use anyhow::Result;
