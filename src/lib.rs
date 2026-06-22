@@ -8,6 +8,9 @@ pub mod tui;
 #[cfg(test)]
 pub mod testutil;
 
+/// Default git branch name used when branch detection fails.
+pub const DEFAULT_BRANCH: &str = "main";
+
 use anyhow::Result;
 
 pub use config::Cli;

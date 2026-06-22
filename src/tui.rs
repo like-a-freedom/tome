@@ -5,6 +5,16 @@ use crossterm::{
 };
 use std::io::{self, Write};
 
+const ELLIPSIS_LEN: usize = 3;
+const DEFAULT_NAME_WIDTH: usize = 20;
+const MAX_NAME_WIDTH: usize = 30;
+const NUM_COL_WIDTH: usize = 2;
+const DEFAULT_COLS: u16 = 80;
+const DEFAULT_ROWS: u16 = 24;
+const MENU_PREFIX_WIDTH: usize = 13;
+const MIN_DESC_WIDTH: usize = 15;
+const MAX_DESC_WIDTH: usize = 60;
+
 fn char_display_width(c: char) -> usize {
     let cp = c as u32;
     if (0x1100..=0x115F).contains(&cp)
@@ -47,7 +57,7 @@ pub fn truncate_str(s: &str, max_width: usize) -> String {
     let mut end = 0;
     for (i, ch) in s.char_indices() {
         let w = char_display_width(ch);
-        if width + w + 3 > max_width {
+        if width + w + ELLIPSIS_LEN > max_width {
             break;
         }
         width += w;
@@ -61,8 +71,8 @@ pub fn calc_name_width(items: &[SelectItem]) -> usize {
         .iter()
         .map(|i| display_width(&i.name))
         .max()
-        .unwrap_or(20)
-        .min(30)
+        .unwrap_or(DEFAULT_NAME_WIDTH)
+        .min(MAX_NAME_WIDTH)
 }
 
 pub fn format_item(
@@ -73,7 +83,7 @@ pub fn format_item(
     focused: bool,
 ) -> String {
     let checkbox = if item.selected { "[x]" } else { "[ ]" };
-    let num = format!("{:>2}.", i + 1);
+    let num = format!("{:>width$}.", i + 1, width = NUM_COL_WIDTH);
     let name = truncate_str(&item.name, name_width);
     let desc = truncate_str(&item.description, desc_width);
     let marker = if focused { ">" } else { " " };
@@ -153,12 +163,12 @@ pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
     let mut stdout = io::stdout();
     let mut cursor = 0usize;
 
-    let (cols, _) = size().unwrap_or((80, 24));
+    let (cols, _) = size().unwrap_or((DEFAULT_COLS, DEFAULT_ROWS));
     let name_width = calc_name_width(items);
     let desc_width = (cols as usize)
-        .saturating_sub(13)
+        .saturating_sub(MENU_PREFIX_WIDTH)
         .saturating_sub(name_width)
-        .clamp(15, 60);
+        .clamp(MIN_DESC_WIDTH, MAX_DESC_WIDTH);
 
     let result = (|| -> Result<()> {
         loop {

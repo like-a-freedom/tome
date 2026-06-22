@@ -6,15 +6,17 @@ use crate::core::{git, manifest::Manifest, normalize, spec};
 use crate::fs;
 use crate::style::{self, CYAN, DIM, GREEN, YELLOW};
 
+const TERM_WIDTH: usize = 60;
+const SHORT_COMMIT_LEN: usize = 7;
+const DEFAULT_MAX_NAME_WIDTH: usize = 10;
+
 fn format_commit(commit: &str) -> String {
-    if commit.len() >= 7 {
-        commit[..7].to_string()
+    if commit.len() >= SHORT_COMMIT_LEN {
+        commit[..SHORT_COMMIT_LEN].to_string()
     } else {
         commit.to_string()
     }
 }
-
-const TERM_WIDTH: usize = 60;
 
 // ── per-group result printing ─────────────────────────────────────
 
@@ -30,6 +32,16 @@ impl GroupResult {
         self.updated.is_empty() && self.skipped.is_empty() && self.failed.is_empty()
     }
 
+    fn failed_all(skill_names: &[String], reason: &str) -> Self {
+        Self {
+            failed: skill_names
+                .iter()
+                .map(|n| (n.clone(), reason.to_string()))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
     fn max_name_width(&self) -> usize {
         self.updated
             .iter()
@@ -37,7 +49,7 @@ impl GroupResult {
             .chain(self.skipped.iter().map(|(n, _)| n.len()))
             .chain(self.failed.iter().map(|(n, _)| n.len()))
             .max()
-            .unwrap_or(10)
+            .unwrap_or(DEFAULT_MAX_NAME_WIDTH)
     }
 
     fn print(&self) {
@@ -126,12 +138,7 @@ fn update_group(
     skills_dir: &Path,
     verbose: bool,
 ) -> (String, GroupResult) {
-    let repo_label = remote
-        .strip_prefix("https://github.com/")
-        .unwrap_or(remote)
-        .strip_suffix(".git")
-        .unwrap_or(remote)
-        .to_string();
+    let label = crate::core::parse_source::repo_label(remote).to_string();
 
     if group_count > 1 {
         eprintln!(
@@ -139,12 +146,12 @@ fn update_group(
             style::styled(CYAN, "\u{25b8}"),
             group_idx + 1,
             group_count,
-            repo_label,
+            label,
             skill_names.len(),
             if skill_names.len() == 1 { "" } else { "s" },
         );
     } else {
-        eprintln!("{} Cloning {}", style::styled(CYAN, "\u{25b8}"), repo_label,);
+        eprintln!("{} Cloning {}", style::styled(CYAN, "\u{25b8}"), label,);
     }
 
     let temp_dir = match fs::create_temp_dir() {
@@ -155,11 +162,7 @@ fn update_group(
                 style::styled(YELLOW, "\u{2717}"),
                 e
             );
-            let mut gr = GroupResult::default();
-            for sn in skill_names {
-                gr.failed.push((sn.clone(), "temp dir".to_string()));
-            }
-            return (repo_label, gr);
+            return (label, GroupResult::failed_all(skill_names, "temp dir"));
         }
     };
 
@@ -169,16 +172,13 @@ fn update_group(
             style::styled(YELLOW, "\u{2717}"),
             e
         );
-        let mut gr = GroupResult::default();
-        for sn in skill_names {
-            gr.failed.push((sn.clone(), "clone failed".to_string()));
-        }
-        return (repo_label, gr);
+        return (label, GroupResult::failed_all(skill_names, "clone failed"));
     }
 
     let new_commit =
         git::get_commit_hash(temp_dir.path()).unwrap_or_else(|_| "unknown".to_string());
-    let branch = git::get_branch(temp_dir.path()).unwrap_or_else(|_| "main".to_string());
+    let branch =
+        git::get_branch(temp_dir.path()).unwrap_or_else(|_| crate::DEFAULT_BRANCH.to_string());
 
     let mut group_result = GroupResult::default();
 
@@ -274,26 +274,21 @@ fn update_group(
             .push((skill_name.clone(), old_commit, new_commit.clone()));
     }
 
-    (repo_label, group_result)
+    (label, group_result)
 }
 
 fn print_results(repo_results: &[(String, GroupResult)], verbose: bool) {
     let has_results = repo_results.iter().any(|(_, r)| !r.is_empty());
     if has_results && !verbose {
         println!();
-        for (i, (repo_label, group_result)) in repo_results.iter().enumerate() {
+        for (i, (label, group_result)) in repo_results.iter().enumerate() {
             if group_result.is_empty() {
                 continue;
             }
             if i > 0 {
                 println!();
             }
-            println!(
-                "  {}{}{}",
-                CYAN,
-                style::styled(CYAN, repo_label),
-                style::RESET,
-            );
+            println!("  {}{}{}", CYAN, style::styled(CYAN, label), style::RESET,);
             group_result.print();
         }
         println!();
@@ -407,7 +402,7 @@ pub fn execute(
     let mut repo_results: Vec<(String, GroupResult)> = Vec::new();
 
     for (group_idx, (remote, skill_names)) in group_list.iter().enumerate() {
-        let (repo_label, group_result) = update_group(
+        let (label, group_result) = update_group(
             remote,
             skill_names,
             group_idx,
@@ -419,7 +414,7 @@ pub fn execute(
         total_updated += group_result.updated.len();
         total_skipped += group_result.skipped.len();
         total_failed += group_result.failed.len();
-        repo_results.push((repo_label, group_result));
+        repo_results.push((label, group_result));
     }
 
     manifest.save(manifest_path)?;
