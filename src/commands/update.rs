@@ -136,8 +136,9 @@ pub fn execute(
         let new_commit = git::get_commit_hash(temp_dir.path())
             .unwrap_or_else(|_| "unknown".to_string());
 
-        // --- Skip if no changes ---
-        if new_commit == old_commit {
+        // --- Skip if no changes (compare first 7 chars to handle
+        //     migration from short to full hashes) ---
+        if format_commit(&new_commit) == format_commit(&old_commit) {
             if verbose {
                 println!("  Already up to date: {} ({})", skill_name, format_commit(&new_commit));
             }
@@ -585,6 +586,54 @@ mod tests {
         let unchanged = loaded.skills.get("UnchangedSkill").unwrap();
         assert_eq!(unchanged.commit, hash_b, "Unchanged skill should keep same hash");
         assert_eq!(unchanged.version, "1.0.0");
+    }
+
+    #[test]
+    fn test_update_skips_when_manifest_has_short_hash() {
+        // Simulate user's real scenario: manifest has short (7-char) hash
+        // from the original `tome add`, while git returns full (40-char) hash.
+        // The skip logic must compare by first 7 chars only.
+        let temp = TempDir::new().unwrap();
+        let repo_dir = temp.path().join("repo");
+        let full_hash = create_git_repo_with_skill(&repo_dir, "TestSkill", "1.0.0");
+        let short_hash: String = full_hash.chars().take(7).collect();
+        let remote_url = format!("file://{}", repo_dir.display());
+
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let manifest_path = skills_dir.join(".skills.json");
+
+        let mut manifest = Manifest {
+            version: 1,
+            skills: std::collections::HashMap::new(),
+        };
+        // Manifest has SHORT hash, but git repo has the same commit (full hash)
+        let mut entry = SkillEntry::new(
+            "test/repo",
+            "",
+            &make_fm("TestSkill"),
+            &short_hash,
+            &remote_url,
+        );
+        entry.branch = "main".to_string();
+        entry.version = "1.0.0".to_string();
+        manifest.add_skill("TestSkill", entry);
+        manifest.save(&manifest_path).unwrap();
+
+        fs::create_dir_all(skills_dir.join("TestSkill")).unwrap();
+        fs::write(
+            skills_dir.join("TestSkill").join("SKILL.md"),
+            "---\nname: TestSkill\ndescription: test\nversion: 1.0.0\n---\n",
+        )
+        .unwrap();
+
+        let result = execute(None, false, &skills_dir, &manifest_path);
+        assert!(result.is_ok());
+
+        // Manifest should keep the SHORT hash (entry.update was NOT called)
+        let loaded = Manifest::load(&manifest_path).unwrap();
+        let entry = loaded.skills.get("TestSkill").unwrap();
+        assert_eq!(entry.commit, short_hash, "Short hash should be preserved");
     }
 
     #[test]
