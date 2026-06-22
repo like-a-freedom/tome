@@ -1,7 +1,10 @@
 use anyhow::{Result, bail};
 use crossterm::{
+    Command,
+    cursor::MoveTo,
     event::{self, Event, KeyCode, KeyEventKind},
-    terminal::{disable_raw_mode, enable_raw_mode, size},
+    style::{Attribute, SetAttribute},
+    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode, size},
 };
 use std::io::{self, Write};
 
@@ -103,7 +106,8 @@ fn build_render_buffer(items: &[SelectItem], cursor: usize, desc_width: usize) -
     let selected_count = items.iter().filter(|i| i.selected).count();
 
     let mut buf = String::new();
-    buf.push_str("\x1B[2J\x1B[H");
+    Clear(ClearType::All).write_ansi(&mut buf).ok();
+    MoveTo(0, 0).write_ansi(&mut buf).ok();
     buf.push_str(&format!(
         "Select skills to install ({}/{}):\r\n",
         selected_count,
@@ -116,11 +120,11 @@ fn build_render_buffer(items: &[SelectItem], cursor: usize, desc_width: usize) -
     for (i, item) in items.iter().enumerate() {
         let focused = i == cursor;
         if focused {
-            buf.push_str("\x1B[1m");
+            SetAttribute(Attribute::Bold).write_ansi(&mut buf).ok();
         }
         buf.push_str(&format_item(i, item, name_width, desc_width, focused));
         if focused {
-            buf.push_str("\x1B[0m");
+            SetAttribute(Attribute::Reset).write_ansi(&mut buf).ok();
         }
         buf.push_str("\r\n");
     }
@@ -476,7 +480,7 @@ mod tests {
         }];
         let buf = build_render_buffer(&items, 0, 40);
         assert!(
-            buf.starts_with("\x1B[2J\x1B[H"),
+            buf.starts_with("\x1B[2J\x1B[1;1H"),
             "Buffer must start with clear-screen + cursor-home escape"
         );
     }
