@@ -201,81 +201,64 @@ pub fn execute(
     );
     println!("{}", style::RESET);
 
-    // --- Process groups ---
+
+    // Phase 1: Clone all repos
     let group_count = group_list.len();
     let mut total_updated = 0usize;
     let mut total_skipped = 0usize;
     let mut total_failed = 0usize;
+    let mut repo_results: Vec<(String, GroupResult)> = Vec::new();
 
     for (group_idx, (remote, skill_names)) in group_list.iter().enumerate() {
         let repo_label = remote
             .strip_prefix("https://github.com/")
             .unwrap_or(remote)
             .strip_suffix(".git")
-            .unwrap_or(remote);
+            .unwrap_or(remote)
+            .to_string();
 
-        // Print group header
-        println!();
         if group_count > 1 {
-            print!(
-                "{} [{}/{}] {}Cloning{} {}",
+            eprintln!(
+                "{} [{}/{}] Cloning {} ({} skill{})",
                 style::styled(CYAN, "\u{25b8}"),
                 group_idx + 1,
                 group_count,
-                style::BOLD,
-                style::RESET,
                 repo_label,
-            );
-        } else {
-            print!(
-                "{} {}Cloning{} {}",
-                style::styled(CYAN, "\u{25b8}"),
-                style::BOLD,
-                style::RESET,
-                repo_label,
-            );
-        }
-        // Show skill count only if >1 repo or the repo has multiple skills
-        if group_count > 1 || skill_names.len() > 1 {
-            println!(
-                " ({} skill{})",
                 skill_names.len(),
                 if skill_names.len() == 1 { "" } else { "s" },
             );
         } else {
-            println!();
+            eprintln!(
+                "{} Cloning {}",
+                style::styled(CYAN, "\u{25b8}"),
+                repo_label,
+            );
         }
 
-        // --- Clone ---
         let temp_dir = match fs::create_temp_dir() {
             Ok(d) => d,
             Err(e) => {
-                eprintln!(
-                    "  {} Failed to create temp dir: {}",
-                    style::styled(YELLOW, "\u{2717}"),
-                    e,
-                );
+                eprintln!("  {} Failed to create temp dir: {}", style::styled(YELLOW, "\u{2717}"), e);
+                let mut gr = GroupResult::default();
+                for sn in skill_names { gr.failed.push((sn.clone(), "temp dir".to_string())); }
                 total_failed += skill_names.len();
+                repo_results.push((repo_label, gr));
                 continue;
             }
         };
 
         if let Err(e) = git::clone_repo(remote, temp_dir.path()) {
-            eprintln!(
-                "  {} Clone failed: {}",
-                style::styled(YELLOW, "\u{2717}"),
-                e,
-            );
+            eprintln!("  {} Clone failed: {}", style::styled(YELLOW, "\u{2717}"), e);
+            let mut gr = GroupResult::default();
+            for sn in skill_names { gr.failed.push((sn.clone(), "clone failed".to_string())); }
             total_failed += skill_names.len();
+            repo_results.push((repo_label, gr));
             continue;
         }
 
-        // Get the commit hash
-        let new_commit =
-            git::get_commit_hash(temp_dir.path()).unwrap_or_else(|_| "unknown".to_string());
+        let new_commit = git::get_commit_hash(temp_dir.path()).unwrap_or_else(|_| "unknown".to_string());
         let branch = git::get_branch(temp_dir.path()).unwrap_or_else(|_| "main".to_string());
 
-        // --- Process each skill in this group ---
         let mut group_result = GroupResult::default();
 
         for skill_name in skill_names {
@@ -290,46 +273,22 @@ pub fn execute(
             let frontmatter = match spec::validate_skill(&skill_path) {
                 Ok(fm) => fm,
                 Err(e) => {
-                    eprintln!(
-                        "  {} Skipping {} — invalid SKILL.md: {}",
-                        style::styled(YELLOW, "\u{2717}"),
-                        skill_name,
-                        e,
-                    );
-                    group_result
-                        .failed
-                        .push((skill_name.clone(), "invalid SKILL.md".to_string()));
+                    if verbose { eprintln!("  {} Skipping {} — invalid SKILL.md: {}", style::styled(YELLOW, "\u{2717}"), skill_name, e); }
+                    group_result.failed.push((skill_name.clone(), "invalid SKILL.md".to_string()));
                     continue;
                 }
             };
 
-            // Skip if no changes
             if format_commit(&new_commit) == format_commit(&old_commit) {
-                if verbose {
-                    println!(
-                        "  {} Already up to date: {} ({})",
-                        style::styled(DIM, "\u{2713}"),
-                        skill_name,
-                        format_commit(&new_commit),
-                    );
-                }
-                group_result
-                    .skipped
-                    .push((skill_name.clone(), new_commit.clone()));
+                if verbose { println!("  {} Already up to date: {} ({})", style::styled(DIM, "\u{2713}"), skill_name, format_commit(&new_commit)); }
+                group_result.skipped.push((skill_name.clone(), new_commit.clone()));
                 continue;
             }
 
             let dest_dir = skills_dir.join(skill_name);
             if let Err(e) = normalize::copy_skill(&skill_path, &dest_dir) {
-                eprintln!(
-                    "  {} Failed to copy {}: {}",
-                    style::styled(YELLOW, "\u{2717}"),
-                    skill_name,
-                    e,
-                );
-                group_result
-                    .failed
-                    .push((skill_name.clone(), "copy failed".to_string()));
+                if verbose { eprintln!("  {} Failed to copy {}: {}", style::styled(YELLOW, "\u{2717}"), skill_name, e); }
+                group_result.failed.push((skill_name.clone(), "copy failed".to_string()));
                 continue;
             }
 
@@ -341,94 +300,61 @@ pub fn execute(
                 if verbose {
                     let ver = &entry.version;
                     if ver.is_empty() {
-                        println!(
-                            "  {} Updated: {} ({} → {})",
-                            style::styled(GREEN, "\u{2713}"),
-                            skill_name,
-                            format_commit(&old_commit),
-                            format_commit(&new_commit),
-                        );
+                        println!("  {} Updated: {} ({} -> {})", style::styled(GREEN, "\u{2713}"), skill_name, format_commit(&old_commit), format_commit(&new_commit));
                     } else {
-                        println!(
-                            "  {} Updated: {} {} ({} → {})",
-                            style::styled(GREEN, "\u{2713}"),
-                            skill_name,
-                            ver,
-                            format_commit(&old_commit),
-                            format_commit(&new_commit),
-                        );
+                        println!("  {} Updated: {} {} ({} -> {})", style::styled(GREEN, "\u{2713}"), skill_name, ver, format_commit(&old_commit), format_commit(&new_commit));
                     }
                 }
 
-                group_result
-                    .updated
-                    .push((skill_name.clone(), old_commit, new_commit.clone()));
+                group_result.updated.push((skill_name.clone(), old_commit, new_commit.clone()));
             }
-        }
-
-        // Print per-repo results immediately
-        if !verbose {
-            group_result.print();
         }
 
         total_updated += group_result.updated.len();
         total_skipped += group_result.skipped.len();
         total_failed += group_result.failed.len();
+        repo_results.push((repo_label, group_result));
     }
 
     // --- Save manifest ---
     manifest.save(manifest_path)?;
 
-    println!();
+    // Phase 2: Print results grouped by repo
+    let has_results = repo_results.iter().any(|(_, r)| !r.is_empty());
+    if has_results && !verbose {
+        println!();
+        for (repo_label, group_result) in &repo_results {
+            if group_result.is_empty() { continue; }
+            println!("  {}", style::styled(DIM, repo_label));
+            group_result.print();
+        }
+    } else if verbose && has_results {
+        println!();
+    }
 
     // --- Summary footer ---
     let mut parts: Vec<String> = Vec::new();
-    if total_updated > 0 {
-        parts.push(style::styled(GREEN, &format!("{} updated", total_updated)));
-    }
-    if total_skipped > 0 {
-        parts.push(style::styled(DIM, &format!("{} up to date", total_skipped)));
-    }
-    if total_failed > 0 {
-        parts.push(style::styled(YELLOW, &format!("{} failed", total_failed)));
-    }
+    if total_updated > 0 { parts.push(style::styled(GREEN, &format!("{} updated", total_updated))); }
+    if total_skipped > 0 { parts.push(style::styled(DIM, &format!("{} up to date", total_skipped))); }
+    if total_failed > 0 { parts.push(style::styled(YELLOW, &format!("{} failed", total_failed))); }
 
     let summary_plain = if parts.is_empty() {
         "nothing to update".to_string()
     } else {
-        // Join plain text for width calculation
         let plain_parts: Vec<String> = vec![
-            if total_updated > 0 {
-                format!("{} updated", total_updated)
-            } else {
-                String::new()
-            },
-            if total_skipped > 0 {
-                format!("{} up to date", total_skipped)
-            } else {
-                String::new()
-            },
-            if total_failed > 0 {
-                format!("{} failed", total_failed)
-            } else {
-                String::new()
-            },
-        ]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect();
+            if total_updated > 0 { format!("{} updated", total_updated) } else { String::new() },
+            if total_skipped > 0 { format!("{} up to date", total_skipped) } else { String::new() },
+            if total_failed > 0 { format!("{} failed", total_failed) } else { String::new() },
+        ].into_iter().filter(|s| !s.is_empty()).collect();
         plain_parts.join(" · ")
     };
     let summary_styled = parts.join(" · ");
 
     println!(
         "{}{}\n{}{}\n{}{}",
-        CYAN,
-        box_top("Result", term_width),
-        CYAN,
-        box_line(&summary_plain, &summary_styled, term_width),
-        CYAN,
-        box_bottom(term_width),
+        CYAN, box_top("Result", term_width),
+        CYAN, box_line(&summary_plain, &summary_styled, term_width),
+        CYAN, box_bottom(term_width),
     );
     println!("{}", style::RESET);
 
