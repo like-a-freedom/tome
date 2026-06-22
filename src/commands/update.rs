@@ -16,6 +16,8 @@ fn format_commit(commit: &str) -> String {
 
 // ── box-drawing helpers ───────────────────────────────────────────
 
+const TERM_WIDTH: usize = 60;
+
 fn line(c: char, width: usize) -> String {
     std::iter::repeat_n(c, width).collect()
 }
@@ -134,16 +136,14 @@ fn print_update_header(group_list: &[(String, Vec<String>)]) {
         if total_repos == 1 { "y" } else { "ies" },
     );
     let header_styled = format!("{}{}{}", style::BOLD, header_plain, style::RESET);
-    let term_width = 60usize;
-
     println!(
         "\n{}{}\n{}{}\n{}{}",
         CYAN,
-        box_top("tome update", term_width),
+        box_top("tome update", TERM_WIDTH),
         CYAN,
-        box_line(&header_plain, &header_styled, term_width),
+        box_line(&header_plain, &header_styled, TERM_WIDTH),
         CYAN,
-        box_bottom(term_width),
+        box_bottom(TERM_WIDTH),
     );
     println!("{}", style::RESET);
 }
@@ -334,7 +334,6 @@ fn print_results(repo_results: &[(String, GroupResult)], verbose: bool) {
 }
 
 fn print_summary(total_updated: usize, total_skipped: usize, total_failed: usize) {
-    let term_width = 60usize;
     let mut parts: Vec<String> = Vec::new();
     if total_updated > 0 {
         parts.push(style::styled(GREEN, &format!("{} updated", total_updated)));
@@ -376,11 +375,11 @@ fn print_summary(total_updated: usize, total_skipped: usize, total_failed: usize
     println!(
         "{}{}\n{}{}\n{}{}",
         CYAN,
-        box_top("Result", term_width),
+        box_top("Result", TERM_WIDTH),
         CYAN,
-        box_line(&summary_plain, &summary_styled, term_width),
+        box_line(&summary_plain, &summary_styled, TERM_WIDTH),
         CYAN,
-        box_bottom(term_width),
+        box_bottom(TERM_WIDTH),
     );
     println!("{}", style::RESET);
 }
