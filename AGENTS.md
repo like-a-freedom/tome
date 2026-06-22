@@ -23,9 +23,10 @@ Before claiming work is complete, **always** run:
 ```bash
 cargo clippy --all-targets   # zero warnings required
 cargo test                   # all tests must pass
+cargo fmt -- --check         # formatting must be clean
 ```
 
-Both must pass clean before any commit or PR.
+All three must pass clean before any commit or PR.
 
 ### Documentation
 
@@ -38,8 +39,11 @@ Use `keenable` MCP for web search when context7 has no match.
 cargo run -- add owner/repo
 cargo run -- add owner/repo@skill-name
 cargo run -- list
+cargo run -- list --json
 cargo run -- remove skill-name
 cargo run -- update
+cargo run -- update --verbose
+cargo run -- update my-skill
 SKILLS_DIR=/path/to/skills cargo run -- list
 ```
 
@@ -47,7 +51,9 @@ SKILLS_DIR=/path/to/skills cargo run -- list
 
 - Rust edition 2021, 2018+ module style (no `mod.rs`)
 - All functions return `anyhow::Result<T>` with `.context()` for errors
+- Named constants for all numeric literals (no magic numbers)
 - Unit tests in `#[cfg(test)] mod tests` blocks within each source file
+- Shared test helpers in `src/testutil.rs` (lib) and `tests/common/mod.rs` (integration)
 - Integration tests in `tests/integration.rs`
 - `clap` derive for CLI args, `serde` for serialization
 
@@ -57,6 +63,8 @@ SKILLS_DIR=/path/to/skills cargo run -- list
 main.rs → lib.rs::run() → commands/{add,list,remove,update}
                            core/{spec,manifest,git,normalize,parse_source}
                            fs.rs (temp dirs, directory copy)
+                           style.rs (ANSI helpers, box-drawing)
+                           tui.rs (interactive multi-select)
 ```
 
 Key design decisions in `docs/DESIGN.md`, full architecture in `docs/ARCHITECTURE.md`.
