@@ -142,11 +142,11 @@ struct TableWidths {
 impl TableWidths {
     const TRACKED_WIDTH: usize = 7;
     const GAPS: usize = 2;
-    const MIN_NAME_WIDTH: usize = 4;
-    const MIN_VERSION_WIDTH: usize = 7;
-    const MAX_NAME_WIDTH: usize = 60;
+    const MIN_NAME_WIDTH: usize = 6;
+    const MIN_VERSION_WIDTH: usize = 9;
+    const MAX_NAME_WIDTH: usize = 80;
     const MAX_VERSION_WIDTH: usize = 15;
-    const MIN_SLACK_NAME: usize = 8;
+    const MIN_SLACK_NAME: usize = 16;
 
     fn calculate(manifest: &Manifest, untracked: &[UntrackedSkill], term_width: usize) -> Self {
         let mut max_name = Self::MIN_NAME_WIDTH;
