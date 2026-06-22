@@ -163,6 +163,9 @@ pub fn validate_skill(dir_path: &Path) -> Result<SkillFrontmatter> {
         bail!("SKILL.md not found at {}", skill_md.display());
     }
     let content = fs::read_to_string(&skill_md).context("Failed to read SKILL.md")?;
+    // Note: name/description emptiness is already enforced by parse_frontmatter
+    // (serde_yaml requires them, and the fallback parser bails on empty values).
+    // Only the length check is unique to validation.
     let frontmatter = parse_frontmatter(&content)?;
 
     if frontmatter.name.len() > 50 {
