@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
+use std::collections::HashMap;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::core::{git, manifest::Manifest, normalize, spec};
 use crate::fs;
@@ -14,7 +15,6 @@ fn format_commit(commit: &str) -> String {
 }
 
 fn format_date(rfc3339: &str) -> String {
-    // Parse RFC 3339 and return YYYY-MM-DD
     if let Some(date_part) = rfc3339.split('T').next() {
         date_part.to_string()
     } else {
@@ -22,16 +22,13 @@ fn format_date(rfc3339: &str) -> String {
     }
 }
 
-/// Write a live progress line to stderr (carriage-return + clear-line,
-/// so the same line gets overwritten on each call).
-fn progress_line(current: usize, total: usize, label: &str) {
-    // \r     = move cursor to column 0
-    // \x1B[K = clear from cursor to end of line
-    let _ = write!(io::stderr(), "\r\x1B[K[{}/{}] {}", current, total, label);
+/// Write a live progress line to stderr (carriage-return + clear-line).
+fn progress_line(label: &str) {
+    let _ = write!(io::stderr(), "\r\x1B[K{}", label);
     let _ = io::stderr().flush();
 }
 
-/// Erase the last progress line from stderr.
+/// Erase the current stderr line.
 fn clear_progress() {
     let _ = write!(io::stderr(), "\r\x1B[K");
     let _ = io::stderr().flush();
@@ -48,7 +45,6 @@ fn print_concise(result: &UpdateResult) {
         return;
     }
 
-    // Find column widths for alignment
     let max_name_width = result
         .updated
         .iter()
@@ -56,16 +52,14 @@ fn print_concise(result: &UpdateResult) {
         .chain(result.skipped.iter().map(|(n, _)| n.len()))
         .max()
         .unwrap_or(10);
-    let commit_width = 7;
 
     for (name, old_commit, new_commit, _date) in &result.updated {
         println!(
-            "  {:<name_w$}  {:>commit_w$} -> {}",
+            "  {:<name_w$}  {:>7} -> {}",
             name,
             format_commit(old_commit),
             format_commit(new_commit),
             name_w = max_name_width,
-            commit_w = commit_width,
         );
     }
 
@@ -79,6 +73,19 @@ fn print_concise(result: &UpdateResult) {
     }
 }
 
+/// Locate a skill's SKILL.md directory inside a cloned repo.
+fn skill_repo_path(clone_dir: &Path, entry_path: &str) -> PathBuf {
+    if entry_path.is_empty() {
+        match normalize::detect_repo_type(clone_dir) {
+            Ok(normalize::RepoType::SingleSkillAtRoot) => clone_dir.to_path_buf(),
+            Ok(normalize::RepoType::SingleSkillInDir { name: _, path: p }) => p,
+            _ => clone_dir.to_path_buf(),
+        }
+    } else {
+        clone_dir.join(entry_path)
+    }
+}
+
 pub fn execute(
     name: Option<&str>,
     verbose: bool,
@@ -87,6 +94,7 @@ pub fn execute(
 ) -> Result<()> {
     let mut manifest = Manifest::load(manifest_path)?;
 
+    // --- Clean stale entries ---
     let stale = manifest.clean_stale(skills_dir);
     if !stale.is_empty() {
         eprintln!(
@@ -96,6 +104,7 @@ pub fn execute(
         );
     }
 
+    // --- Resolve which skills to update ---
     let skills_to_update: Vec<String> = if let Some(specific_name) = name {
         if !manifest.is_tracked(specific_name) {
             bail!("Skill '{}' not found in manifest.", specific_name);
@@ -109,147 +118,167 @@ pub fn execute(
         manifest.skills.keys().cloned().collect()
     };
 
-    let total = skills_to_update.len();
+    // --- Group by remote URL ---
+    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+    for skill_name in &skills_to_update {
+        let remote = manifest.skills[skill_name].remote.clone();
+        groups.entry(remote).or_default().push(skill_name.clone());
+    }
+
+    // Sort groups by skill count (desc) then URL for deterministic output
+    let mut group_list: Vec<(String, Vec<String>)> = groups.into_iter().collect();
+    group_list.sort_by(|a, b| {
+        b.1.len()
+            .cmp(&a.1.len())
+            .then_with(|| a.0.cmp(&b.0))
+    });
+
+    let group_count = group_list.len();
     let mut result = UpdateResult {
         updated: Vec::new(),
         skipped: Vec::new(),
     };
     let mut update_date: Option<String> = None;
 
-    for (i, skill_name) in skills_to_update.iter().enumerate() {
-        let entry = manifest.skills.get(skill_name).unwrap();
-        let remote = entry.remote.clone();
-        let old_commit = entry.commit.clone();
+    for (group_idx, (remote, skill_names)) in group_list.iter().enumerate() {
+        let label = format!(
+            "Cloning {} ({} skill{})...",
+            remote,
+            skill_names.len(),
+            if skill_names.len() == 1 { "" } else { "s" },
+        );
 
-        let temp_dir = fs::create_temp_dir()?;
-
-        // --- Progress display ---
         if verbose {
-            println!("[{}/{}] Updating {} from {}...", i + 1, total, skill_name, remote);
+            println!("[{}/{}] {}", group_idx + 1, group_count, label);
         } else {
-            progress_line(i + 1, total, &format!("Fetching {}...", skill_name));
+            progress_line(&label);
         }
 
-        // --- Clone ---
-        if let Err(e) = git::clone_repo(&remote, temp_dir.path()) {
-            if !verbose {
-                clear_progress();
-            }
-            eprintln!("Warning: Failed to update {}: {}", skill_name, e);
-            continue;
-        }
-
-        let skill_repo_path = if entry.path.is_empty() {
-            match normalize::detect_repo_type(temp_dir.path()) {
-                Ok(normalize::RepoType::SingleSkillAtRoot) => temp_dir.path().to_path_buf(),
-                Ok(normalize::RepoType::SingleSkillInDir { name: _, path: p }) => p,
-                _ => temp_dir.path().to_path_buf(),
-            }
-        } else {
-            temp_dir.path().join(&entry.path)
-        };
-
-        let frontmatter = match spec::validate_skill(&skill_repo_path) {
-            Ok(fm) => fm,
+        // --- Clone once per group ---
+        let temp_dir = match fs::create_temp_dir() {
+            Ok(d) => d,
             Err(e) => {
-                if !verbose {
-                    clear_progress();
+                clear_progress();
+                eprintln!("Warning: Failed to create temp dir: {}", e);
+                for skill_name in skill_names {
+                    eprintln!("  Skipping {}", skill_name);
                 }
-                eprintln!("Warning: Skipping {} — invalid updated SKILL.md: {}", skill_name, e);
                 continue;
             }
         };
 
-        let new_commit = git::get_commit_hash(temp_dir.path())
-            .unwrap_or_else(|_| "unknown".to_string());
-
-        // --- Skip if no changes (compare first 7 chars to handle
-        //     migration from short to full hashes) ---
-        if format_commit(&new_commit) == format_commit(&old_commit) {
-            if verbose {
-                println!("  Already up to date: {} ({})", skill_name, format_commit(&new_commit));
-            } else {
-                // Overwrite progress with skip notice, then newline
-                progress_line(i + 1, total, &format!("{} up to date ({})", skill_name, format_commit(&new_commit)));
-                let _ = writeln!(io::stderr());
+        if let Err(e) = git::clone_repo(remote, temp_dir.path()) {
+            clear_progress();
+            for skill_name in skill_names {
+                eprintln!("Warning: Failed to update {}: {}", skill_name, e);
             }
-            result.skipped.push((skill_name.clone(), new_commit));
             continue;
         }
 
+        // Get the commit hash (same for all skills from this clone)
+        let new_commit = git::get_commit_hash(temp_dir.path())
+            .unwrap_or_else(|_| "unknown".to_string());
         let branch = git::get_branch(temp_dir.path())
             .unwrap_or_else(|_| "main".to_string());
 
-        let dest_dir = skills_dir.join(skill_name);
-        if let Err(e) = normalize::copy_skill(&skill_repo_path, &dest_dir) {
-            if !verbose {
-                clear_progress();
-            }
-            eprintln!("Warning: Failed to copy updated files for {}: {}", skill_name, e);
-            continue;
+        // Clear the "Cloning..." line from stderr (concise mode keeps stderr clean)
+        if !verbose {
+            clear_progress();
         }
 
-        if let Some(entry) = manifest.skills.get_mut(skill_name) {
-            entry.update(&new_commit, &frontmatter.version.unwrap_or_default());
-            entry.branch = branch;
-            entry.description = frontmatter.description;
+        // --- Process each skill in the group ---
+        for skill_name in skill_names {
+            let entry = match manifest.skills.get(skill_name) {
+                Some(e) => e,
+                None => continue,
+            };
 
-            let date_str = format_date(&entry.updated);
-            if update_date.is_none() {
-                update_date = Some(date_str.clone());
-            }
+            let old_commit = entry.commit.clone();
+            let skill_path = skill_repo_path(temp_dir.path(), &entry.path);
 
-            if verbose {
-                let ver = &entry.version;
-                if ver.is_empty() {
-                    println!(
-                        "  Updated: {} ({} -> {})",
-                        skill_name,
-                        format_commit(&old_commit),
-                        format_commit(&new_commit),
+            let frontmatter = match spec::validate_skill(&skill_path) {
+                Ok(fm) => fm,
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Skipping {} — invalid updated SKILL.md: {}",
+                        skill_name, e
                     );
-                } else {
+                    continue;
+                }
+            };
+
+            // Skip if no changes (compare first 7 chars handles short→full migration)
+            if format_commit(&new_commit) == format_commit(&old_commit) {
+                if verbose {
                     println!(
-                        "  Updated: {} {} ({} -> {})",
+                        "  Already up to date: {} ({})",
                         skill_name,
-                        ver,
-                        format_commit(&old_commit),
                         format_commit(&new_commit),
                     );
                 }
-            } else {
-                // Overwrite progress with result, then newline
-                let old_str = format_commit(&old_commit);
-                let new_str = format_commit(&new_commit);
-                progress_line(
-                    i + 1,
-                    total,
-                    &format!("{} {} -> {}", skill_name, old_str, new_str),
-                );
-                let _ = writeln!(io::stderr());
+                result
+                    .skipped
+                    .push((skill_name.clone(), new_commit.clone()));
+                continue;
             }
 
-            result.updated.push((
-                skill_name.clone(),
-                old_commit,
-                new_commit,
-                date_str,
-            ));
+            let dest_dir = skills_dir.join(skill_name);
+            if let Err(e) = normalize::copy_skill(&skill_path, &dest_dir) {
+                eprintln!(
+                    "Warning: Failed to copy updated files for {}: {}",
+                    skill_name, e
+                );
+                continue;
+            }
+
+            if let Some(entry) = manifest.skills.get_mut(skill_name) {
+                entry.update(&new_commit, &frontmatter.version.unwrap_or_default());
+                entry.branch = branch.clone();
+                entry.description = frontmatter.description;
+
+                let date_str = format_date(&entry.updated);
+                if update_date.is_none() {
+                    update_date = Some(date_str.clone());
+                }
+
+                if verbose {
+                    let ver = &entry.version;
+                    if ver.is_empty() {
+                        println!(
+                            "  Updated: {} ({} -> {})",
+                            skill_name,
+                            format_commit(&old_commit),
+                            format_commit(&new_commit),
+                        );
+                    } else {
+                        println!(
+                            "  Updated: {} {} ({} -> {})",
+                            skill_name,
+                            ver,
+                            format_commit(&old_commit),
+                            format_commit(&new_commit),
+                        );
+                    }
+                }
+
+                result.updated.push((
+                    skill_name.clone(),
+                    old_commit,
+                    new_commit.clone(),
+                    date_str,
+                ));
+            }
         }
     }
 
+    // --- Save manifest ---
     manifest.save(manifest_path)?;
 
-    // Clear progress line (stderr) so it doesn't linger before the final report
-    if !verbose {
-        clear_progress();
-    }
-
-    if !verbose && !result.updated.is_empty() || !result.skipped.is_empty() {
+    // --- Final report on stdout ---
+    if !verbose && (!result.updated.is_empty() || !result.skipped.is_empty()) {
         print_concise(&result);
     }
 
-    // Build summary line
     let date_suffix = update_date
         .map(|d| format!(" at {}", d))
         .unwrap_or_default();
@@ -301,11 +330,7 @@ mod tests {
         SkillEntry::new("test/repo", "skills/x", &make_fm("x"), "abc", remote)
     }
 
-    fn create_git_repo_with_skill(
-        dir: &Path,
-        skill_name: &str,
-        version: &str,
-    ) -> String {
+    fn create_git_repo_with_skill(dir: &Path, skill_name: &str, version: &str) -> String {
         fs::create_dir_all(dir).unwrap();
         fs::write(
             dir.join("SKILL.md"),
@@ -341,7 +366,6 @@ mod tests {
             .output()
             .unwrap();
 
-        // Return the commit hash
         let out = std::process::Command::new("git")
             .args(["rev-parse", "HEAD"])
             .current_dir(dir)
@@ -350,6 +374,8 @@ mod tests {
         String::from_utf8(out.stdout).unwrap().trim().to_string()
     }
 
+    // ── Tests ──
+
     #[test]
     fn test_update_empty_manifest_returns_ok() {
         let temp = TempDir::new().unwrap();
@@ -357,7 +383,6 @@ mod tests {
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
         fs::write(&manifest_path, r#"{"version":1,"skills":{}}"#).unwrap();
-
         let result = execute(None, false, &skills_dir, &manifest_path);
         assert!(result.is_ok());
     }
@@ -369,7 +394,6 @@ mod tests {
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
         fs::write(&manifest_path, r#"{"version":1,"skills":{}}"#).unwrap();
-
         let result = execute(Some("nonexistent"), false, &skills_dir, &manifest_path);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -381,49 +405,36 @@ mod tests {
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
-
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let mut manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
         manifest.add_skill("ghost", make_entry("http://example.com/fake.git"));
         manifest.save(&manifest_path).unwrap();
-
         let result = execute(None, false, &skills_dir, &manifest_path);
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_update_with_local_repo_success() {
+    fn test_update_single_skill_success() {
         let temp = TempDir::new().unwrap();
         let repo_dir = temp.path().join("repo");
         let commit_hash = create_git_repo_with_skill(&repo_dir, "TestSkill", "2.0.0");
         let remote_url = format!("file://{}", repo_dir.display());
-
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
-
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let mut manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
         let mut entry =
             SkillEntry::new("test/repo", "", &make_fm("TestSkill"), "oldhash", &remote_url);
         entry.branch = "main".to_string();
         manifest.add_skill("TestSkill", entry);
         manifest.save(&manifest_path).unwrap();
-
         fs::create_dir_all(skills_dir.join("TestSkill")).unwrap();
         fs::write(
             skills_dir.join("TestSkill").join("SKILL.md"),
             "---\nname: TestSkill\ndescription: old\nversion: 1.0.0\n---\n",
         )
         .unwrap();
-
         let result = execute(None, false, &skills_dir, &manifest_path);
         assert!(result.is_ok());
-
         let loaded = Manifest::load(&manifest_path).unwrap();
         let entry = loaded.skills.get("TestSkill").unwrap();
         assert_eq!(entry.version, "2.0.0");
@@ -436,40 +447,23 @@ mod tests {
         let repo_dir = temp.path().join("repo");
         let commit_hash = create_git_repo_with_skill(&repo_dir, "TestSkill", "1.0.0");
         let remote_url = format!("file://{}", repo_dir.display());
-
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
-
-        // The manifest ALREADY has the correct commit hash
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
-        let mut entry = SkillEntry::new(
-            "test/repo",
-            "",
-            &make_fm("TestSkill"),
-            &commit_hash, // same as repo HEAD
-            &remote_url,
-        );
+        let mut manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
+        let mut entry = SkillEntry::new("test/repo", "", &make_fm("TestSkill"), &commit_hash, &remote_url);
         entry.branch = "main".to_string();
         entry.version = "1.0.0".to_string();
         manifest.add_skill("TestSkill", entry);
         manifest.save(&manifest_path).unwrap();
-
-        // Create skill dir so it's not treated as stale
         fs::create_dir_all(skills_dir.join("TestSkill")).unwrap();
         fs::write(
             skills_dir.join("TestSkill").join("SKILL.md"),
             "---\nname: TestSkill\ndescription: test\nversion: 1.0.0\n---\n",
         )
         .unwrap();
-
         let result = execute(None, false, &skills_dir, &manifest_path);
         assert!(result.is_ok());
-
-        // Manifest should NOT be changed (commit stays the same, updated timestamp unchanged)
         let loaded = Manifest::load(&manifest_path).unwrap();
         let entry = loaded.skills.get("TestSkill").unwrap();
         assert_eq!(entry.commit, commit_hash);
@@ -482,37 +476,23 @@ mod tests {
         let repo_dir = temp.path().join("repo");
         let commit_hash = create_git_repo_with_skill(&repo_dir, "TestSkill", "1.0.0");
         let remote_url = format!("file://{}", repo_dir.display());
-
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
-
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
-        let mut entry = SkillEntry::new(
-            "test/repo",
-            "",
-            &make_fm("TestSkill"),
-            &commit_hash,
-            &remote_url,
-        );
+        let mut manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
+        let mut entry = SkillEntry::new("test/repo", "", &make_fm("TestSkill"), &commit_hash, &remote_url);
         entry.branch = "main".to_string();
         entry.version = "1.0.0".to_string();
         manifest.add_skill("TestSkill", entry);
         manifest.save(&manifest_path).unwrap();
-
         fs::create_dir_all(skills_dir.join("TestSkill")).unwrap();
         fs::write(
             skills_dir.join("TestSkill").join("SKILL.md"),
             "---\nname: TestSkill\ndescription: test\nversion: 1.0.0\n---\n",
         )
         .unwrap();
-
         let result = execute(None, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
-
         let loaded = Manifest::load(&manifest_path).unwrap();
         let entry = loaded.skills.get("TestSkill").unwrap();
         assert_eq!(entry.commit, commit_hash);
@@ -520,45 +500,28 @@ mod tests {
 
     #[test]
     fn test_update_skips_when_manifest_has_short_hash() {
-        // Simulate user's real scenario: manifest has short (7-char) hash
-        // from the original `tome add`, while git returns full (40-char) hash.
-        // The skip logic must compare by first 7 chars only.
         let temp = TempDir::new().unwrap();
         let repo_dir = temp.path().join("repo");
         let full_hash = create_git_repo_with_skill(&repo_dir, "TestSkill", "1.0.0");
         let short_hash: String = full_hash.chars().take(7).collect();
         let remote_url = format!("file://{}", repo_dir.display());
-
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
-
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
-        let mut entry = SkillEntry::new(
-            "test/repo",
-            "",
-            &make_fm("TestSkill"),
-            &short_hash,
-            &remote_url,
-        );
+        let mut manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
+        let mut entry = SkillEntry::new("test/repo", "", &make_fm("TestSkill"), &short_hash, &remote_url);
         entry.branch = "main".to_string();
         entry.version = "1.0.0".to_string();
         manifest.add_skill("TestSkill", entry);
         manifest.save(&manifest_path).unwrap();
-
         fs::create_dir_all(skills_dir.join("TestSkill")).unwrap();
         fs::write(
             skills_dir.join("TestSkill").join("SKILL.md"),
             "---\nname: TestSkill\ndescription: test\nversion: 1.0.0\n---\n",
         )
         .unwrap();
-
         let result = execute(None, false, &skills_dir, &manifest_path);
         assert!(result.is_ok());
-
         let loaded = Manifest::load(&manifest_path).unwrap();
         let entry = loaded.skills.get("TestSkill").unwrap();
         assert_eq!(entry.commit, short_hash, "Short hash should be preserved");
@@ -570,16 +533,10 @@ mod tests {
         let repo_dir = temp.path().join("repo");
         let actual_hash = create_git_repo_with_skill(&repo_dir, "TestSkill", "2.0.0");
         let remote_url = format!("file://{}", repo_dir.display());
-
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
-
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
-        // Different hash in manifest
+        let mut manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
         let mut entry = SkillEntry::new(
             "test/repo",
             "",
@@ -591,17 +548,14 @@ mod tests {
         entry.version = "1.0.0".to_string();
         manifest.add_skill("TestSkill", entry);
         manifest.save(&manifest_path).unwrap();
-
         fs::create_dir_all(skills_dir.join("TestSkill")).unwrap();
         fs::write(
             skills_dir.join("TestSkill").join("SKILL.md"),
             "---\nname: TestSkill\ndescription: old\nversion: 1.0.0\n---\n",
         )
         .unwrap();
-
         let result = execute(None, false, &skills_dir, &manifest_path);
         assert!(result.is_ok());
-
         let loaded = Manifest::load(&manifest_path).unwrap();
         let entry = loaded.skills.get("TestSkill").unwrap();
         assert_eq!(entry.commit, actual_hash);
@@ -609,75 +563,118 @@ mod tests {
     }
 
     #[test]
-    fn test_update_mixed_updated_and_skipped() {
-        // Two skills: one changed, one unchanged
+    fn test_update_grouped_remotes() {
+        // Two skills from SAME remote: one changed, one unchanged
         let temp = TempDir::new().unwrap();
-
-        // --- Changed skill ---
-        let repo_a = temp.path().join("repo-a");
-        let hash_a = create_git_repo_with_skill(&repo_a, "ChangedSkill", "2.0.0");
-        let remote_a = format!("file://{}", repo_a.display());
-
-        // --- Unchanged skill ---
-        let repo_b = temp.path().join("repo-b");
-        let hash_b = create_git_repo_with_skill(&repo_b, "UnchangedSkill", "1.0.0");
-        let remote_b = format!("file://{}", repo_b.display());
+        let repo_dir = temp.path().join("multi-repo");
+        fs::create_dir_all(repo_dir.join("skills/skill-b")).unwrap();
+        fs::write(
+            repo_dir.join("SKILL.md"),
+            "---\nname: skill-a\ndescription: root skill\nversion: 1.0.0\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            repo_dir.join("skills/skill-b/SKILL.md"),
+            "---\nname: skill-b\ndescription: subdir skill\nversion: 2.0.0\n---\n",
+        )
+        .unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        let commit_hash = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo_dir)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let remote_url = format!("file://{}", repo_dir.display());
 
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
+        let mut manifest = Manifest { version: 1, skills: std::collections::HashMap::new() };
 
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
-
-        // Changed — manifest has old hash
         let mut entry_a = SkillEntry::new(
             "test/repo",
             "",
-            &make_fm("ChangedSkill"),
-            "oldhash111111111111111111111111111111111",
-            &remote_a,
+            &SkillFrontmatter {
+                name: "skill-a".into(),
+                description: "root skill".into(),
+                version: Some("1.0.0".into()),
+                authors: None, tags: None, platforms: None, license: None, repository: None, docs: None,
+            },
+            &commit_hash,
+            &remote_url,
         );
         entry_a.branch = "main".to_string();
         entry_a.version = "1.0.0".to_string();
-        manifest.add_skill("ChangedSkill", entry_a);
+        manifest.add_skill("skill-a", entry_a);
 
-        // Unchanged — manifest has current hash
         let mut entry_b = SkillEntry::new(
             "test/repo",
-            "",
-            &make_fm("UnchangedSkill"),
-            &hash_b,
-            &remote_b,
+            "skills/skill-b",
+            &SkillFrontmatter {
+                name: "skill-b".into(),
+                description: "subdir skill".into(),
+                version: Some("1.0.0".into()),
+                authors: None, tags: None, platforms: None, license: None, repository: None, docs: None,
+            },
+            "oldhash0000000000000000000000000000000000",
+            &remote_url,
         );
         entry_b.branch = "main".to_string();
         entry_b.version = "1.0.0".to_string();
-        manifest.add_skill("UnchangedSkill", entry_b);
+        manifest.add_skill("skill-b", entry_b);
         manifest.save(&manifest_path).unwrap();
 
-        for name in &["ChangedSkill", "UnchangedSkill"] {
-            fs::create_dir_all(skills_dir.join(name)).unwrap();
+        for name in &["skill-a", "skill-b"] {
+            let d = skills_dir.join(name);
+            fs::create_dir_all(&d).unwrap();
             fs::write(
-                skills_dir.join(name).join("SKILL.md"),
-                format!("---\nname: {}\ndescription: test\nversion: 1.0.0\n---\n", name),
+                d.join("SKILL.md"),
+                format!("---\nname: {}\ndescription: old\nversion: 1.0.0\n---\n", name),
             )
             .unwrap();
         }
 
         let result = execute(None, false, &skills_dir, &manifest_path);
         assert!(result.is_ok());
-
         let loaded = Manifest::load(&manifest_path).unwrap();
 
-        let changed = loaded.skills.get("ChangedSkill").unwrap();
-        assert_eq!(changed.commit, hash_a, "Changed skill should have new hash");
-        assert_eq!(changed.version, "2.0.0");
+        let a = loaded.skills.get("skill-a").unwrap();
+        assert_eq!(a.commit, commit_hash, "Unchanged skill keeps same hash");
+        assert_eq!(a.version, "1.0.0");
 
-        let unchanged = loaded.skills.get("UnchangedSkill").unwrap();
-        assert_eq!(unchanged.commit, hash_b, "Unchanged skill should keep same hash");
-        assert_eq!(unchanged.version, "1.0.0");
+        let b = loaded.skills.get("skill-b").unwrap();
+        assert_eq!(b.commit, commit_hash, "Changed skill gets new hash");
+        assert_eq!(b.version, "2.0.0");
     }
 
     #[test]
@@ -687,7 +684,6 @@ mod tests {
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
         fs::write(&manifest_path, r#"{"version":1,"skills":{}}"#).unwrap();
-
         let result = execute(None, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
     }
