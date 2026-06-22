@@ -14,38 +14,7 @@ fn format_commit(commit: &str) -> String {
     }
 }
 
-// ── box-drawing helpers ───────────────────────────────────────────
-
 const TERM_WIDTH: usize = 60;
-
-fn line(c: char, width: usize) -> String {
-    std::iter::repeat_n(c, width).collect()
-}
-
-/// Top border:  ╭── label ── ... ──╮  (padded to `width`)
-fn box_top(label: &str, width: usize) -> String {
-    // "╭─ " (3 visible) + label + " " + dashes + "─╮" (2 visible)
-    let prefix = 3; // "╭─ "
-    let suffix = 2; // "─╮"
-    let inner = width.saturating_sub(prefix + suffix);
-    let label_trunc: String = label.chars().take(inner.saturating_sub(1)).collect();
-    let pad = inner.saturating_sub(label_trunc.len() + 1); // +1 for the space after label
-    format!("╭─ {} {}─╮", label_trunc, line('─', pad),)
-}
-
-/// Bottom border:  ╰── ... ──╯  (padded to `width`)
-fn box_bottom(width: usize) -> String {
-    format!("╰{}╯", line('─', width.saturating_sub(2)))
-}
-
-/// A content line inside a box:  │  text + pad  │
-///
-/// `plain` is the visible text (no ANSI), `styled` may include ANSI codes.
-fn box_line(plain: &str, styled: &str, width: usize) -> String {
-    let inner = width.saturating_sub(6); // "│  " + "  │"
-    let pad = inner.saturating_sub(plain.len());
-    format!("│  {}{}  │", styled, " ".repeat(pad))
-}
 
 // ── per-group result printing ─────────────────────────────────────
 
@@ -139,11 +108,11 @@ fn print_update_header(group_list: &[(String, Vec<String>)]) {
     println!(
         "\n{}{}\n{}{}\n{}{}",
         CYAN,
-        box_top("tome update", TERM_WIDTH),
+        style::box_top("tome update", TERM_WIDTH),
         CYAN,
-        box_line(&header_plain, &header_styled, TERM_WIDTH),
+        style::box_line(&header_plain, &header_styled, TERM_WIDTH),
         CYAN,
-        box_bottom(TERM_WIDTH),
+        style::box_bottom(TERM_WIDTH),
     );
     println!("{}", style::RESET);
 }
@@ -375,11 +344,11 @@ fn print_summary(total_updated: usize, total_skipped: usize, total_failed: usize
     println!(
         "{}{}\n{}{}\n{}{}",
         CYAN,
-        box_top("Result", TERM_WIDTH),
+        style::box_top("Result", TERM_WIDTH),
         CYAN,
-        box_line(&summary_plain, &summary_styled, TERM_WIDTH),
+        style::box_line(&summary_plain, &summary_styled, TERM_WIDTH),
         CYAN,
-        box_bottom(TERM_WIDTH),
+        style::box_bottom(TERM_WIDTH),
     );
     println!("{}", style::RESET);
 }
