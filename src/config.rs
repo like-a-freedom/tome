@@ -46,6 +46,10 @@ pub enum Commands {
     Update {
         /// Specific skill to update (optional)
         name: Option<String>,
+
+        /// Show full update details
+        #[arg(long)]
+        verbose: bool,
     },
 
     /// List installed skills
@@ -82,7 +86,7 @@ mod tests {
 
     #[test]
     fn test_skills_dir_default_is_home_based() {
-        let cli = Cli::пparse_from(["tome", "list"]);
+        let cli = Cli::parse_from(["tome", "list"]);
         let dir = cli.skills_dir();
         assert!(
             dir.is_absolute(),
@@ -139,13 +143,19 @@ mod tests {
     #[test]
     fn test_update_command_parsing() {
         let cli = Cli::parse_from(["tome", "update"]);
-        assert!(matches!(cli.command, Commands::Update { name: None }));
+        assert!(matches!(cli.command, Commands::Update { name: None, verbose: false }));
+    }
+
+    #[test]
+    fn test_update_verbose_parsing() {
+        let cli = Cli::parse_from(["tome", "update", "--verbose"]);
+        assert!(matches!(cli.command, Commands::Update { name: None, verbose: true }));
     }
 
     #[test]
     fn test_update_specific_parsing() {
         let cli = Cli::parse_from(["tome", "update", "my-skill"]);
-        assert!(matches!(cli.command, Commands::Update { name: Some(ref n) } if n == "my-skill"));
+        assert!(matches!(cli.command, Commands::Update { name: Some(ref n), verbose: false } if n == "my-skill"));
     }
 
     #[test]
