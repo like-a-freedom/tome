@@ -2,9 +2,11 @@ pub mod commands;
 pub mod config;
 pub mod core;
 pub mod fs;
-pub mod progress;
 pub mod style;
 pub mod tui;
+
+#[cfg(test)]
+pub mod testutil;
 
 use anyhow::Result;
 

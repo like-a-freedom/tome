@@ -149,7 +149,7 @@ pub fn execute(
         };
 
         let mut entry = SkillEntry::new(&owner_repo, &path_value, frontmatter, &commit, &remote);
-        entry.branch = branch.clone();
+        entry.set_branch(&branch);
         manifest.add_skill(&frontmatter.name, entry);
 
         let version_tag = frontmatter
@@ -213,47 +213,15 @@ pub fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil;
     use std::fs;
     use tempfile::TempDir;
-
-    fn make_skill_repo(temp: &TempDir, _name: &str, content: &str) -> String {
-        let repo_dir = temp.path().join("repo");
-        fs::create_dir_all(&repo_dir).unwrap();
-        fs::write(repo_dir.join("SKILL.md"), content).unwrap();
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["config", "user.email", "t@t.com"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["config", "user.name", "T"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "-m", "init"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        format!("file://{}", repo_dir.display())
-    }
 
     #[test]
     fn test_add_url_bypasses_parse_source() {
         let temp = TempDir::new().unwrap();
-        let url = make_skill_repo(
+        let url = testutil::create_git_repo_with_skill(
             &temp,
-            "test",
             "---\nname: UrlSkill\ndescription: from url\n---\n",
         );
         let skills_dir = temp.path().join("skills");
@@ -298,7 +266,10 @@ mod tests {
     #[test]
     fn test_add_existing_untracked_dir_skips() {
         let temp = TempDir::new().unwrap();
-        let url = make_skill_repo(&temp, "test", "---\nname: Untracked\ndescription: d\n---\n");
+        let url = testutil::create_git_repo_with_skill(
+            &temp,
+            "---\nname: Untracked\ndescription: d\n---\n",
+        );
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(skills_dir.join("Untracked")).unwrap();
         fs::write(
@@ -320,9 +291,8 @@ mod tests {
     #[test]
     fn test_add_force_overwrites() {
         let temp = TempDir::new().unwrap();
-        let url = make_skill_repo(
+        let url = testutil::create_git_repo_with_skill(
             &temp,
-            "test",
             "---\nname: ForceOver\ndescription: new\n---\n",
         );
         let skills_dir = temp.path().join("skills");
@@ -349,31 +319,7 @@ mod tests {
             "---\nname: PathSkill\ndescription: custom path\n---\n",
         )
         .unwrap();
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["config", "user.email", "t@t.com"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["config", "user.name", "T"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "-m", "init"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
+        testutil::init_git_repo(&repo_dir);
         let url = format!("file://{}", repo_dir.display());
 
         let skills_dir = temp.path().join("skills");
@@ -407,31 +353,7 @@ mod tests {
             "---\nname: SkillB\ndescription: b\n---\n",
         )
         .unwrap();
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["config", "user.email", "t@t.com"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["config", "user.name", "T"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "-m", "init"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
+        testutil::init_git_repo(&repo_dir);
         let url = format!("file://{}", repo_dir.display());
 
         let skills_dir = temp.path().join("skills");

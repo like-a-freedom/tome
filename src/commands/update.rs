@@ -14,15 +14,6 @@ fn format_commit(commit: &str) -> String {
     }
 }
 
-#[allow(dead_code)]
-fn format_date(rfc3339: &str) -> String {
-    if let Some(date_part) = rfc3339.split('T').next() {
-        date_part.to_string()
-    } else {
-        rfc3339.to_string()
-    }
-}
-
 // ── box-drawing helpers ───────────────────────────────────────────
 
 fn line(c: char, width: usize) -> String {
@@ -132,51 +123,7 @@ fn skill_repo_path(clone_dir: &Path, entry_path: &str) -> PathBuf {
 
 // ── execute ───────────────────────────────────────────────────────
 
-pub fn execute(
-    name: Option<&str>,
-    verbose: bool,
-    skills_dir: &Path,
-    manifest_path: &Path,
-) -> Result<()> {
-    let mut manifest = Manifest::load(manifest_path)?;
-
-    // --- Clean stale entries ---
-    let stale = manifest.clean_stale(skills_dir);
-    if !stale.is_empty() {
-        eprintln!(
-            "{} Skipping {} stale entries: {}",
-            style::styled(YELLOW, "\u{26a0}"),
-            stale.len(),
-            stale.join(", ")
-        );
-    }
-
-    // --- Resolve which skills to update ---
-    let skills_to_update: Vec<String> = if let Some(specific_name) = name {
-        if !manifest.is_tracked(specific_name) {
-            bail!("Skill '{}' not found in manifest.", specific_name);
-        }
-        vec![specific_name.to_string()]
-    } else {
-        if manifest.skills.is_empty() {
-            println!("No skills to update.");
-            return Ok(());
-        }
-        manifest.skills.keys().cloned().collect()
-    };
-
-    // --- Group by remote URL ---
-    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
-    for skill_name in &skills_to_update {
-        let remote = manifest.skills[skill_name].remote.clone();
-        groups.entry(remote).or_default().push(skill_name.clone());
-    }
-
-    // Sort groups by skill count (desc) then URL
-    let mut group_list: Vec<(String, Vec<String>)> = groups.into_iter().collect();
-    group_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
-
-    // --- Header ---
+fn print_update_header(group_list: &[(String, Vec<String>)]) {
     let total_skills: usize = group_list.iter().map(|(_, v)| v.len()).sum();
     let total_repos = group_list.len();
     let header_plain = format!(
@@ -187,7 +134,6 @@ pub fn execute(
         if total_repos == 1 { "y" } else { "ies" },
     );
     let header_styled = format!("{}{}{}", style::BOLD, header_plain, style::RESET);
-
     let term_width = 60usize;
 
     println!(
@@ -200,122 +146,87 @@ pub fn execute(
         box_bottom(term_width),
     );
     println!("{}", style::RESET);
+}
 
-    // Phase 1: Clone all repos
-    let group_count = group_list.len();
-    let mut total_updated = 0usize;
-    let mut total_skipped = 0usize;
-    let mut total_failed = 0usize;
-    let mut repo_results: Vec<(String, GroupResult)> = Vec::new();
+fn update_group(
+    remote: &str,
+    skill_names: &[String],
+    group_idx: usize,
+    group_count: usize,
+    manifest: &mut Manifest,
+    skills_dir: &Path,
+    verbose: bool,
+) -> (String, GroupResult) {
+    let repo_label = remote
+        .strip_prefix("https://github.com/")
+        .unwrap_or(remote)
+        .strip_suffix(".git")
+        .unwrap_or(remote)
+        .to_string();
 
-    for (group_idx, (remote, skill_names)) in group_list.iter().enumerate() {
-        let repo_label = remote
-            .strip_prefix("https://github.com/")
-            .unwrap_or(remote)
-            .strip_suffix(".git")
-            .unwrap_or(remote)
-            .to_string();
+    if group_count > 1 {
+        eprintln!(
+            "{} [{}/{}] Cloning {} ({} skill{})",
+            style::styled(CYAN, "\u{25b8}"),
+            group_idx + 1,
+            group_count,
+            repo_label,
+            skill_names.len(),
+            if skill_names.len() == 1 { "" } else { "s" },
+        );
+    } else {
+        eprintln!("{} Cloning {}", style::styled(CYAN, "\u{25b8}"), repo_label,);
+    }
 
-        if group_count > 1 {
+    let temp_dir = match fs::create_temp_dir() {
+        Ok(d) => d,
+        Err(e) => {
             eprintln!(
-                "{} [{}/{}] Cloning {} ({} skill{})",
-                style::styled(CYAN, "\u{25b8}"),
-                group_idx + 1,
-                group_count,
-                repo_label,
-                skill_names.len(),
-                if skill_names.len() == 1 { "" } else { "s" },
-            );
-        } else {
-            eprintln!("{} Cloning {}", style::styled(CYAN, "\u{25b8}"), repo_label,);
-        }
-
-        let temp_dir = match fs::create_temp_dir() {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!(
-                    "  {} Failed to create temp dir: {}",
-                    style::styled(YELLOW, "\u{2717}"),
-                    e
-                );
-                let mut gr = GroupResult::default();
-                for sn in skill_names {
-                    gr.failed.push((sn.clone(), "temp dir".to_string()));
-                }
-                total_failed += skill_names.len();
-                repo_results.push((repo_label, gr));
-                continue;
-            }
-        };
-
-        if let Err(e) = git::clone_repo(remote, temp_dir.path()) {
-            eprintln!(
-                "  {} Clone failed: {}",
+                "  {} Failed to create temp dir: {}",
                 style::styled(YELLOW, "\u{2717}"),
                 e
             );
             let mut gr = GroupResult::default();
             for sn in skill_names {
-                gr.failed.push((sn.clone(), "clone failed".to_string()));
+                gr.failed.push((sn.clone(), "temp dir".to_string()));
             }
-            total_failed += skill_names.len();
-            repo_results.push((repo_label, gr));
-            continue;
+            return (repo_label, gr);
         }
+    };
 
-        let new_commit =
-            git::get_commit_hash(temp_dir.path()).unwrap_or_else(|_| "unknown".to_string());
-        let branch = git::get_branch(temp_dir.path()).unwrap_or_else(|_| "main".to_string());
+    if let Err(e) = git::clone_repo(remote, temp_dir.path()) {
+        eprintln!(
+            "  {} Clone failed: {}",
+            style::styled(YELLOW, "\u{2717}"),
+            e
+        );
+        let mut gr = GroupResult::default();
+        for sn in skill_names {
+            gr.failed.push((sn.clone(), "clone failed".to_string()));
+        }
+        return (repo_label, gr);
+    }
 
-        let mut group_result = GroupResult::default();
+    let new_commit =
+        git::get_commit_hash(temp_dir.path()).unwrap_or_else(|_| "unknown".to_string());
+    let branch = git::get_branch(temp_dir.path()).unwrap_or_else(|_| "main".to_string());
 
-        for skill_name in skill_names {
-            let entry = match manifest.skills.get(skill_name) {
-                Some(e) => e,
-                None => continue,
-            };
+    let mut group_result = GroupResult::default();
 
-            let old_commit = entry.commit.clone();
-            let skill_path = skill_repo_path(temp_dir.path(), &entry.path);
+    for skill_name in skill_names {
+        let (old_commit, entry_path) = match manifest.get_skill(skill_name) {
+            Some(e) => (e.commit.clone(), e.path.clone()),
+            None => continue,
+        };
 
-            let frontmatter = match spec::validate_skill(&skill_path) {
-                Ok(fm) => fm,
-                Err(e) => {
-                    if verbose {
-                        eprintln!(
-                            "  {} Skipping {} — invalid SKILL.md: {}",
-                            style::styled(YELLOW, "\u{2717}"),
-                            skill_name,
-                            e
-                        );
-                    }
-                    group_result
-                        .failed
-                        .push((skill_name.clone(), "invalid SKILL.md".to_string()));
-                    continue;
-                }
-            };
+        let skill_path = skill_repo_path(temp_dir.path(), &entry_path);
 
-            if format_commit(&new_commit) == format_commit(&old_commit) {
-                if verbose {
-                    println!(
-                        "  {} Already up to date: {} ({})",
-                        style::styled(DIM, "\u{2713}"),
-                        skill_name,
-                        format_commit(&new_commit)
-                    );
-                }
-                group_result
-                    .skipped
-                    .push((skill_name.clone(), new_commit.clone()));
-                continue;
-            }
-
-            let dest_dir = skills_dir.join(skill_name);
-            if let Err(e) = normalize::copy_skill(&skill_path, &dest_dir) {
+        let frontmatter = match spec::validate_skill(&skill_path) {
+            Ok(fm) => fm,
+            Err(e) => {
                 if verbose {
                     eprintln!(
-                        "  {} Failed to copy {}: {}",
+                        "  {} Skipping {} — invalid SKILL.md: {}",
                         style::styled(YELLOW, "\u{2717}"),
                         skill_name,
                         e
@@ -323,56 +234,84 @@ pub fn execute(
                 }
                 group_result
                     .failed
-                    .push((skill_name.clone(), "copy failed".to_string()));
+                    .push((skill_name.clone(), "invalid SKILL.md".to_string()));
                 continue;
             }
+        };
 
-            if let Some(entry) = manifest.skills.get_mut(skill_name) {
-                entry.update(&new_commit, &frontmatter.version.unwrap_or_default());
-                entry.branch = branch.clone();
-                entry.description = frontmatter.description;
+        if format_commit(&new_commit) == format_commit(&old_commit) {
+            if verbose {
+                println!(
+                    "  {} Already up to date: {} ({})",
+                    style::styled(DIM, "\u{2713}"),
+                    skill_name,
+                    format_commit(&new_commit)
+                );
+            }
+            group_result
+                .skipped
+                .push((skill_name.clone(), new_commit.clone()));
+            continue;
+        }
 
-                if verbose {
-                    let ver = &entry.version;
-                    if ver.is_empty() {
-                        println!(
-                            "  {} Updated: {} ({} -> {})",
-                            style::styled(GREEN, "\u{2713}"),
-                            skill_name,
-                            format_commit(&old_commit),
-                            format_commit(&new_commit)
-                        );
-                    } else {
-                        println!(
-                            "  {} Updated: {} {} ({} -> {})",
-                            style::styled(GREEN, "\u{2713}"),
-                            skill_name,
-                            ver,
-                            format_commit(&old_commit),
-                            format_commit(&new_commit)
-                        );
-                    }
-                }
+        let dest_dir = skills_dir.join(skill_name);
+        if let Err(e) = normalize::copy_skill(&skill_path, &dest_dir) {
+            if verbose {
+                eprintln!(
+                    "  {} Failed to copy {}: {}",
+                    style::styled(YELLOW, "\u{2717}"),
+                    skill_name,
+                    e
+                );
+            }
+            group_result
+                .failed
+                .push((skill_name.clone(), "copy failed".to_string()));
+            continue;
+        }
 
-                group_result
-                    .updated
-                    .push((skill_name.clone(), old_commit, new_commit.clone()));
+        let version = frontmatter.version.unwrap_or_default();
+        manifest.update_skill(
+            skill_name,
+            &new_commit,
+            &version,
+            &branch,
+            frontmatter.description,
+        );
+
+        if verbose {
+            if version.is_empty() {
+                println!(
+                    "  {} Updated: {} ({} -> {})",
+                    style::styled(GREEN, "\u{2713}"),
+                    skill_name,
+                    format_commit(&old_commit),
+                    format_commit(&new_commit)
+                );
+            } else {
+                println!(
+                    "  {} Updated: {} {} ({} -> {})",
+                    style::styled(GREEN, "\u{2713}"),
+                    skill_name,
+                    version,
+                    format_commit(&old_commit),
+                    format_commit(&new_commit)
+                );
             }
         }
 
-        total_updated += group_result.updated.len();
-        total_skipped += group_result.skipped.len();
-        total_failed += group_result.failed.len();
-        repo_results.push((repo_label, group_result));
+        group_result
+            .updated
+            .push((skill_name.clone(), old_commit, new_commit.clone()));
     }
 
-    // --- Save manifest ---
-    manifest.save(manifest_path)?;
+    (repo_label, group_result)
+}
 
-    // Phase 2: Print results grouped by repo
+fn print_results(repo_results: &[(String, GroupResult)], verbose: bool) {
     let has_results = repo_results.iter().any(|(_, r)| !r.is_empty());
     if has_results && !verbose {
-    println!();
+        println!();
         for (i, (repo_label, group_result)) in repo_results.iter().enumerate() {
             if group_result.is_empty() {
                 continue;
@@ -392,8 +331,10 @@ pub fn execute(
     } else if verbose && has_results {
         println!();
     }
+}
 
-    // --- Summary footer ---
+fn print_summary(total_updated: usize, total_skipped: usize, total_failed: usize) {
+    let term_width = 60usize;
     let mut parts: Vec<String> = Vec::new();
     if total_updated > 0 {
         parts.push(style::styled(GREEN, &format!("{} updated", total_updated)));
@@ -442,6 +383,81 @@ pub fn execute(
         box_bottom(term_width),
     );
     println!("{}", style::RESET);
+}
+
+pub fn execute(
+    name: Option<&str>,
+    verbose: bool,
+    skills_dir: &Path,
+    manifest_path: &Path,
+) -> Result<()> {
+    let mut manifest = Manifest::load(manifest_path)?;
+
+    let stale = manifest.clean_stale(skills_dir);
+    if !stale.is_empty() {
+        eprintln!(
+            "{} Skipping {} stale entries: {}",
+            style::styled(YELLOW, "\u{26a0}"),
+            stale.len(),
+            stale.join(", ")
+        );
+    }
+
+    let skills_to_update: Vec<String> = if let Some(specific_name) = name {
+        if !manifest.is_tracked(specific_name) {
+            bail!("Skill '{}' not found in manifest.", specific_name);
+        }
+        vec![specific_name.to_string()]
+    } else {
+        if manifest.is_empty() {
+            println!("No skills to update.");
+            return Ok(());
+        }
+        manifest.skill_names()
+    };
+
+    // Group by remote URL
+    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+    for skill_name in &skills_to_update {
+        let remote = manifest
+            .get_skill(skill_name)
+            .map(|e| e.remote.clone())
+            .unwrap_or_default();
+        groups.entry(remote).or_default().push(skill_name.clone());
+    }
+
+    let mut group_list: Vec<(String, Vec<String>)> = groups.into_iter().collect();
+    group_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+
+    print_update_header(&group_list);
+
+    // Clone and update each group
+    let group_count = group_list.len();
+    let mut total_updated = 0usize;
+    let mut total_skipped = 0usize;
+    let mut total_failed = 0usize;
+    let mut repo_results: Vec<(String, GroupResult)> = Vec::new();
+
+    for (group_idx, (remote, skill_names)) in group_list.iter().enumerate() {
+        let (repo_label, group_result) = update_group(
+            remote,
+            skill_names,
+            group_idx,
+            group_count,
+            &mut manifest,
+            skills_dir,
+            verbose,
+        );
+        total_updated += group_result.updated.len();
+        total_skipped += group_result.skipped.len();
+        total_failed += group_result.failed.len();
+        repo_results.push((repo_label, group_result));
+    }
+
+    manifest.save(manifest_path)?;
+
+    print_results(&repo_results, verbose);
+    print_summary(total_updated, total_skipped, total_failed);
 
     Ok(())
 }
@@ -450,71 +466,19 @@ pub fn execute(
 mod tests {
     use super::*;
     use crate::core::manifest::{Manifest, SkillEntry};
-    use crate::core::spec::SkillFrontmatter;
+    use crate::testutil;
     use clap::Parser;
     use std::collections::HashMap;
     use std::fs;
-    use std::process::Command;
     use tempfile::TempDir;
 
-    fn make_fm(name: &str) -> SkillFrontmatter {
-        SkillFrontmatter {
-            name: name.to_string(),
-            description: format!("{} desc", name),
-            version: Some("1.0.0".into()),
-            authors: None,
-            tags: None,
-            platforms: None,
-            license: None,
-            repository: None,
-            docs: None,
-        }
-    }
-
     fn make_entry(name: &str, commit: &str, remote: &str) -> (String, SkillEntry) {
-        let fm = make_fm(name);
+        let fm = testutil::make_fm(name);
         (
             name.to_string(),
             SkillEntry::new(&format!("owner/{}", name), "", &fm, commit, remote),
         )
     }
-
-    /// Create a git repository on disk with a single SKILL.md and return its file:// URL.
-    fn create_git_repo_with_skill(temp: &TempDir, skill_content: &str) -> String {
-        let repo_dir = temp.path().join("repo");
-        fs::create_dir_all(&repo_dir).unwrap();
-        fs::write(repo_dir.join("SKILL.md"), skill_content).unwrap();
-
-        Command::new("git")
-            .args(["init"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.email", "t@t.com"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["config", "user.name", "T"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["add", "-A"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-        Command::new("git")
-            .args(["commit", "-m", "init"])
-            .current_dir(&repo_dir)
-            .output()
-            .unwrap();
-
-        format!("file://{}", repo_dir.display())
-    }
-
-    // ── tests ─────────────────────────────────────────────────────
 
     #[test]
     fn test_update_empty_manifest_returns_ok() {
@@ -583,7 +547,7 @@ mod tests {
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
 
-        let url = create_git_repo_with_skill(
+        let url = testutil::create_git_repo_with_skill(
             &temp,
             "---\nname: my-skill\ndescription: test\nversion: 1.0.0\n---\n# Hello\n",
         );
@@ -615,7 +579,10 @@ mod tests {
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
 
-        let url = create_git_repo_with_skill(&temp, "---\nname: skip-skill\ndescription: t\n---\n");
+        let url = testutil::create_git_repo_with_skill(
+            &temp,
+            "---\nname: skip-skill\ndescription: t\n---\n",
+        );
 
         // Get the real commit hash
         let clone_temp = TempDir::new().unwrap();
@@ -650,7 +617,10 @@ mod tests {
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
 
-        let url = create_git_repo_with_skill(&temp, "---\nname: verb-skip\ndescription: t\n---\n");
+        let url = testutil::create_git_repo_with_skill(
+            &temp,
+            "---\nname: verb-skip\ndescription: t\n---\n",
+        );
 
         let clone_temp = TempDir::new().unwrap();
         git::clone_repo_quiet(&url, clone_temp.path()).unwrap();
@@ -678,7 +648,10 @@ mod tests {
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
 
-        let url = create_git_repo_with_skill(&temp, "---\nname: short-hash\ndescription: t\n---\n");
+        let url = testutil::create_git_repo_with_skill(
+            &temp,
+            "---\nname: short-hash\ndescription: t\n---\n",
+        );
 
         let clone_temp = TempDir::new().unwrap();
         git::clone_repo_quiet(&url, clone_temp.path()).unwrap();
@@ -707,7 +680,10 @@ mod tests {
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
 
-        let url = create_git_repo_with_skill(&temp, "---\nname: changed\ndescription: t\n---\n");
+        let url = testutil::create_git_repo_with_skill(
+            &temp,
+            "---\nname: changed\ndescription: t\n---\n",
+        );
 
         let clone_temp = TempDir::new().unwrap();
         git::clone_repo_quiet(&url, clone_temp.path()).unwrap();
@@ -744,7 +720,7 @@ mod tests {
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
 
-        let url = create_git_repo_with_skill(
+        let url = testutil::create_git_repo_with_skill(
             &temp,
             "---\nname: group-skill-a\ndescription: a\n---\n# A\n",
         );
@@ -807,11 +783,5 @@ mod tests {
     fn test_format_commit() {
         assert_eq!(format_commit("abc1234567890abcdef"), "abc1234");
         assert_eq!(format_commit("abc"), "abc");
-    }
-
-    #[test]
-    fn test_format_date() {
-        assert_eq!(format_date("2026-06-22T12:34:56Z"), "2026-06-22");
-        assert_eq!(format_date("just-a-date"), "just-a-date");
     }
 }

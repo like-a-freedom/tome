@@ -1,5 +1,5 @@
 use clap::Parser;
-use tome::{run, Cli};
+use tome::{Cli, run};
 
 fn main() {
     let cli = Cli::parse();

@@ -7,16 +7,14 @@ pub fn create_temp_dir() -> Result<tempfile::TempDir> {
 
 pub fn ensure_skills_dir(path: &Path) -> Result<()> {
     if !path.exists() {
-        std::fs::create_dir_all(path)
-            .context("Failed to create skills directory")?;
+        std::fs::create_dir_all(path).context("Failed to create skills directory")?;
     }
     Ok(())
 }
 
 pub fn remove_skill_dir(path: &Path) -> Result<()> {
     if path.exists() {
-        std::fs::remove_dir_all(path)
-            .context("Failed to remove skill directory")?;
+        std::fs::remove_dir_all(path).context("Failed to remove skill directory")?;
     }
     Ok(())
 }
@@ -57,7 +55,11 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let skill_dir = temp.path().join("some-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(skill_dir.join("SKILL.md"), "---\nname: x\ndescription: x\n---\n").unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: x\ndescription: x\n---\n",
+        )
+        .unwrap();
 
         assert!(skill_dir.exists());
         remove_skill_dir(&skill_dir).unwrap();

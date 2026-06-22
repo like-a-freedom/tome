@@ -9,20 +9,20 @@ use crate::core::spec::SkillFrontmatter;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Manifest {
     pub version: u32,
-    pub skills: HashMap<String, SkillEntry>,
+    pub(crate) skills: HashMap<String, SkillEntry>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SkillEntry {
-    pub source: String,
-    pub path: String,
-    pub installed: String,
-    pub updated: String,
-    pub version: String,
-    pub description: String,
-    pub commit: String,
-    pub branch: String,
-    pub remote: String,
+    pub(crate) source: String,
+    pub(crate) path: String,
+    pub(crate) installed: String,
+    pub(crate) updated: String,
+    pub(crate) version: String,
+    pub(crate) description: String,
+    pub(crate) commit: String,
+    pub(crate) branch: String,
+    pub(crate) remote: String,
 }
 
 impl SkillEntry {
@@ -52,6 +52,10 @@ impl SkillEntry {
         self.version = version.to_string();
         self.updated = chrono::Utc::now().to_rfc3339();
     }
+
+    pub fn set_branch(&mut self, branch: &str) {
+        self.branch = branch.to_string();
+    }
 }
 
 impl Manifest {
@@ -62,18 +66,15 @@ impl Manifest {
                 skills: HashMap::new(),
             });
         }
-        let content = fs::read_to_string(path)
-            .context("Failed to read manifest")?;
-        let manifest: Manifest = serde_json::from_str(&content)
-            .context("Failed to parse manifest")?;
+        let content = fs::read_to_string(path).context("Failed to read manifest")?;
+        let manifest: Manifest =
+            serde_json::from_str(&content).context("Failed to parse manifest")?;
         Ok(manifest)
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
-        let content = serde_json::to_string_pretty(self)
-            .context("Failed to serialize manifest")?;
-        fs::write(path, content)
-            .context("Failed to write manifest")?;
+        let content = serde_json::to_string_pretty(self).context("Failed to serialize manifest")?;
+        fs::write(path, content).context("Failed to write manifest")?;
         Ok(())
     }
 
@@ -87,6 +88,33 @@ impl Manifest {
 
     pub fn is_tracked(&self, name: &str) -> bool {
         self.skills.contains_key(name)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.skills.is_empty()
+    }
+
+    pub fn skill_names(&self) -> Vec<String> {
+        self.skills.keys().cloned().collect()
+    }
+
+    pub fn get_skill(&self, name: &str) -> Option<&SkillEntry> {
+        self.skills.get(name)
+    }
+
+    pub fn update_skill(
+        &mut self,
+        name: &str,
+        commit: &str,
+        version: &str,
+        branch: &str,
+        description: String,
+    ) {
+        if let Some(entry) = self.skills.get_mut(name) {
+            entry.update(commit, version);
+            entry.branch = branch.to_string();
+            entry.description = description;
+        }
     }
 
     pub fn rebuild_from_directory(skills_dir: &Path) -> Result<Self> {
@@ -107,10 +135,10 @@ impl Manifest {
                 continue;
             }
 
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with('.') {
-                    continue;
-                }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && name.starts_with('.')
+            {
+                continue;
             }
 
             let skill_md = path.join("SKILL.md");
@@ -120,21 +148,23 @@ impl Manifest {
 
                 match crate::core::spec::parse_frontmatter(&content) {
                     Ok(frontmatter) => {
-                        let skill_name = path.file_name()
+                        let skill_name = path
+                            .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or("unknown")
                             .to_string();
 
-                        manifest.add_skill(&skill_name, SkillEntry::new(
-                            "unknown",
-                            "",
-                            &frontmatter,
-                            "unknown",
-                            "unknown",
-                        ));
+                        manifest.add_skill(
+                            &skill_name,
+                            SkillEntry::new("unknown", "", &frontmatter, "unknown", "unknown"),
+                        );
                     }
                     Err(e) => {
-                        eprintln!("Warning: Skipping {} — invalid frontmatter: {}", skill_md.display(), e);
+                        eprintln!(
+                            "Warning: Skipping {} — invalid frontmatter: {}",
+                            skill_md.display(),
+                            e
+                        );
                     }
                 }
             }
@@ -180,7 +210,10 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join(".skills.json");
 
-        let mut manifest = Manifest { version: 1, skills: HashMap::new() };
+        let mut manifest = Manifest {
+            version: 1,
+            skills: HashMap::new(),
+        };
         let entry = SkillEntry {
             source: "test/repo".into(),
             path: "skills/test-skill".into(),
@@ -206,24 +239,48 @@ mod tests {
 
     #[test]
     fn test_is_tracked() {
-        let mut manifest = Manifest { version: 1, skills: HashMap::new() };
-        manifest.add_skill("tracked", SkillEntry {
-            source: "s".into(), path: "p".into(), installed: "i".into(),
-            updated: "u".into(), version: "v".into(), description: "d".into(),
-            commit: "c".into(), branch: "b".into(), remote: "r".into(),
-        });
+        let mut manifest = Manifest {
+            version: 1,
+            skills: HashMap::new(),
+        };
+        manifest.add_skill(
+            "tracked",
+            SkillEntry {
+                source: "s".into(),
+                path: "p".into(),
+                installed: "i".into(),
+                updated: "u".into(),
+                version: "v".into(),
+                description: "d".into(),
+                commit: "c".into(),
+                branch: "b".into(),
+                remote: "r".into(),
+            },
+        );
         assert!(manifest.is_tracked("tracked"));
         assert!(!manifest.is_tracked("untracked"));
     }
 
     #[test]
     fn test_remove_skill() {
-        let mut manifest = Manifest { version: 1, skills: HashMap::new() };
-        manifest.add_skill("to-remove", SkillEntry {
-            source: "s".into(), path: "p".into(), installed: "i".into(),
-            updated: "u".into(), version: "v".into(), description: "d".into(),
-            commit: "c".into(), branch: "b".into(), remote: "r".into(),
-        });
+        let mut manifest = Manifest {
+            version: 1,
+            skills: HashMap::new(),
+        };
+        manifest.add_skill(
+            "to-remove",
+            SkillEntry {
+                source: "s".into(),
+                path: "p".into(),
+                installed: "i".into(),
+                updated: "u".into(),
+                version: "v".into(),
+                description: "d".into(),
+                commit: "c".into(),
+                branch: "b".into(),
+                remote: "r".into(),
+            },
+        );
         let removed = manifest.remove_skill("to-remove");
         assert!(removed.is_some());
         assert!(manifest.skills.is_empty());
@@ -241,17 +298,38 @@ mod tests {
         fs::write(&real_md, "---\nname: Real Skill\ndescription: Real\n---\n").unwrap();
 
         // Manifest references two skills: "real-skill" and "ghost-skill"
-        let mut manifest = Manifest { version: 1, skills: HashMap::new() };
-        manifest.add_skill("real-skill", SkillEntry {
-            source: "s".into(), path: "p".into(), installed: "i".into(),
-            updated: "u".into(), version: "v".into(), description: "d".into(),
-            commit: "c".into(), branch: "b".into(), remote: "r".into(),
-        });
-        manifest.add_skill("ghost-skill", SkillEntry {
-            source: "s".into(), path: "p".into(), installed: "i".into(),
-            updated: "u".into(), version: "v".into(), description: "d".into(),
-            commit: "c".into(), branch: "b".into(), remote: "r".into(),
-        });
+        let mut manifest = Manifest {
+            version: 1,
+            skills: HashMap::new(),
+        };
+        manifest.add_skill(
+            "real-skill",
+            SkillEntry {
+                source: "s".into(),
+                path: "p".into(),
+                installed: "i".into(),
+                updated: "u".into(),
+                version: "v".into(),
+                description: "d".into(),
+                commit: "c".into(),
+                branch: "b".into(),
+                remote: "r".into(),
+            },
+        );
+        manifest.add_skill(
+            "ghost-skill",
+            SkillEntry {
+                source: "s".into(),
+                path: "p".into(),
+                installed: "i".into(),
+                updated: "u".into(),
+                version: "v".into(),
+                description: "d".into(),
+                commit: "c".into(),
+                branch: "b".into(),
+                remote: "r".into(),
+            },
+        );
 
         let removed = manifest.clean_stale(&skills_dir);
         assert_eq!(removed, vec!["ghost-skill"]);
@@ -269,8 +347,12 @@ mod tests {
             fs::create_dir_all(&dir).unwrap();
             fs::write(
                 dir.join("SKILL.md"),
-                format!("---\nname: {}\ndescription: Some desc\n---\n# {}\n", name, name),
-            ).unwrap();
+                format!(
+                    "---\nname: {}\ndescription: Some desc\n---\n# {}\n",
+                    name, name
+                ),
+            )
+            .unwrap();
         }
 
         // Add a non-skill directory
@@ -303,9 +385,20 @@ mod tests {
             name: "Test".into(),
             description: "Desc".into(),
             version: Some("2.0.0".into()),
-            authors: None, tags: None, platforms: None, license: None, repository: None, docs: None,
+            authors: None,
+            tags: None,
+            platforms: None,
+            license: None,
+            repository: None,
+            docs: None,
         };
-        let entry = SkillEntry::new("test/repo", "skills/test", &fm, "abcdef7", "https://github.com/test/repo.git");
+        let entry = SkillEntry::new(
+            "test/repo",
+            "skills/test",
+            &fm,
+            "abcdef7",
+            "https://github.com/test/repo.git",
+        );
         assert_eq!(entry.source, "test/repo");
         assert_eq!(entry.path, "skills/test");
         assert_eq!(entry.version, "2.0.0");
@@ -323,7 +416,12 @@ mod tests {
             name: "NoVersion".into(),
             description: "Skill without version field".into(),
             version: None,
-            authors: None, tags: None, platforms: None, license: None, repository: None, docs: None,
+            authors: None,
+            tags: None,
+            platforms: None,
+            license: None,
+            repository: None,
+            docs: None,
         };
         let entry = SkillEntry::new("test/repo", "skills/test", &fm, "abcdef7", "url");
         assert!(
@@ -340,7 +438,12 @@ mod tests {
             name: "Test".into(),
             description: "Desc".into(),
             version: Some("1.0.0".into()),
-            authors: None, tags: None, platforms: None, license: None, repository: None, docs: None,
+            authors: None,
+            tags: None,
+            platforms: None,
+            license: None,
+            repository: None,
+            docs: None,
         };
         let mut entry = SkillEntry::new("r", "p", &fm, "oldhash", "url");
         let old_updated = entry.updated.clone();
