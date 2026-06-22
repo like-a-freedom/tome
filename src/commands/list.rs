@@ -8,7 +8,7 @@ use std::path::Path;
 use crate::core::manifest::Manifest;
 use crate::core::parse_source;
 use crate::core::spec;
-use crate::style::{self, DIM};
+use crate::style::{self, BOLD, CYAN, DIM};
 
 pub fn execute(json: bool, skills_dir: &Path, manifest_path: &Path) -> Result<()> {
     // 1. Load or rebuild manifest
@@ -136,67 +136,51 @@ fn display_version(v: &str) -> &str {
 struct TableWidths {
     name: usize,
     version: usize,
-    source: usize,
     tracked: usize,
 }
 
 impl TableWidths {
     const TRACKED_WIDTH: usize = 7;
-    const GAPS: usize = 3;
+    const GAPS: usize = 2;
     const MIN_NAME_WIDTH: usize = 4;
     const MIN_VERSION_WIDTH: usize = 7;
-    const MIN_SOURCE_WIDTH: usize = 6;
-    const MAX_NAME_WIDTH: usize = 30;
+    const MAX_NAME_WIDTH: usize = 60;
     const MAX_VERSION_WIDTH: usize = 15;
-    const MAX_SOURCE_WIDTH: usize = 40;
-    const MIN_SLACK_SOURCE: usize = 6;
     const MIN_SLACK_NAME: usize = 8;
 
     fn calculate(manifest: &Manifest, untracked: &[UntrackedSkill], term_width: usize) -> Self {
         let mut max_name = Self::MIN_NAME_WIDTH;
         let mut max_version = Self::MIN_VERSION_WIDTH;
-        let mut max_source = Self::MIN_SOURCE_WIDTH;
 
         for (name, entry) in &manifest.skills {
             max_name = max_name.max(name.len());
             max_version = max_version.max(display_version(&entry.version).len());
-            max_source = max_source.max(entry.source.len());
         }
         for skill in untracked {
             max_name = max_name.max(skill.name.len());
             max_version = max_version.max(display_version(&skill.version).len());
-            max_source = max_source.max(1);
         }
 
         let mut name_w = max_name.min(Self::MAX_NAME_WIDTH);
         let version_w = max_version.min(Self::MAX_VERSION_WIDTH);
-        let mut source_w = max_source.min(Self::MAX_SOURCE_WIDTH);
 
-        let total = name_w + version_w + source_w + Self::TRACKED_WIDTH + Self::GAPS;
+        let total = name_w + version_w + Self::TRACKED_WIDTH + Self::GAPS;
         if total > term_width.saturating_sub(1) {
             let overflow = total - term_width.saturating_sub(1);
-            let source_slack = source_w.saturating_sub(Self::MIN_SLACK_SOURCE);
             let name_slack = name_w.saturating_sub(Self::MIN_SLACK_NAME);
-            let cut_source = overflow.min(source_slack);
-            let remaining = overflow.saturating_sub(cut_source);
-            let cut_name = remaining.min(name_slack);
-            source_w -= cut_source;
+            let cut_name = overflow.min(name_slack);
             name_w -= cut_name;
-        } else {
-            let available = term_width.saturating_sub(1) - total;
-            source_w += available.min(max_source.saturating_sub(source_w));
         }
 
         TableWidths {
             name: name_w,
             version: version_w,
-            source: source_w,
             tracked: Self::TRACKED_WIDTH,
         }
     }
 
     fn total(&self) -> usize {
-        self.name + self.version + self.source + self.tracked + Self::GAPS
+        self.name + self.version + self.tracked + Self::GAPS
     }
 }
 
@@ -210,14 +194,13 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
     let w = TableWidths::calculate(manifest, untracked, cols as usize);
 
     // Build rows and group by source
-    let mut groups: BTreeMap<String, Vec<(String, String, String, bool)>> = BTreeMap::new();
+    let mut groups: BTreeMap<String, Vec<(String, String, bool)>> = BTreeMap::new();
 
     for (name, entry) in &manifest.skills {
         let label = parse_source::repo_label(&entry.source);
         groups.entry(label.to_string()).or_default().push((
             name.clone(),
             entry.version.clone(),
-            entry.source.clone(),
             true,
         ));
     }
@@ -226,7 +209,6 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
         groups.entry(String::new()).or_default().push((
             skill.name.clone(),
             skill.version.clone(),
-            String::new(),
             false,
         ));
     }
@@ -238,36 +220,37 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
 
     // Print header
     println!(
-        "{:<name_w$} {:<version_w$} {:<source_w$} {:<tracked_w$}",
+        "{:<name_w$} {:<version_w$} {:<tracked_w$}",
         "NAME",
         "VERSION",
-        "SOURCE",
         "TRACKED",
         name_w = w.name,
         version_w = w.version,
-        source_w = w.source,
         tracked_w = w.tracked,
     );
     println!("{}", "-".repeat(w.total()));
 
     // Print tracked groups (non-empty key = has source)
+    let mut first_tracked = true;
     for (source, rows) in &groups {
         if source.is_empty() {
             continue;
         }
-        // Group header
-        println!("{}", style::styled(DIM, &format!("── {} ──", source)),);
-        for (name, version, _, tracked) in rows {
+        if first_tracked {
+            first_tracked = false;
+        } else {
+            println!();
+        }
+        println!("{}{}── {} ──{}", BOLD, CYAN, source, style::RESET,);
+        for (name, version, tracked) in rows {
             let tracked_str = if *tracked { "yes" } else { "no" };
             println!(
-                "{:<name_w$} {:<version_w$} {:<source_w$} {:<tracked_w$}",
+                "{:<name_w$} {:<version_w$} {:<tracked_w$}",
                 truncate_with_ellipsis(name, w.name),
                 truncate_with_ellipsis(display_version(version), w.version),
-                "",
                 tracked_str,
                 name_w = w.name,
                 version_w = w.version,
-                source_w = w.source,
                 tracked_w = w.tracked,
             );
         }
@@ -277,17 +260,16 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
     if let Some(rows) = groups.get(&String::new())
         && !rows.is_empty()
     {
+        println!();
         println!("{}", style::styled(DIM, "── no repository ──"),);
-        for (name, version, _, _) in rows {
+        for (name, version, _) in rows {
             println!(
-                "{:<name_w$} {:<version_w$} {:<source_w$} {:<tracked_w$}",
+                "{:<name_w$} {:<version_w$} {:<tracked_w$}",
                 truncate_with_ellipsis(name, w.name),
                 truncate_with_ellipsis(display_version(version), w.version),
-                "",
                 "no",
                 name_w = w.name,
                 version_w = w.version,
-                source_w = w.source,
                 tracked_w = w.tracked,
             );
         }
