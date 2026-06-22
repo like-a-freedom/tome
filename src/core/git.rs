@@ -32,7 +32,7 @@ pub fn fetch_updates(repo_path: &Path) -> Result<()> {
 
 pub fn get_commit_hash(repo_path: &Path) -> Result<String> {
     let output = Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
+        .args(["rev-parse", "HEAD"])
         .current_dir(repo_path)
         .output()
         .context("Failed to execute git")?;
@@ -138,7 +138,7 @@ mod tests {
     fn test_get_commit_hash() {
         let repo = create_temp_git_repo();
         let hash = get_commit_hash(repo.path()).unwrap();
-        assert_eq!(hash.len(), 7);
+        assert_eq!(hash.len(), 40);
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
