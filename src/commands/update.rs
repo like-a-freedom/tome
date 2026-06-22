@@ -140,6 +140,10 @@ fn update_group(
 ) -> (String, GroupResult) {
     let label = crate::core::parse_source::repo_label(remote).to_string();
 
+    if group_idx > 0 {
+        eprintln!();
+    }
+
     if group_count > 1 {
         eprintln!(
             "{} [{}/{}] Cloning {} ({} skill{})\n",
