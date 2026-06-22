@@ -140,13 +140,9 @@ fn update_group(
 ) -> (String, GroupResult) {
     let label = crate::core::parse_source::repo_label(remote).to_string();
 
-    if group_idx > 0 {
-        eprintln!();
-    }
-
     if group_count > 1 {
         eprintln!(
-            "{} [{}/{}] Cloning {} ({} skill{})\n",
+            "{} [{}/{}] Cloning {} ({} skill{})",
             style::styled(CYAN, "\u{25b8}"),
             group_idx + 1,
             group_count,
@@ -155,7 +151,7 @@ fn update_group(
             if skill_names.len() == 1 { "" } else { "s" },
         );
     } else {
-        eprintln!("{} Cloning {}\n", style::styled(CYAN, "\u{25b8}"), label,);
+        eprintln!("{} Cloning {}", style::styled(CYAN, "\u{25b8}"), label,);
     }
 
     let temp_dir = match fs::create_temp_dir() {
@@ -183,6 +179,8 @@ fn update_group(
         git::get_commit_hash(temp_dir.path()).unwrap_or_else(|_| "unknown".to_string());
     let branch =
         git::get_branch(temp_dir.path()).unwrap_or_else(|_| crate::DEFAULT_BRANCH.to_string());
+
+    eprintln!();
 
     let mut group_result = GroupResult::default();
 
