@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn test_skills_dir_default_is_home_based() {
-        let cli = Cli::parse_from(["tome", "list"]);
+        let cli = Cli::пparse_from(["tome", "list"]);
         let dir = cli.skills_dir();
         assert!(
             dir.is_absolute(),
