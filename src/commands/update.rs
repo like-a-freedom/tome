@@ -75,10 +75,14 @@ pub fn execute(
         }
 
         if let Some(entry) = manifest.skills.get_mut(skill_name) {
-            entry.update(&commit, &frontmatter.version.unwrap_or("0.0.0".into()));
+            entry.update(&commit, &frontmatter.version.unwrap_or_default());
             entry.branch = branch;
             entry.description = frontmatter.description;
-            println!("  Updated: {} -> {} ({})", skill_name, entry.version, commit);
+            if entry.version.is_empty() {
+                println!("  Updated: {} ({})", skill_name, commit);
+            } else {
+                println!("  Updated: {} -> {} ({})", skill_name, entry.version, commit);
+            }
         }
     }
 
