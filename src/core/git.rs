@@ -1,10 +1,26 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 
+/// Clone a repo, streaming git's progress to the terminal.
 pub fn clone_repo(url: &str, dest: &Path) -> Result<()> {
+    let status = Command::new("git")
+        .args(["clone", "--depth", "1", "--progress", url])
+        .arg(dest)
+        .status()
+        .context("Failed to execute git")?;
+
+    if !status.success() {
+        bail!("git clone failed — is the repository public and the URL correct?");
+    }
+    Ok(())
+}
+
+/// Clone a repo silently (captures output). Used in tests.
+#[cfg(test)]
+pub fn clone_repo_quiet(url: &str, dest: &Path) -> Result<()> {
     let output = Command::new("git")
-        .args(["clone", "--depth", "1", url])
+        .args(["clone", "--depth", "1", "--quiet", url])
         .arg(dest)
         .output()
         .context("Failed to execute git")?;
@@ -163,7 +179,7 @@ mod tests {
         let dest_path = dest.path().join("clone");
 
         let path_str = src.path().to_string_lossy().to_string();
-        clone_repo(&path_str, &dest_path).unwrap();
+        clone_repo_quiet(&path_str, &dest_path).unwrap();
 
         assert!(dest_path.join(".git").exists());
         assert!(dest_path.join("test.txt").exists());
@@ -173,7 +189,12 @@ mod tests {
     fn test_get_remote_url_with_origin() {
         let repo = create_temp_git_repo();
         Command::new("git")
-            .args(["remote", "add", "origin", "https://github.com/test/example.git"])
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/test/example.git",
+            ])
             .current_dir(repo.path())
             .output()
             .unwrap();
@@ -186,7 +207,7 @@ mod tests {
     fn test_clone_invalid_url_fails() {
         let temp = TempDir::new().unwrap();
         let dest = temp.path().join("clone");
-        let result = clone_repo("https://github.com/nonexistent/repo.git", &dest);
+        let result = clone_repo_quiet("https://github.com/nonexistent/repo.git", &dest);
         assert!(result.is_err());
     }
 

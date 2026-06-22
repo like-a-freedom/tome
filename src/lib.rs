@@ -3,6 +3,7 @@ pub mod config;
 pub mod core;
 pub mod fs;
 pub mod progress;
+pub mod style;
 pub mod tui;
 
 use anyhow::Result;
@@ -14,9 +15,11 @@ pub fn run(cli: Cli) -> Result<()> {
     let manifest_path = cli.manifest_path();
 
     match cli.command {
-        config::Commands::Add { source, path, force } => {
-            commands::add::execute(&source, path, force, &skills_dir, &manifest_path)
-        }
+        config::Commands::Add {
+            source,
+            path,
+            force,
+        } => commands::add::execute(&source, path, force, &skills_dir, &manifest_path),
         config::Commands::Remove { name, force } => {
             commands::remove::execute(&name, force, &skills_dir, &manifest_path)
         }
