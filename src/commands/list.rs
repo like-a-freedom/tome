@@ -103,7 +103,7 @@ fn scan_untracked_skills(skills_dir: &Path, manifest: &Manifest) -> Result<Vec<U
                 name: fm.name,
                 dir_name: dir_name.to_string(),
                 description: fm.description,
-                version: fm.version.unwrap_or("0.0.0".into()),
+                version: fm.version.unwrap_or(NO_VERSION_SENTINEL.into()),
             });
         }
     }
@@ -112,17 +112,22 @@ fn scan_untracked_skills(skills_dir: &Path, manifest: &Manifest) -> Result<Vec<U
 }
 
 fn truncate_with_ellipsis(s: &str, max_width: usize) -> String {
+    let ellipsis_len = 3;
     if s.len() <= max_width {
         s.to_string()
-    } else if max_width <= 3 {
+    } else if max_width <= ellipsis_len {
         s[..max_width].to_string()
     } else {
-        format!("{}...", &s[..max_width - 3])
+        format!("{}...", &s[..max_width - ellipsis_len])
     }
 }
 
 fn display_version(v: &str) -> &str {
-    if v.is_empty() || v == "0.0.0" { "-" } else { v }
+    if v.is_empty() || v == NO_VERSION_SENTINEL {
+        "-"
+    } else {
+        v
+    }
 }
 
 struct TableWidths {
@@ -135,11 +140,19 @@ struct TableWidths {
 impl TableWidths {
     const TRACKED_WIDTH: usize = 7;
     const GAPS: usize = 3;
+    const MIN_NAME_WIDTH: usize = 4;
+    const MIN_VERSION_WIDTH: usize = 7;
+    const MIN_SOURCE_WIDTH: usize = 6;
+    const MAX_NAME_WIDTH: usize = 30;
+    const MAX_VERSION_WIDTH: usize = 15;
+    const MAX_SOURCE_WIDTH: usize = 40;
+    const MIN_SLACK_SOURCE: usize = 6;
+    const MIN_SLACK_NAME: usize = 8;
 
     fn calculate(manifest: &Manifest, untracked: &[UntrackedSkill], term_width: usize) -> Self {
-        let mut max_name = 4usize;
-        let mut max_version = 7usize;
-        let mut max_source = 6usize;
+        let mut max_name = Self::MIN_NAME_WIDTH;
+        let mut max_version = Self::MIN_VERSION_WIDTH;
+        let mut max_source = Self::MIN_SOURCE_WIDTH;
 
         for (name, entry) in &manifest.skills {
             max_name = max_name.max(name.len());
@@ -152,15 +165,15 @@ impl TableWidths {
             max_source = max_source.max(1);
         }
 
-        let mut name_w = max_name.min(30);
-        let version_w = max_version.min(15);
-        let mut source_w = max_source.min(40);
+        let mut name_w = max_name.min(Self::MAX_NAME_WIDTH);
+        let version_w = max_version.min(Self::MAX_VERSION_WIDTH);
+        let mut source_w = max_source.min(Self::MAX_SOURCE_WIDTH);
 
         let total = name_w + version_w + source_w + Self::TRACKED_WIDTH + Self::GAPS;
         if total > term_width.saturating_sub(1) {
             let overflow = total - term_width.saturating_sub(1);
-            let source_slack = source_w.saturating_sub(6);
-            let name_slack = name_w.saturating_sub(8);
+            let source_slack = source_w.saturating_sub(Self::MIN_SLACK_SOURCE);
+            let name_slack = name_w.saturating_sub(Self::MIN_SLACK_NAME);
             let cut_source = overflow.min(source_slack);
             let remaining = overflow.saturating_sub(cut_source);
             let cut_name = remaining.min(name_slack);
@@ -190,7 +203,7 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
         return;
     }
 
-    let (cols, _) = terminal::size().unwrap_or((100, 24));
+    let (cols, _) = terminal::size().unwrap_or((DEFAULT_COLS, DEFAULT_ROWS));
     let w = TableWidths::calculate(manifest, untracked, cols as usize);
 
     println!(
@@ -271,6 +284,10 @@ fn output_json(manifest: &Manifest, untracked: &[UntrackedSkill]) -> Result<()> 
     println!("{}", output);
     Ok(())
 }
+
+const NO_VERSION_SENTINEL: &str = "0.0.0";
+const DEFAULT_COLS: u16 = 100;
+const DEFAULT_ROWS: u16 = 24;
 
 struct UntrackedSkill {
     name: String,

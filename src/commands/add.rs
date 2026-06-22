@@ -16,40 +16,22 @@ pub fn execute(
     skills_dir: &Path,
     manifest_path: &Path,
 ) -> Result<()> {
-    let is_url = source.starts_with("http://")
-        || source.starts_with("https://")
-        || source.starts_with("file://")
-        || source.starts_with("git@")
-        || source.starts_with("ssh://");
-
-    let (owner_repo, git_url, skill_name) = if is_url {
-        (source.to_string(), source.to_string(), None)
-    } else {
-        let parsed = parse_source::parse_source(source)?;
-        let url = format!("https://github.com/{}/{}.git", parsed.owner, parsed.repo);
-        (
-            format!("{}/{}", parsed.owner, parsed.repo),
-            url,
-            parsed.skill,
-        )
-    };
+    let parsed_source = parse_source::Source::parse(source)?;
+    let git_url = parsed_source.git_url();
+    let label = parsed_source.label();
+    let skill_name = parsed_source.skill_name().map(String::from);
 
     if !git::is_installed() {
         bail!("Git is not installed. Please install git to use tome.");
     }
 
     // Show what we're cloning
-    let repo_label = git_url
-        .strip_prefix("https://github.com/")
-        .unwrap_or(&git_url)
-        .strip_suffix(".git")
-        .unwrap_or(&git_url);
     eprintln!(
         "\n{} {}Cloning{} {}",
         style::styled(CYAN, "\u{25b8}"),
         style::BOLD,
         style::RESET,
-        repo_label,
+        label,
     );
 
     let temp_dir = fs::create_temp_dir()?;
@@ -59,7 +41,8 @@ pub fn execute(
 
     let commit =
         git::get_commit_hash(temp_dir.path()).with_context(|| "Failed to get commit hash")?;
-    let branch = git::get_branch(temp_dir.path()).unwrap_or_else(|_| "main".to_string());
+    let branch =
+        git::get_branch(temp_dir.path()).unwrap_or_else(|_| crate::DEFAULT_BRANCH.to_string());
     let remote = git::get_remote_url(temp_dir.path()).unwrap_or_else(|_| git_url.clone());
 
     let selected_skills = if let Some(custom_path) = &path_override {
@@ -148,7 +131,7 @@ pub fn execute(
                 .into_owned()
         };
 
-        let mut entry = SkillEntry::new(&owner_repo, &path_value, frontmatter, &commit, &remote);
+        let mut entry = SkillEntry::new(&label, &path_value, frontmatter, &commit, &remote);
         entry.set_branch(&branch);
         manifest.add_skill(&frontmatter.name, entry);
 

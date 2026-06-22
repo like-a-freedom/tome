@@ -42,7 +42,7 @@ impl SkillEntry {
             version: frontmatter.version.clone().unwrap_or_default(),
             description: frontmatter.description.clone(),
             commit: commit.to_string(),
-            branch: "main".to_string(),
+            branch: crate::DEFAULT_BRANCH.to_string(),
             remote: remote.to_string(),
         }
     }

@@ -2,6 +2,23 @@ use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 
+/// Run a git command in the given directory and return its trimmed stdout.
+fn git_output(repo_path: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to execute git")?;
+
+    if !output.status.success() {
+        bail!("git {} failed", args[0]);
+    }
+
+    String::from_utf8(output.stdout)
+        .context("Invalid UTF-8")
+        .map(|s| s.trim().to_string())
+}
+
 /// Clone a repo, streaming git's progress to the terminal.
 pub fn clone_repo(url: &str, dest: &Path) -> Result<()> {
     let status = Command::new("git")
@@ -47,60 +64,15 @@ pub fn fetch_updates(repo_path: &Path) -> Result<()> {
 }
 
 pub fn get_commit_hash(repo_path: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to execute git")?;
-
-    if !output.status.success() {
-        bail!("git rev-parse failed");
-    }
-
-    let hash = String::from_utf8(output.stdout)
-        .context("Invalid UTF-8")?
-        .trim()
-        .to_string();
-
-    Ok(hash)
+    git_output(repo_path, &["rev-parse", "HEAD"])
 }
 
 pub fn get_branch(repo_path: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .args(["branch", "--show-current"])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to execute git")?;
-
-    if !output.status.success() {
-        bail!("git branch failed");
-    }
-
-    let branch = String::from_utf8(output.stdout)
-        .context("Invalid UTF-8")?
-        .trim()
-        .to_string();
-
-    Ok(branch)
+    git_output(repo_path, &["branch", "--show-current"])
 }
 
 pub fn get_remote_url(repo_path: &Path) -> Result<String> {
-    let output = Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to execute git")?;
-
-    if !output.status.success() {
-        bail!("git remote failed");
-    }
-
-    let url = String::from_utf8(output.stdout)
-        .context("Invalid UTF-8")?
-        .trim()
-        .to_string();
-
-    Ok(url)
+    git_output(repo_path, &["remote", "get-url", "origin"])
 }
 
 pub fn is_installed() -> bool {

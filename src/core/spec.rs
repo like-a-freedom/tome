@@ -3,6 +3,8 @@ use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 
+pub const MAX_SKILL_NAME_LEN: usize = 50;
+
 #[derive(Deserialize, Debug)]
 pub struct SkillFrontmatter {
     pub name: String,
@@ -168,9 +170,10 @@ pub fn validate_skill(dir_path: &Path) -> Result<SkillFrontmatter> {
     // Only the length check is unique to validation.
     let frontmatter = parse_frontmatter(&content)?;
 
-    if frontmatter.name.len() > 50 {
+    if frontmatter.name.len() > MAX_SKILL_NAME_LEN {
         bail!(
-            "Skill name must be under 50 characters (got {})",
+            "Skill name must be under {} characters (got {})",
+            MAX_SKILL_NAME_LEN,
             frontmatter.name.len()
         );
     }
