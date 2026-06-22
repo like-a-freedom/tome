@@ -142,7 +142,7 @@ fn update_group(
 
     if group_count > 1 {
         eprintln!(
-            "{} [{}/{}] Cloning {} ({} skill{})",
+            "{} [{}/{}] Cloning {} ({} skill{})\n",
             style::styled(CYAN, "\u{25b8}"),
             group_idx + 1,
             group_count,
@@ -151,7 +151,7 @@ fn update_group(
             if skill_names.len() == 1 { "" } else { "s" },
         );
     } else {
-        eprintln!("{} Cloning {}", style::styled(CYAN, "\u{25b8}"), label,);
+        eprintln!("{} Cloning {}\n", style::styled(CYAN, "\u{25b8}"), label,);
     }
 
     let temp_dir = match fs::create_temp_dir() {

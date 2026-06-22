@@ -159,7 +159,7 @@ pub fn execute(
             );
         } else {
             eprintln!(
-                "  {} Installed {} skills:",
+                "  {} Installed {} skills:\n",
                 style::styled(GREEN, "\u{2713}"),
                 installed.len(),
             );
