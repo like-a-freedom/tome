@@ -49,6 +49,92 @@ pub fn clone_repo_quiet(url: &str, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Sparse-clone a repo: fetch tree objects only, then checkout just `skills/` and root SKILL.md.
+/// Falls back silently if sparse-checkout is not supported (git < 2.25).
+pub fn clone_repo_sparse(url: &str, dest: &Path) -> Result<()> {
+    // Phase 1: Clone with blob filter, no checkout
+    let status = Command::new("git")
+        .args([
+            "clone",
+            "--filter=blob:none",
+            "--no-checkout",
+            "--depth",
+            "1",
+            "--progress",
+            url,
+        ])
+        .arg(dest)
+        .status()
+        .context("Failed to execute git (sparse clone phase 1)")?;
+
+    if !status.success() {
+        bail!("git clone failed — is the repository public and the URL correct?");
+    }
+
+    // Phase 2: Initialize sparse-checkout in cone mode
+    let init_status = Command::new("git")
+        .args(["sparse-checkout", "init", "--cone"])
+        .current_dir(dest)
+        .status()
+        .context("Failed to initialize sparse-checkout")?;
+
+    if !init_status.success() {
+        bail!("git sparse-checkout not supported on this git version");
+    }
+
+    // Phase 3: Inspect tree to decide what to fetch
+    let has_skills_dir = has_path_in_tree(dest, "skills")?;
+    let has_root_skill = has_path_in_tree(dest, "SKILL.md")?;
+
+    // Phase 4: Set sparse-checkout paths
+    let mut paths: Vec<&str> = Vec::new();
+    if has_skills_dir {
+        paths.push("skills");
+    }
+    if has_root_skill {
+        paths.push("SKILL.md");
+    }
+
+    if paths.is_empty() {
+        bail!("No SKILL.md found in repository root or skills/ directory");
+    }
+
+    let set_status = Command::new("git")
+        .args(["sparse-checkout", "set"])
+        .args(&paths)
+        .current_dir(dest)
+        .status()
+        .context("Failed to set sparse-checkout paths")?;
+
+    if !set_status.success() {
+        bail!("Failed to configure sparse-checkout");
+    }
+
+    // Phase 5: Checkout the filtered files
+    let checkout_status = Command::new("git")
+        .args(["checkout"])
+        .current_dir(dest)
+        .status()
+        .context("Failed to checkout files")?;
+
+    if !checkout_status.success() {
+        bail!("Failed to checkout files after sparse-checkout");
+    }
+
+    Ok(())
+}
+
+/// Check if a path exists in the git tree (without checking out files).
+fn has_path_in_tree(repo_path: &Path, path: &str) -> Result<bool> {
+    let output = Command::new("git")
+        .args(["ls-tree", "HEAD", "--", path])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to inspect git tree")?;
+
+    Ok(output.status.success() && !output.stdout.is_empty())
+}
+
 pub fn fetch_updates(repo_path: &Path) -> Result<()> {
     let output = Command::new("git")
         .args(["pull", "--rebase"])
@@ -175,12 +261,93 @@ mod tests {
         assert_eq!(url, "https://github.com/test/example.git");
     }
 
+    fn create_temp_git_repo_with_skills_dir() -> TempDir {
+        let temp = TempDir::new().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let skills_dir = temp.path().join("skills").join("my-skill");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: test\ndescription: test\n---\n",
+        )
+        .unwrap();
+
+        let large = temp.path().join("large-binary.bin");
+        fs::write(&large, vec![0u8; 1024 * 1024]).unwrap();
+
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        Command::new("git")
+            .args(["commit", "-m", "init with skills and large file"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        temp
+    }
+
+    #[test]
+    fn test_clone_sparse_local_repo() {
+        let src = create_temp_git_repo_with_skills_dir();
+        let dest = TempDir::new().unwrap();
+        let dest_path = dest.path().join("clone");
+
+        let path_str = src.path().to_string_lossy().to_string();
+        clone_repo_sparse(&path_str, &dest_path).unwrap();
+
+        assert!(dest_path.join(".git").exists());
+        assert!(dest_path.join("skills").exists());
+    }
+
     #[test]
     fn test_clone_invalid_url_fails() {
         let temp = TempDir::new().unwrap();
         let dest = temp.path().join("clone");
         let result = clone_repo_quiet("https://github.com/nonexistent/repo.git", &dest);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_clone_sparse_falls_back_on_no_skills() {
+        let temp = TempDir::new().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        fs::write(temp.path().join("README.md"), "no skills here").unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let dest = TempDir::new().unwrap();
+        let dest_path = dest.path().join("clone");
+        let result = clone_repo_sparse(&temp.path().to_string_lossy(), &dest_path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No SKILL.md"));
+    }
+
+    #[test]
+    fn test_has_path_in_tree() {
+        let temp = create_temp_git_repo_with_skills_dir();
+        assert!(has_path_in_tree(temp.path(), "skills").unwrap());
+        assert!(!has_path_in_tree(temp.path(), "nonexistent").unwrap());
     }
 
     #[test]
