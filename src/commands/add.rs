@@ -42,10 +42,11 @@ pub fn execute(
     if sparse && path_override.is_none() {
         let sparse_result = git::clone_repo_sparse(&git_url, temp_dir.path());
 
-        if sparse_result.is_err() {
+        if let Err(e) = sparse_result {
             eprintln!(
-                "  {} Falling back to full clone...",
+                "  {} Falling back to full clone ({})",
                 style::styled(DIM, "\u{2022}"),
+                e,
             );
             // Remove partial clone artifacts (.git dir) before retrying
             let _ = std::fs::remove_dir_all(temp_dir.path().join(".git"));
