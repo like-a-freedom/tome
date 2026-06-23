@@ -54,6 +54,10 @@ pub enum Commands {
         /// Show full update details
         #[arg(long)]
         verbose: bool,
+
+        /// Download the full repo (disable sparse clone)
+        #[arg(long)]
+        no_sparse: bool,
     },
 
     /// List installed skills
@@ -151,7 +155,8 @@ mod tests {
             cli.command,
             Commands::Update {
                 name: None,
-                verbose: false
+                verbose: false,
+                ..
             }
         ));
     }
@@ -163,7 +168,8 @@ mod tests {
             cli.command,
             Commands::Update {
                 name: None,
-                verbose: true
+                verbose: true,
+                ..
             }
         ));
     }
@@ -171,9 +177,11 @@ mod tests {
     #[test]
     fn test_update_specific_parsing() {
         let cli = Cli::parse_from(["tome", "update", "my-skill"]);
-        assert!(
-            matches!(cli.command, Commands::Update { name: Some(ref n), verbose: false } if n == "my-skill")
-        );
+        assert!(matches!(cli.command,         Commands::Update {
+            name: Some(ref n),
+            verbose: false,
+            ..
+        } if n == "my-skill"));
     }
 
     #[test]

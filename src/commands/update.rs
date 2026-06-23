@@ -130,6 +130,7 @@ fn print_update_header(group_list: &[(String, Vec<String>)]) {
     println!("{}", style::RESET);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_group(
     remote: &str,
     skill_names: &[String],
@@ -138,6 +139,7 @@ fn update_group(
     manifest: &mut Manifest,
     skills_dir: &Path,
     verbose: bool,
+    sparse: bool,
 ) -> (String, GroupResult) {
     let label = crate::core::parse_source::repo_label(remote).to_string();
 
@@ -167,7 +169,7 @@ fn update_group(
         }
     };
 
-    if let Err(e) = git::clone_repo(remote, temp_dir.path()) {
+    if let Err(e) = git::clone_repo_or_sparse(remote, temp_dir.path(), sparse) {
         eprintln!(
             "  {} Clone failed: {}",
             style::styled(YELLOW, "\u{2717}"),
@@ -367,6 +369,7 @@ fn print_summary(total_updated: usize, total_skipped: usize, total_failed: usize
 pub fn execute(
     name: Option<&str>,
     verbose: bool,
+    sparse: bool,
     skills_dir: &Path,
     manifest_path: &Path,
 ) -> Result<()> {
@@ -428,6 +431,7 @@ pub fn execute(
             &mut manifest,
             skills_dir,
             verbose,
+            sparse,
         );
         total_updated += group_result.updated.len();
         total_skipped += group_result.skipped.len();
@@ -474,7 +478,7 @@ mod tests {
         let manifest_path = skills_dir.join(".skills.json");
         fs::write(&manifest_path, r#"{"version":1,"skills":{}}"#).unwrap();
 
-        let result = execute(None, false, &skills_dir, &manifest_path);
+        let result = execute(None, false, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
     }
 
@@ -486,7 +490,13 @@ mod tests {
         let manifest_path = skills_dir.join(".skills.json");
         fs::write(&manifest_path, r#"{"version":1,"skills":{}}"#).unwrap();
 
-        let result = execute(Some("nonexistent"), false, &skills_dir, &manifest_path);
+        let result = execute(
+            Some("nonexistent"),
+            false,
+            true,
+            &skills_dir,
+            &manifest_path,
+        );
         assert!(result.is_err());
     }
 
@@ -520,7 +530,7 @@ mod tests {
         let manifest_path = skills_dir.join(".skills.json");
         manifest.save(&manifest_path).unwrap();
 
-        let result = execute(None, false, &skills_dir, &manifest_path);
+        let result = execute(None, false, true, &skills_dir, &manifest_path);
         assert!(result.is_err() || result.is_ok()); // may fail on clone, but stale entry should be cleaned
 
         let loaded = Manifest::load(&manifest_path).unwrap();
@@ -554,7 +564,7 @@ mod tests {
         let dest = skills_dir.join(&fm.name);
         normalize::copy_skill(clone_temp.path(), &dest).unwrap();
 
-        let result = execute(Some("my-skill"), false, &skills_dir, &manifest_path);
+        let result = execute(Some("my-skill"), false, true, &skills_dir, &manifest_path);
         // Should succeed (skill is up to date)
         assert!(result.is_ok());
     }
@@ -588,7 +598,7 @@ mod tests {
         let dest = skills_dir.join(&fm.name);
         normalize::copy_skill(clone_temp.path(), &dest).unwrap();
 
-        let result = execute(Some("skip-skill"), false, &skills_dir, &manifest_path);
+        let result = execute(Some("skip-skill"), false, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
 
         // Verify no update occurred
@@ -624,7 +634,7 @@ mod tests {
         let dest = skills_dir.join(&fm.name);
         normalize::copy_skill(clone_temp.path(), &dest).unwrap();
 
-        let result = execute(Some("verb-skip"), true, &skills_dir, &manifest_path);
+        let result = execute(Some("verb-skip"), true, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
     }
 
@@ -656,7 +666,7 @@ mod tests {
         let dest = skills_dir.join(&fm.name);
         normalize::copy_skill(clone_temp.path(), &dest).unwrap();
 
-        let result = execute(Some("short-hash"), false, &skills_dir, &manifest_path);
+        let result = execute(Some("short-hash"), false, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
     }
 
@@ -691,7 +701,7 @@ mod tests {
         let dest = skills_dir.join(&fm.name);
         normalize::copy_skill(clone_temp.path(), &dest).unwrap();
 
-        let result = execute(Some("changed"), false, &skills_dir, &manifest_path);
+        let result = execute(Some("changed"), false, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
 
         // Manifest should now have the real commit
@@ -743,7 +753,7 @@ mod tests {
         let dest_b = skills_dir.join("group-skill-b");
         normalize::copy_skill(clone_temp.path(), &dest_b).unwrap();
 
-        let result = execute(None, false, &skills_dir, &manifest_path);
+        let result = execute(None, false, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
 
         let loaded = Manifest::load(&manifest_path).unwrap();
