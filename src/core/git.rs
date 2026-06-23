@@ -83,7 +83,7 @@ pub fn clone_repo_sparse(url: &str, dest: &Path) -> Result<()> {
     }
 
     // Phase 3: Inspect tree to decide what to fetch
-    let has_skills_dir = has_path_in_tree(dest, "skills")?;
+    let has_skills_dir = has_path_in_tree(dest, "skills")? || has_path_in_tree(dest, "Skills")?;
     let has_root_skill = has_path_in_tree(dest, "SKILL.md")?;
 
     // Phase 4: Set sparse-checkout paths

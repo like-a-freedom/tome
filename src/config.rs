@@ -31,9 +31,9 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
 
-        /// Use sparse clone to download only skills/ directory (default: true)
-        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
-        sparse: bool,
+        /// Download the full repo (disable sparse clone)
+        #[arg(long)]
+        no_sparse: bool,
     },
 
     /// Remove an installed skill
