@@ -47,6 +47,8 @@ pub fn execute(
                 "  {} Falling back to full clone...",
                 style::styled(DIM, "\u{2022}"),
             );
+            // Remove partial clone artifacts (.git dir) before retrying
+            let _ = std::fs::remove_dir_all(temp_dir.path().join(".git"));
             git::clone_repo(&git_url, temp_dir.path())
                 .with_context(|| format!("Failed to clone {}", git_url))?;
         }
