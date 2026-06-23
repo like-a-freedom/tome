@@ -103,11 +103,18 @@ pub fn clone_repo_sparse(url: &str, dest: &Path) -> Result<()> {
 
     // Phase 3: Inspect tree to decide what to fetch
     let skills_path = find_case_insensitive_path(dest, "skills")?;
+    let claude_skills_path = if skills_path.is_none() && has_path_in_tree(dest, ".claude/skills")? {
+        Some(".claude/skills".to_string())
+    } else {
+        None
+    };
     let has_root_skill = has_path_in_tree(dest, "SKILL.md")?;
 
     // Phase 4: Set sparse-checkout paths
     let mut paths: Vec<String> = Vec::new();
     if let Some(path) = skills_path {
+        paths.push(path);
+    } else if let Some(path) = claude_skills_path {
         paths.push(path);
     }
     if has_root_skill {
@@ -115,7 +122,7 @@ pub fn clone_repo_sparse(url: &str, dest: &Path) -> Result<()> {
     }
 
     if paths.is_empty() {
-        bail!("No SKILL.md found in repository root or skills/ directory");
+        bail!("No SKILL.md found in repository root, skills/, or .claude/skills/ directory");
     }
 
     let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
@@ -514,6 +521,102 @@ mod tests {
         assert!(dest_path.join("Skills").exists());
         // Note: local clones ignore --filter, so large.bin may be present
         // This test verifies the case-insensitive path matching works
+    }
+
+    fn create_temp_git_repo_with_claude_skills_dir() -> TempDir {
+        let temp = TempDir::new().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let skills_dir = temp.path().join(".claude/skills/my-skill");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: test\ndescription: test\n---\n",
+        )
+        .unwrap();
+
+        let large = temp.path().join("large-binary.bin");
+        fs::write(&large, vec![0u8; 1024 * 1024]).unwrap();
+
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        Command::new("git")
+            .args(["commit", "-m", "init with .claude/skills and large file"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        temp
+    }
+
+    #[test]
+    fn test_clone_sparse_local_repo_with_claude_skills() {
+        let src = create_temp_git_repo_with_claude_skills_dir();
+        let dest = TempDir::new().unwrap();
+        let dest_path = dest.path().join("clone");
+
+        let path_str = src.path().to_string_lossy().to_string();
+        clone_repo_sparse(&path_str, &dest_path).unwrap();
+
+        assert!(dest_path.join(".git").exists());
+        assert!(dest_path.join(".claude").exists());
+        assert!(dest_path.join(".claude/skills").exists());
+        assert!(dest_path.join(".claude/skills/my-skill/SKILL.md").exists());
+    }
+
+    #[test]
+    fn test_clone_sparse_prefers_skills_over_claude_skills() {
+        let temp = TempDir::new().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        // Both skills/ and .claude/skills/ exist — should prefer skills/
+        let skills_dir = temp.path().join("skills/my-skill");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: test\ndescription: test\n---\n",
+        )
+        .unwrap();
+
+        let claude_dir = temp.path().join(".claude/skills/other");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join("SKILL.md"),
+            "---\nname: other\ndescription: other\n---\n",
+        )
+        .unwrap();
+
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let dest = TempDir::new().unwrap();
+        let dest_path = dest.path().join("clone");
+        let path_str = temp.path().to_string_lossy().to_string();
+        clone_repo_sparse(&path_str, &dest_path).unwrap();
+
+        // skills/ should be checked out, .claude/skills/ should not
+        assert!(dest_path.join("skills").exists());
+        assert!(!dest_path.join(".claude").exists());
     }
 
     #[test]
