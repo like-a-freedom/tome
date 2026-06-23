@@ -36,8 +36,18 @@ pub fn execute(
 
     let temp_dir = fs::create_temp_dir()?;
 
-    git::clone_repo(&git_url, temp_dir.path())
-        .with_context(|| format!("Failed to clone {}", git_url))?;
+    // Try sparse clone first (downloads only skills/ directory)
+    let sparse_result = git::clone_repo_sparse(&git_url, temp_dir.path());
+
+    if sparse_result.is_err() {
+        // Fall back to full shallow clone
+        eprintln!(
+            "  {} Falling back to full clone...",
+            style::styled(DIM, "\u{2022}"),
+        );
+        git::clone_repo(&git_url, temp_dir.path())
+            .with_context(|| format!("Failed to clone {}", git_url))?;
+    }
 
     let commit =
         git::get_commit_hash(temp_dir.path()).with_context(|| "Failed to get commit hash")?;
@@ -352,5 +362,28 @@ mod tests {
             &manifest_path,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_add_uses_sparse_clone_for_large_repo() {
+        let temp = TempDir::new().unwrap();
+        let repo_dir = temp.path().join("repo");
+        fs::create_dir_all(repo_dir.join("skills/SparseSkill")).unwrap();
+        fs::write(
+            repo_dir.join("skills/SparseSkill/SKILL.md"),
+            "---\nname: SparseSkill\ndescription: sparse test\n---\n",
+        )
+        .unwrap();
+        fs::write(repo_dir.join("large.bin"), vec![0u8; 1024 * 1024]).unwrap();
+        testutil::init_git_repo(&repo_dir);
+        let url = format!("file://{}", repo_dir.display());
+
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let manifest_path = skills_dir.join(".skills.json");
+
+        let result = execute(&url, None, false, &skills_dir, &manifest_path);
+        assert!(result.is_ok());
+        assert!(skills_dir.join("SparseSkill").join("SKILL.md").exists());
     }
 }
