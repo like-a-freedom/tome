@@ -6,6 +6,34 @@ use tempfile::TempDir;
 mod common;
 
 #[test]
+fn test_add_single_skill_in_claude_skills_dir() {
+    let temp = TempDir::new().unwrap();
+    let repo_dir = temp.path().join("repo");
+
+    fs::create_dir_all(repo_dir.join(".claude/skills/my-skill")).unwrap();
+    fs::write(
+        repo_dir.join(".claude/skills/my-skill/SKILL.md"),
+        "---\nname: ClaudeSkill\ndescription: in .claude/skills\n---\n",
+    )
+    .unwrap();
+    fs::write(repo_dir.join("large.bin"), vec![0u8; 1024 * 1024]).unwrap();
+    common::init_git_repo(&repo_dir);
+
+    let skills_dir = temp.path().join(".agents/skills");
+    let repo_url = format!("file://{}", repo_dir.display());
+
+    let mut cmd = Command::cargo_bin("tome").unwrap();
+    cmd.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .arg("add")
+        .arg(&repo_url)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("ClaudeSkill"));
+
+    assert!(skills_dir.join("ClaudeSkill").join("SKILL.md").exists());
+}
+
+#[test]
 fn test_add_single_skill_at_root() {
     let temp = TempDir::new().unwrap();
     let repo_dir = temp.path().join("repo");

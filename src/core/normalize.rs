@@ -153,6 +153,21 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
         let entry = entry?;
         let src_path = entry.path();
         let dest_path = dest.join(entry.file_name());
+
+        #[cfg(unix)]
+        if entry.file_type().is_ok_and(|t| t.is_symlink()) {
+            let target = std::fs::read_link(&src_path)
+                .with_context(|| format!("Failed to read symlink {}", src_path.display()))?;
+            std::os::unix::fs::symlink(&target, &dest_path).with_context(|| {
+                format!(
+                    "Failed to create symlink {} -> {}",
+                    dest_path.display(),
+                    target.display()
+                )
+            })?;
+            continue;
+        }
+
         if src_path.is_dir() {
             copy_dir_recursive(&src_path, &dest_path)?;
         } else {
@@ -325,6 +340,23 @@ mod tests {
         let dest = temp.path().join("dest");
         copy_dir_recursive(&src, &dest).unwrap();
         assert!(dest.join("a/b/c/file.txt").exists());
+    }
+
+    #[test]
+    fn test_copy_dir_recursive_with_symlink() {
+        let temp = TempDir::new().unwrap();
+        let src = temp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("target.txt"), "content").unwrap();
+        std::os::unix::fs::symlink("target.txt", src.join("link.txt")).unwrap();
+
+        let dest = temp.path().join("dest");
+        copy_dir_recursive(&src, &dest).unwrap();
+        assert!(dest.join("link.txt").exists());
+        assert_eq!(
+            std::fs::read_link(dest.join("link.txt")).unwrap(),
+            std::path::Path::new("target.txt")
+        );
     }
 
     #[test]
