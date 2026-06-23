@@ -37,7 +37,9 @@ pub fn execute(
 
     let temp_dir = fs::create_temp_dir()?;
 
-    if sparse {
+    // When --path is specified, always do a full clone (the target
+    // may be outside skills/ or root SKILL.md)
+    if sparse && path_override.is_none() {
         let sparse_result = git::clone_repo_sparse(&git_url, temp_dir.path());
 
         if sparse_result.is_err() {
