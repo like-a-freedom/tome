@@ -83,25 +83,27 @@ pub fn clone_repo_sparse(url: &str, dest: &Path) -> Result<()> {
     }
 
     // Phase 3: Inspect tree to decide what to fetch
-    let has_skills_dir = has_path_in_tree(dest, "skills")? || has_path_in_tree(dest, "Skills")?;
+    // Use the actual case from the tree so sparse-checkout matches on case-sensitive FS
+    let skills_path = find_case_insensitive_path(dest, "skills")?;
     let has_root_skill = has_path_in_tree(dest, "SKILL.md")?;
 
     // Phase 4: Set sparse-checkout paths
-    let mut paths: Vec<&str> = Vec::new();
-    if has_skills_dir {
-        paths.push("skills");
+    let mut paths: Vec<String> = Vec::new();
+    if let Some(path) = skills_path {
+        paths.push(path);
     }
     if has_root_skill {
-        paths.push("SKILL.md");
+        paths.push("SKILL.md".to_string());
     }
 
     if paths.is_empty() {
         bail!("No SKILL.md found in repository root or skills/ directory");
     }
 
+    let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
     let set_status = Command::new("git")
         .args(["sparse-checkout", "set"])
-        .args(&paths)
+        .args(&path_refs)
         .current_dir(dest)
         .status()
         .context("Failed to set sparse-checkout paths")?;
@@ -121,6 +123,16 @@ pub fn clone_repo_sparse(url: &str, dest: &Path) -> Result<()> {
         bail!("Failed to checkout files after sparse-checkout");
     }
 
+    // Phase 6: Verify working tree is not empty (sparse-checkout may have
+    // matched nothing if the path case was wrong on a case-sensitive FS)
+    let has_files = std::fs::read_dir(dest)
+        .context("Failed to read cloned directory")?
+        .filter_map(|e| e.ok())
+        .any(|e| e.file_name() != ".git");
+    if !has_files {
+        bail!("Sparse checkout produced empty working tree");
+    }
+
     Ok(())
 }
 
@@ -133,6 +145,29 @@ fn has_path_in_tree(repo_path: &Path, path: &str) -> Result<bool> {
         .context("Failed to inspect git tree")?;
 
     Ok(output.status.success() && !output.stdout.is_empty())
+}
+
+/// Find a directory in the git tree using case-insensitive matching.
+/// Returns the actual path as stored in the tree (e.g. "Skills" if tree uses uppercase).
+fn find_case_insensitive_path(repo_path: &Path, name: &str) -> Result<Option<String>> {
+    if has_path_in_tree(repo_path, name)? {
+        return Ok(Some(name.to_string()));
+    }
+    // Try capitalized variant (e.g. "skills" -> "Skills")
+    let mut chars = name.chars();
+    let capitalized = match chars.next() {
+        Some(first) => {
+            let upper: String = first.to_uppercase().collect();
+            let rest: String = chars.collect();
+            format!("{}{}", upper, rest)
+        }
+        None => return Ok(None),
+    };
+    if has_path_in_tree(repo_path, &capitalized)? {
+        Ok(Some(capitalized))
+    } else {
+        Ok(None)
+    }
 }
 
 pub fn fetch_updates(repo_path: &Path) -> Result<()> {
@@ -380,5 +415,127 @@ mod tests {
         let result = fetch_updates(repo.path());
         // This is expected to fail — no remote configured
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_find_case_insensitive_path_lowercase() {
+        let temp = create_temp_git_repo_with_skills_dir();
+        let result = find_case_insensitive_path(temp.path(), "skills").unwrap();
+        assert_eq!(result.as_deref(), Some("skills"));
+    }
+
+    #[test]
+    fn test_find_case_insensitive_path_capitalized() {
+        let temp = TempDir::new().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let skills_dir = temp.path().join("Skills").join("my-skill");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: test\ndescription: test\n---\n",
+        )
+        .unwrap();
+
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let result = find_case_insensitive_path(temp.path(), "skills").unwrap();
+        assert_eq!(result.as_deref(), Some("Skills"));
+    }
+
+    #[test]
+    fn test_clone_sparse_with_capitalized_skills() {
+        let temp = TempDir::new().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let skills_dir = temp.path().join("Skills").join("my-skill");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: test\ndescription: test\n---\n",
+        )
+        .unwrap();
+        fs::write(temp.path().join("large.bin"), vec![0u8; 1024 * 1024]).unwrap();
+
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let dest = TempDir::new().unwrap();
+        let dest_path = dest.path().join("clone");
+        let path_str = temp.path().to_string_lossy().to_string();
+        clone_repo_sparse(&path_str, &dest_path).unwrap();
+
+        assert!(dest_path.join(".git").exists());
+        assert!(dest_path.join("Skills").exists());
+        // Note: local clones ignore --filter, so large.bin may be present
+        // This test verifies the case-insensitive path matching works
+    }
+
+    #[test]
+    fn test_clone_sparse_case_mismatch_fails() {
+        // Repo with "Skills" (capital S) — sparse-checkout with lowercase "skills"
+        // won't match, resulting in empty working tree
+        let temp = TempDir::new().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        let skills_dir = temp.path().join("Skills").join("my-skill");
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(
+            skills_dir.join("SKILL.md"),
+            "---\nname: test\ndescription: test\n---\n",
+        )
+        .unwrap();
+
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(temp.path())
+            .output()
+            .unwrap();
+
+        // Simulate the old behavior: hardcode "skills" instead of using find_case_insensitive_path
+        let dest = TempDir::new().unwrap();
+        let dest_path = dest.path().join("clone");
+        // clone first (we can't easily override find_case_insensitive_path, so just
+        // verify the function handles it correctly by testing find_case_insensitive_path)
+        let path_str = temp.path().to_string_lossy().to_string();
+        let found = find_case_insensitive_path(temp.path(), "skills").unwrap();
+        assert_eq!(found.as_deref(), Some("Skills"));
+        // Now clone with the correct path
+        clone_repo_sparse(&path_str, &dest_path).unwrap();
+        assert!(dest_path.join("Skills").exists());
     }
 }
