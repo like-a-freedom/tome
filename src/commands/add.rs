@@ -13,6 +13,7 @@ pub fn execute(
     source: &str,
     path_override: Option<String>,
     force: bool,
+    sparse: bool,
     skills_dir: &Path,
     manifest_path: &Path,
 ) -> Result<()> {
@@ -36,15 +37,18 @@ pub fn execute(
 
     let temp_dir = fs::create_temp_dir()?;
 
-    // Try sparse clone first (downloads only skills/ directory)
-    let sparse_result = git::clone_repo_sparse(&git_url, temp_dir.path());
+    if sparse {
+        let sparse_result = git::clone_repo_sparse(&git_url, temp_dir.path());
 
-    if sparse_result.is_err() {
-        // Fall back to full shallow clone
-        eprintln!(
-            "  {} Falling back to full clone...",
-            style::styled(DIM, "\u{2022}"),
-        );
+        if sparse_result.is_err() {
+            eprintln!(
+                "  {} Falling back to full clone...",
+                style::styled(DIM, "\u{2022}"),
+            );
+            git::clone_repo(&git_url, temp_dir.path())
+                .with_context(|| format!("Failed to clone {}", git_url))?;
+        }
+    } else {
         git::clone_repo(&git_url, temp_dir.path())
             .with_context(|| format!("Failed to clone {}", git_url))?;
     }
@@ -221,7 +225,7 @@ mod tests {
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
 
-        let result = execute(&url, None, false, &skills_dir, &manifest_path);
+        let result = execute(&url, None, false, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
         assert!(skills_dir.join("UrlSkill").join("SKILL.md").exists());
     }
@@ -238,6 +242,7 @@ mod tests {
             "https://github.com/nonexistent/repo.git",
             None,
             false,
+            true,
             &skills_dir,
             &manifest_path,
         );
@@ -252,7 +257,14 @@ mod tests {
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
 
-        let result = execute("invalid-no-slash", None, false, &skills_dir, &manifest_path);
+        let result = execute(
+            "invalid-no-slash",
+            None,
+            false,
+            true,
+            &skills_dir,
+            &manifest_path,
+        );
         assert!(result.is_err());
     }
 
@@ -273,7 +285,7 @@ mod tests {
         let manifest_path = skills_dir.join(".skills.json");
         fs::write(&manifest_path, r#"{"version":1,"skills":{}}"#).unwrap();
 
-        let result = execute(&url, None, false, &skills_dir, &manifest_path);
+        let result = execute(&url, None, false, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
 
         // Should NOT overwrite the existing directory
@@ -298,7 +310,7 @@ mod tests {
         let manifest_path = skills_dir.join(".skills.json");
         fs::write(&manifest_path, r#"{"version":1,"skills":{}}"#).unwrap();
 
-        let result = execute(&url, None, true, &skills_dir, &manifest_path);
+        let result = execute(&url, None, true, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
     }
 
@@ -323,6 +335,7 @@ mod tests {
             &url,
             Some("skills/myskill".to_string()),
             false,
+            true,
             &skills_dir,
             &manifest_path,
         );
@@ -358,6 +371,7 @@ mod tests {
             &format!("{}@nonexistent", url),
             None,
             false,
+            true,
             &skills_dir,
             &manifest_path,
         );
@@ -382,8 +396,24 @@ mod tests {
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
 
-        let result = execute(&url, None, false, &skills_dir, &manifest_path);
+        let result = execute(&url, None, false, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
         assert!(skills_dir.join("SparseSkill").join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn test_add_no_sparse_uses_full_clone() {
+        let temp = TempDir::new().unwrap();
+        let url = testutil::create_git_repo_with_skill(
+            &temp,
+            "---\nname: FullClone\ndescription: test\n---\n",
+        );
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let manifest_path = skills_dir.join(".skills.json");
+
+        let result = execute(&url, None, false, false, &skills_dir, &manifest_path);
+        assert!(result.is_ok());
+        assert!(skills_dir.join("FullClone").join("SKILL.md").exists());
     }
 }

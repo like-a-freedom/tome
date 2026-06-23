@@ -24,7 +24,8 @@ pub fn run(cli: Cli) -> Result<()> {
             source,
             path,
             force,
-        } => commands::add::execute(&source, path, force, &skills_dir, &manifest_path),
+            sparse,
+        } => commands::add::execute(&source, path, force, sparse, &skills_dir, &manifest_path),
         config::Commands::Remove { name, force } => {
             commands::remove::execute(&name, force, &skills_dir, &manifest_path)
         }
