@@ -387,3 +387,31 @@ fn test_update_specific_skill_not_found() {
         .failure()
         .stderr(predicate::str::contains("not found"));
 }
+
+#[test]
+fn test_add_sparse_clone_with_skills_dir() {
+    let temp = TempDir::new().unwrap();
+    let repo_dir = temp.path().join("repo");
+
+    fs::create_dir_all(repo_dir.join("skills/my-skill")).unwrap();
+    fs::write(
+        repo_dir.join("skills/my-skill/SKILL.md"),
+        "---\nname: IntSparseSkill\ndescription: integration test\n---\n",
+    )
+    .unwrap();
+    fs::write(repo_dir.join("large.bin"), vec![0u8; 1024 * 1024]).unwrap();
+    common::init_git_repo(&repo_dir);
+
+    let skills_dir = temp.path().join(".agents/skills");
+    let repo_url = format!("file://{}", repo_dir.display());
+
+    let mut cmd = Command::cargo_bin("tome").unwrap();
+    cmd.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .arg("add")
+        .arg(&repo_url)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("IntSparseSkill"));
+
+    assert!(skills_dir.join("IntSparseSkill").join("SKILL.md").exists());
+}
