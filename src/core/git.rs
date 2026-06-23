@@ -65,25 +65,25 @@ pub fn clone_repo_sparse(url: &str, dest: &Path) -> Result<()> {
         ])
         .arg(dest)
         .status()
-        .context("Failed to execute git (sparse clone phase 1)")?;
+        .context("Failed to execute git (clone phase 1)")?;
 
     if !status.success() {
         bail!("git clone failed — is the repository public and the URL correct?");
     }
 
     // Phase 2: Initialize sparse-checkout in cone mode
-    let init_status = Command::new("git")
+    let init_output = Command::new("git")
         .args(["sparse-checkout", "init", "--cone"])
         .current_dir(dest)
-        .status()
+        .output()
         .context("Failed to initialize sparse-checkout")?;
 
-    if !init_status.success() {
-        bail!("git sparse-checkout not supported on this git version");
+    if !init_output.status.success() {
+        let stderr = String::from_utf8_lossy(&init_output.stderr);
+        bail!("git sparse-checkout not supported: {}", stderr.trim());
     }
 
     // Phase 3: Inspect tree to decide what to fetch
-    // Use the actual case from the tree so sparse-checkout matches on case-sensitive FS
     let skills_path = find_case_insensitive_path(dest, "skills")?;
     let has_root_skill = has_path_in_tree(dest, "SKILL.md")?;
 
@@ -101,18 +101,21 @@ pub fn clone_repo_sparse(url: &str, dest: &Path) -> Result<()> {
     }
 
     let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
-    let set_status = Command::new("git")
+    let set_output = Command::new("git")
         .args(["sparse-checkout", "set"])
         .args(&path_refs)
         .current_dir(dest)
-        .status()
+        .output()
         .context("Failed to set sparse-checkout paths")?;
 
-    if !set_status.success() {
-        bail!("Failed to configure sparse-checkout");
+    if !set_output.status.success() {
+        let stderr = String::from_utf8_lossy(&set_output.stderr);
+        bail!("Failed to configure sparse-checkout: {}", stderr.trim());
     }
 
-    // Phase 5: Checkout the filtered files
+    // Phase 5: Checkout the filtered files (triggers on-demand blob fetch)
+    // Use .status() to let git's progress show on the terminal
+    eprintln!("  \u{2022} Fetching skill files...");
     let checkout_status = Command::new("git")
         .args(["checkout"])
         .current_dir(dest)
@@ -123,8 +126,7 @@ pub fn clone_repo_sparse(url: &str, dest: &Path) -> Result<()> {
         bail!("Failed to checkout files after sparse-checkout");
     }
 
-    // Phase 6: Verify working tree is not empty (sparse-checkout may have
-    // matched nothing if the path case was wrong on a case-sensitive FS)
+    // Phase 6: Verify working tree is not empty
     let has_files = std::fs::read_dir(dest)
         .context("Failed to read cloned directory")?
         .filter_map(|e| e.ok())
