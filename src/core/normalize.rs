@@ -40,22 +40,31 @@ pub fn detect_repo_type(repo_path: &Path) -> Result<RepoType> {
         return Ok(RepoType::SingleSkillAtRoot);
     }
 
-    let skills_dir = repo_path.join("skills");
-    if skills_dir.exists() && skills_dir.is_dir() {
-        let skills = find_skills_in_dir(&skills_dir)?;
-        match skills.len() {
-            0 => bail!("No SKILL.md files found in skills/ directory"),
-            1 => {
-                let skill = skills.into_iter().next().unwrap();
-                Ok(RepoType::SingleSkillInDir {
-                    name: skill.name,
-                    path: skill.path,
-                })
-            }
-            _ => Ok(RepoType::MultiSkill(skills)),
+    for subdir in &["skills", ".claude/skills"] {
+        if let Some(rt) = check_skills_subdir(repo_path, subdir)? {
+            return Ok(rt);
         }
-    } else {
-        bail!("No SKILL.md found in repository root or skills/ directory")
+    }
+
+    bail!("No SKILL.md found in repository root, skills/, or .claude/skills/ directory")
+}
+
+fn check_skills_subdir(repo_path: &Path, subdir: &str) -> Result<Option<RepoType>> {
+    let dir = repo_path.join(subdir);
+    if !dir.exists() || !dir.is_dir() {
+        return Ok(None);
+    }
+    let skills = find_skills_in_dir(&dir)?;
+    match skills.len() {
+        0 => bail!("No SKILL.md files found in {subdir} directory"),
+        1 => {
+            let skill = skills.into_iter().next().unwrap();
+            Ok(Some(RepoType::SingleSkillInDir {
+                name: skill.name,
+                path: skill.path,
+            }))
+        }
+        _ => Ok(Some(RepoType::MultiSkill(skills))),
     }
 }
 
@@ -366,6 +375,55 @@ mod tests {
                 assert!(names.contains(&"skill-b"));
             }
             _ => panic!("Expected MultiSkill"),
+        }
+    }
+
+    #[test]
+    fn test_detect_single_skill_in_claude_skills() {
+        let temp = TempDir::new().unwrap();
+        let skill_dir = temp.path().join(".claude/skills/my-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        make_skill_md(&skill_dir, "my-skill", "A test skill");
+
+        let repo_type = detect_repo_type(temp.path()).unwrap();
+        assert!(matches!(repo_type, RepoType::SingleSkillInDir { .. }));
+    }
+
+    #[test]
+    fn test_detect_multi_skill_in_claude_skills() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join(".claude/skills");
+
+        for name in &["skill-a", "skill-b"] {
+            let dir = skills_dir.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            make_skill_md(&dir, name, "Test");
+        }
+
+        let repo_type = detect_repo_type(temp.path()).unwrap();
+        match repo_type {
+            RepoType::MultiSkill(skills) => assert_eq!(skills.len(), 2),
+            _ => panic!("Expected MultiSkill"),
+        }
+    }
+
+    #[test]
+    fn test_detect_prefers_skills_over_claude_skills() {
+        let temp = TempDir::new().unwrap();
+
+        // Both skills/ and .claude/skills/ exist — should prefer skills/
+        let skill_dir = temp.path().join("skills/my-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        make_skill_md(&skill_dir, "preferred", "Should be this one");
+
+        let claude_dir = temp.path().join(".claude/skills/other");
+        fs::create_dir_all(&claude_dir).unwrap();
+        make_skill_md(&claude_dir, "other", "Should not be picked");
+
+        let repo_type = detect_repo_type(temp.path()).unwrap();
+        match repo_type {
+            RepoType::SingleSkillInDir { name, .. } => assert_eq!(name, "preferred"),
+            _ => panic!("Expected SingleSkillInDir"),
         }
     }
 
