@@ -176,7 +176,7 @@ impl Manifest {
     pub fn clean_stale(&mut self, skills_dir: &Path) -> Vec<String> {
         let mut stale = Vec::new();
 
-        for (name, _) in &self.skills {
+        for name in self.skills.keys() {
             let skill_dir = skills_dir.join(name);
             if !skill_dir.exists() {
                 stale.push(name.clone());

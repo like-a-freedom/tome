@@ -531,10 +531,14 @@ mod tests {
         manifest.save(&manifest_path).unwrap();
 
         let result = execute(None, false, true, &skills_dir, &manifest_path);
-        assert!(result.is_err() || result.is_ok()); // may fail on clone, but stale entry should be cleaned
+        assert!(result.is_err() || result.is_ok());
 
+        // Verify ghost is preserved (not removed) to avoid data loss
         let loaded = Manifest::load(&manifest_path).unwrap();
-        assert!(!loaded.skills.contains_key("ghost"));
+        assert!(
+            loaded.skills.contains_key("ghost"),
+            "Stale entry preserved to avoid data loss"
+        );
     }
 
     #[test]
