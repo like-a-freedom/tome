@@ -15,10 +15,10 @@ pub fn github_url(owner: &str, repo: &str) -> String {
 }
 
 pub fn repo_label(url: &str) -> &str {
-    url.strip_prefix(GITHUB_URL_PREFIX)
-        .unwrap_or(url)
+    let without_prefix = url.strip_prefix(GITHUB_URL_PREFIX).unwrap_or(url);
+    without_prefix
         .strip_suffix(".git")
-        .unwrap_or(url)
+        .unwrap_or(without_prefix)
 }
 
 /// Resolved source: either a raw URL or an owner/repo pair.
@@ -147,5 +147,31 @@ mod tests {
     fn test_parse_multiple_at_symbols() {
         let p = parse_source("owner/repo@skill@extra").unwrap();
         assert_eq!(p.skill.as_deref(), Some("skill@extra"));
+    }
+
+    #[test]
+    fn test_repo_label_url_with_git_suffix() {
+        assert_eq!(
+            repo_label("https://github.com/owner/repo.git"),
+            "owner/repo"
+        );
+    }
+
+    #[test]
+    fn test_repo_label_url_without_git_suffix() {
+        assert_eq!(repo_label("https://github.com/owner/repo"), "owner/repo");
+    }
+
+    #[test]
+    fn test_repo_label_non_github_url() {
+        assert_eq!(
+            repo_label("https://gitlab.com/owner/repo"),
+            "https://gitlab.com/owner/repo"
+        );
+    }
+
+    #[test]
+    fn test_repo_label_plain_string() {
+        assert_eq!(repo_label("owner/repo"), "owner/repo");
     }
 }
