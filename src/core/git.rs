@@ -33,6 +33,24 @@ pub fn clone_repo(url: &str, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Clone a repo, preferring sparse clone with fallback to full clone when:
+/// - sparse-checkout is not supported (git < 2.25)
+/// - repository has no `skills/` or root SKILL.md
+pub fn clone_repo_or_sparse(url: &str, dest: &Path, sparse: bool) -> Result<()> {
+    if !sparse {
+        return clone_repo(url, dest);
+    }
+
+    match clone_repo_sparse(url, dest) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            eprintln!("  \u{2022} Falling back to full clone ({})", e);
+            let _ = std::fs::remove_dir_all(dest.join(".git"));
+            clone_repo(url, dest)
+        }
+    }
+}
+
 /// Clone a repo silently (captures output). Used in tests.
 #[cfg(test)]
 pub fn clone_repo_quiet(url: &str, dest: &Path) -> Result<()> {

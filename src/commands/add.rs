@@ -37,26 +37,11 @@ pub fn execute(
 
     let temp_dir = fs::create_temp_dir()?;
 
-    // When --path is specified, always do a full clone (the target
+    // When --path is specified, use a full clone (the target
     // may be outside skills/ or root SKILL.md)
-    if sparse && path_override.is_none() {
-        let sparse_result = git::clone_repo_sparse(&git_url, temp_dir.path());
-
-        if let Err(e) = sparse_result {
-            eprintln!(
-                "  {} Falling back to full clone ({})",
-                style::styled(DIM, "\u{2022}"),
-                e,
-            );
-            // Remove partial clone artifacts (.git dir) before retrying
-            let _ = std::fs::remove_dir_all(temp_dir.path().join(".git"));
-            git::clone_repo(&git_url, temp_dir.path())
-                .with_context(|| format!("Failed to clone {}", git_url))?;
-        }
-    } else {
-        git::clone_repo(&git_url, temp_dir.path())
-            .with_context(|| format!("Failed to clone {}", git_url))?;
-    }
+    let do_sparse = sparse && path_override.is_none();
+    git::clone_repo_or_sparse(&git_url, temp_dir.path(), do_sparse)
+        .with_context(|| format!("Failed to clone {}", git_url))?;
 
     let commit =
         git::get_commit_hash(temp_dir.path()).with_context(|| "Failed to get commit hash")?;
