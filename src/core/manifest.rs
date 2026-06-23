@@ -174,19 +174,16 @@ impl Manifest {
     }
 
     pub fn clean_stale(&mut self, skills_dir: &Path) -> Vec<String> {
-        let mut removed = Vec::new();
+        let mut stale = Vec::new();
 
-        self.skills.retain(|name, _| {
+        for (name, _) in &self.skills {
             let skill_dir = skills_dir.join(name);
             if !skill_dir.exists() {
-                removed.push(name.clone());
-                false
-            } else {
-                true
+                stale.push(name.clone());
             }
-        });
+        }
 
-        removed
+        stale
     }
 }
 
@@ -334,7 +331,45 @@ mod tests {
         let removed = manifest.clean_stale(&skills_dir);
         assert_eq!(removed, vec!["ghost-skill"]);
         assert!(manifest.is_tracked("real-skill"));
-        assert!(!manifest.is_tracked("ghost-skill"));
+        assert!(
+            manifest.is_tracked("ghost-skill"),
+            "Stale entry preserved to avoid data loss"
+        );
+    }
+
+    #[test]
+    fn test_clean_stale_preserves_entries_for_missing_dirs() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        // Manifest references a skill whose directory doesn't exist
+        let mut manifest = Manifest {
+            version: 1,
+            skills: HashMap::new(),
+        };
+        manifest.add_skill(
+            "orphan",
+            SkillEntry {
+                source: "owner/repo".into(),
+                path: "skills/orphan".into(),
+                installed: "i".into(),
+                updated: "u".into(),
+                version: "1.0.0".into(),
+                description: "Important skill".into(),
+                commit: "abc123".into(),
+                branch: "main".into(),
+                remote: "https://github.com/owner/repo".into(),
+            },
+        );
+
+        let removed = manifest.clean_stale(&skills_dir);
+        // Should report the stale entry but NOT remove it
+        assert_eq!(removed, vec!["orphan"]);
+        assert!(
+            manifest.is_tracked("orphan"),
+            "Stale entry should be preserved to avoid data loss"
+        );
     }
 
     #[test]
