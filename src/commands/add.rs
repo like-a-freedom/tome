@@ -73,15 +73,14 @@ pub fn execute(
                     spec::validate_skill(temp_dir.path()).context("Invalid SKILL.md")?;
                 vec![(temp_dir.path().to_path_buf(), frontmatter)]
             }
-            normalize::RepoType::SingleSkillInDir { name, path: _ } => {
+            normalize::RepoType::SingleSkillInDir { name, path } => {
                 if let Some(ref requested) = skill_name
                     && requested != &name
                 {
                     bail!("Requested skill '{}' but found '{}'", requested, name);
                 }
-                let skill_path = temp_dir.path().join("skills").join(&name);
-                let frontmatter = spec::validate_skill(&skill_path).context("Invalid SKILL.md")?;
-                vec![(skill_path, frontmatter)]
+                let frontmatter = spec::validate_skill(&path).context("Invalid SKILL.md")?;
+                vec![(path, frontmatter)]
             }
             normalize::RepoType::MultiSkill(skills) => {
                 let selected = if let Some(ref requested) = skill_name {
