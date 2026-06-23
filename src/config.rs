@@ -30,6 +30,10 @@ pub enum Commands {
         /// Overwrite if already installed
         #[arg(long)]
         force: bool,
+
+        /// Use sparse clone to download only skills/ directory (default: true)
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        sparse: bool,
     },
 
     /// Remove an installed skill
