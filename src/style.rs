@@ -8,7 +8,6 @@ pub const DIM: &str = "\x1b[2m";
 pub const GREEN: &str = "\x1b[32m";
 pub const YELLOW: &str = "\x1b[33m";
 pub const CYAN: &str = "\x1b[36m";
-pub const RED: &str = "\x1b[31m";
 
 /// Wrap `s` in ANSI escape codes: `{code}{s}{RESET}`.
 pub fn styled(code: &str, s: &str) -> String {

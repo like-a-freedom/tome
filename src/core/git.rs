@@ -197,20 +197,6 @@ fn find_case_insensitive_path(repo_path: &Path, name: &str) -> Result<Option<Str
     }
 }
 
-pub fn fetch_updates(repo_path: &Path) -> Result<()> {
-    let output = Command::new("git")
-        .args(["pull", "--rebase"])
-        .current_dir(repo_path)
-        .output()
-        .context("Failed to execute git")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git pull failed: {}", stderr);
-    }
-    Ok(())
-}
-
 pub fn get_commit_hash(repo_path: &Path) -> Result<String> {
     git_output(repo_path, &["rev-parse", "HEAD"])
 }
@@ -413,13 +399,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fetch_updates_on_non_repo_fails() {
-        let temp = TempDir::new().unwrap();
-        let result = fetch_updates(temp.path());
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_get_commit_hash_on_non_repo_fails() {
         let temp = TempDir::new().unwrap();
         let result = get_commit_hash(temp.path());
@@ -430,17 +409,6 @@ mod tests {
     fn test_get_branch_on_non_repo_fails() {
         let temp = TempDir::new().unwrap();
         let result = get_branch(temp.path());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_fetch_updates_success() {
-        // fetch_updates runs "git pull --rebase" which needs a remote
-        // On a fresh local repo with no remote, pull fails but we just need to verify the function runs
-        let repo = create_temp_git_repo();
-        // fetch_updates will fail because no remote, but we test the error path
-        let result = fetch_updates(repo.path());
-        // This is expected to fail — no remote configured
         assert!(result.is_err());
     }
 

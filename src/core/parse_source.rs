@@ -37,11 +37,24 @@ impl Source {
         if is_url(source) {
             return Ok(Source::Url(source.to_string()));
         }
-        let parsed = parse_source(source)?;
+
+        let (repo_part, skill) = match source.split_once('@') {
+            Some((r, s)) => (r, Some(s.to_string())),
+            None => (source, None),
+        };
+
+        let (owner, repo) = repo_part.split_once('/').ok_or_else(|| {
+            anyhow::anyhow!("Invalid source format. Expected: owner/repo or owner/repo@skill-name")
+        })?;
+
+        if owner.is_empty() || repo.is_empty() {
+            anyhow::bail!("Invalid source format. Expected: owner/repo or owner/repo@skill-name");
+        }
+
         Ok(Source::OwnerRepo {
-            owner: parsed.owner,
-            repo: parsed.repo,
-            skill: parsed.skill,
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            skill,
         })
     }
 
@@ -67,65 +80,34 @@ impl Source {
     }
 }
 
-#[derive(Debug)]
-pub struct ParsedSource {
-    pub owner: String,
-    pub repo: String,
-    pub skill: Option<String>,
-}
-
-pub fn parse_source(source: &str) -> Result<ParsedSource> {
-    let (repo_part, skill) = match source.split_once('@') {
-        Some((r, s)) => (r, Some(s.to_string())),
-        None => (source, None),
-    };
-
-    let (owner, repo) = repo_part.split_once('/').ok_or_else(|| {
-        anyhow::anyhow!("Invalid source format. Expected: owner/repo or owner/repo@skill-name")
-    })?;
-
-    if owner.is_empty() || repo.is_empty() {
-        anyhow::bail!("Invalid source format. Expected: owner/repo or owner/repo@skill-name");
-    }
-
-    Ok(ParsedSource {
-        owner: owner.to_string(),
-        repo: repo.to_string(),
-        skill,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_parse_simple() {
-        let p = parse_source("owner/repo").unwrap();
-        assert_eq!(p.owner, "owner");
-        assert_eq!(p.repo, "repo");
-        assert!(p.skill.is_none());
+        let s = Source::parse("owner/repo").unwrap();
+        assert_eq!(s.label(), "owner/repo");
+        assert!(s.skill_name().is_none());
     }
 
     #[test]
     fn test_parse_with_skill() {
-        let p = parse_source("owner/repo@my-skill").unwrap();
-        assert_eq!(p.owner, "owner");
-        assert_eq!(p.repo, "repo");
-        assert_eq!(p.skill.as_deref(), Some("my-skill"));
+        let s = Source::parse("owner/repo@my-skill").unwrap();
+        assert_eq!(s.label(), "owner/repo");
+        assert_eq!(s.skill_name(), Some("my-skill"));
     }
 
     #[test]
     fn test_parse_with_dots_and_hyphens() {
-        let p = parse_source("org-name/repo.name@skill-v2.1").unwrap();
-        assert_eq!(p.owner, "org-name");
-        assert_eq!(p.repo, "repo.name");
-        assert_eq!(p.skill.as_deref(), Some("skill-v2.1"));
+        let s = Source::parse("org-name/repo.name@skill-v2.1").unwrap();
+        assert_eq!(s.label(), "org-name/repo.name");
+        assert_eq!(s.skill_name(), Some("skill-v2.1"));
     }
 
     #[test]
     fn test_parse_no_slash() {
-        let result = parse_source("justastring");
+        let result = Source::parse("justastring");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("owner/repo"));
@@ -133,20 +115,18 @@ mod tests {
 
     #[test]
     fn test_parse_empty_parts() {
-        let result = parse_source("/repo");
-        assert!(result.is_err());
+        assert!(Source::parse("/repo").is_err());
     }
 
     #[test]
     fn test_parse_empty_repo() {
-        let result = parse_source("owner/");
-        assert!(result.is_err());
+        assert!(Source::parse("owner/").is_err());
     }
 
     #[test]
     fn test_parse_multiple_at_symbols() {
-        let p = parse_source("owner/repo@skill@extra").unwrap();
-        assert_eq!(p.skill.as_deref(), Some("skill@extra"));
+        let s = Source::parse("owner/repo@skill@extra").unwrap();
+        assert_eq!(s.skill_name(), Some("skill@extra"));
     }
 
     #[test]
