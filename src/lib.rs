@@ -5,7 +5,6 @@ pub mod fs;
 pub mod style;
 pub mod tui;
 
-#[cfg(test)]
 pub mod testutil;
 
 /// Default git branch name used when branch detection fails.
