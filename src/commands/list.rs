@@ -31,7 +31,7 @@ pub fn execute(json: bool, skills_dir: &Path, manifest_path: &Path) -> Result<()
     };
 
     // 2. Check for stale entries (report but don't remove to preserve data)
-    let stale = manifest.clean_stale(skills_dir);
+    let stale = manifest.find_stale(skills_dir);
     if !stale.is_empty() {
         eprintln!(
             "Warning: {} manifest {} not found on disk: {}",

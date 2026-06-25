@@ -173,7 +173,7 @@ impl Manifest {
         Ok(manifest)
     }
 
-    pub fn clean_stale(&mut self, skills_dir: &Path) -> Vec<String> {
+    pub fn find_stale(&self, skills_dir: &Path) -> Vec<String> {
         let mut stale = Vec::new();
 
         for name in self.skills.keys() {
@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clean_stale_removes_deleted_skills() {
+    fn test_find_stale_detects_missing_dirs() {
         let temp = TempDir::new().unwrap();
         let skills_dir = temp.path().join("skills");
 
@@ -328,7 +328,7 @@ mod tests {
             },
         );
 
-        let removed = manifest.clean_stale(&skills_dir);
+        let removed = manifest.find_stale(&skills_dir);
         assert_eq!(removed, vec!["ghost-skill"]);
         assert!(manifest.is_tracked("real-skill"));
         assert!(
@@ -338,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clean_stale_preserves_entries_for_missing_dirs() {
+    fn test_find_stale_preserves_entries() {
         let temp = TempDir::new().unwrap();
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
@@ -363,7 +363,7 @@ mod tests {
             },
         );
 
-        let removed = manifest.clean_stale(&skills_dir);
+        let removed = manifest.find_stale(&skills_dir);
         // Should report the stale entry but NOT remove it
         assert_eq!(removed, vec!["orphan"]);
         assert!(
