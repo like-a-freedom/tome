@@ -117,12 +117,14 @@ fn scan_untracked_skills(skills_dir: &Path, manifest: &Manifest) -> Result<Vec<U
 
 fn truncate_with_ellipsis(s: &str, max_width: usize) -> String {
     let ellipsis_len = 3;
-    if s.len() <= max_width {
+    let char_count = s.chars().count();
+    if char_count <= max_width {
         s.to_string()
     } else if max_width <= ellipsis_len {
-        s[..max_width].to_string()
+        s.chars().take(max_width).collect()
     } else {
-        format!("{}...", &s[..max_width - ellipsis_len])
+        let truncated: String = s.chars().take(max_width - ellipsis_len).collect();
+        format!("{}...", truncated)
     }
 }
 
@@ -558,5 +560,39 @@ mod tests {
         // Should not match partial "0.0.0" in longer strings
         assert_eq!(display_version("0.0.1"), "0.0.1");
         assert_eq!(display_version("10.0.0"), "10.0.0");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_ascii_no_truncation() {
+        assert_eq!(truncate_with_ellipsis("hello", 10), "hello");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_ascii_truncation() {
+        assert_eq!(truncate_with_ellipsis("hello world", 8), "hello...");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_exact_fit() {
+        assert_eq!(truncate_with_ellipsis("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_small_width() {
+        // max_width < ellipsis_len: no room for "...", just truncate
+        assert_eq!(truncate_with_ellipsis("hello", 2), "he");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_unicode() {
+        // Russian: "привет" = 6 chars, each multi-byte in UTF-8
+        // max_width=4: take(4-3)=1 char + "..."
+        assert_eq!(truncate_with_ellipsis("привет", 4), "п...");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_unicode_small_width() {
+        // Emoji: "🚀🚀🚀" = 3 chars, max_width < ellipsis_len
+        assert_eq!(truncate_with_ellipsis("🚀🚀🚀", 2), "🚀🚀");
     }
 }
