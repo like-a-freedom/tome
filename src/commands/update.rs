@@ -130,16 +130,19 @@ fn print_update_header(group_list: &[(String, Vec<String>)]) {
     println!("{}", style::RESET);
 }
 
-#[allow(clippy::too_many_arguments)]
+struct UpdateContext<'a> {
+    manifest: &'a mut Manifest,
+    skills_dir: &'a Path,
+    verbose: bool,
+    sparse: bool,
+}
+
 fn update_group(
     remote: &str,
     skill_names: &[String],
     group_idx: usize,
     group_count: usize,
-    manifest: &mut Manifest,
-    skills_dir: &Path,
-    verbose: bool,
-    sparse: bool,
+    ctx: &mut UpdateContext<'_>,
 ) -> (String, GroupResult) {
     let label = crate::core::parse_source::repo_label(remote).to_string();
 
@@ -169,7 +172,7 @@ fn update_group(
         }
     };
 
-    if let Err(e) = git::clone_repo_or_sparse(remote, temp_dir.path(), sparse) {
+    if let Err(e) = git::clone_repo_or_sparse(remote, temp_dir.path(), ctx.sparse) {
         eprintln!(
             "  {} Clone failed: {}",
             style::styled(YELLOW, "\u{2717}"),
@@ -188,7 +191,7 @@ fn update_group(
     let mut group_result = GroupResult::default();
 
     for skill_name in skill_names {
-        let (old_commit, entry_path) = match manifest.get_skill(skill_name) {
+        let (old_commit, entry_path) = match ctx.manifest.get_skill(skill_name) {
             Some(e) => (e.commit.clone(), e.path.clone()),
             None => continue,
         };
@@ -198,7 +201,7 @@ fn update_group(
         let frontmatter = match spec::validate_skill(&skill_path) {
             Ok(fm) => fm,
             Err(e) => {
-                if verbose {
+                if ctx.verbose {
                     eprintln!(
                         "  {} Skipping {} — invalid SKILL.md: {}",
                         style::styled(YELLOW, "\u{2717}"),
@@ -214,7 +217,7 @@ fn update_group(
         };
 
         if format_commit(&new_commit) == format_commit(&old_commit) {
-            if verbose {
+            if ctx.verbose {
                 println!(
                     "  {} Already up to date: {} ({})",
                     style::styled(DIM, "\u{2713}"),
@@ -228,9 +231,9 @@ fn update_group(
             continue;
         }
 
-        let dest_dir = skills_dir.join(skill_name);
+        let dest_dir = ctx.skills_dir.join(skill_name);
         if let Err(e) = normalize::copy_skill(&skill_path, &dest_dir) {
-            if verbose {
+            if ctx.verbose {
                 eprintln!(
                     "  {} Failed to copy {}: {}",
                     style::styled(YELLOW, "\u{2717}"),
@@ -245,7 +248,7 @@ fn update_group(
         }
 
         let version = frontmatter.version.unwrap_or_default();
-        manifest.update_skill(
+        ctx.manifest.update_skill(
             skill_name,
             &new_commit,
             &version,
@@ -253,7 +256,7 @@ fn update_group(
             frontmatter.description,
         );
 
-        if verbose {
+        if ctx.verbose {
             if version.is_empty() {
                 println!(
                     "  {} Updated: {} ({} -> {})",
@@ -428,10 +431,12 @@ pub fn execute(
             skill_names,
             group_idx,
             group_count,
-            &mut manifest,
-            skills_dir,
-            verbose,
-            sparse,
+            &mut UpdateContext {
+                manifest: &mut manifest,
+                skills_dir,
+                verbose,
+                sparse,
+            },
         );
         total_updated += group_result.updated.len();
         total_skipped += group_result.skipped.len();
@@ -521,11 +526,11 @@ mod tests {
         };
         manifest.add_skill(
             "real",
-            make_entry("real", "abc1234", "https://example.com/repo.git").1,
+            make_entry("real", "abc1234", "file:///nonexistent").1,
         );
         manifest.add_skill(
             "ghost",
-            make_entry("ghost", "def5678", "https://example.com/repo.git").1,
+            make_entry("ghost", "def5678", "file:///nonexistent").1,
         );
         let manifest_path = skills_dir.join(".skills.json");
         manifest.save(&manifest_path).unwrap();
