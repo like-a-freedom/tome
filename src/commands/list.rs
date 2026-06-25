@@ -12,7 +12,7 @@ use crate::style::{self, BOLD, CYAN, DIM};
 
 pub fn execute(json: bool, skills_dir: &Path, manifest_path: &Path) -> Result<()> {
     // 1. Load or rebuild manifest
-    let (mut manifest, was_rebuilt) = if !manifest_path.exists() {
+    let (manifest, was_rebuilt) = if !manifest_path.exists() {
         let rebuilt = Manifest::rebuild_from_directory(skills_dir)?;
         if json {
             // Continue silently — manifest will be saved at the end if skills exist
