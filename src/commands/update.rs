@@ -375,7 +375,7 @@ pub fn execute(
 ) -> Result<()> {
     let mut manifest = Manifest::load(manifest_path)?;
 
-    let stale = manifest.clean_stale(skills_dir);
+    let stale = manifest.find_stale(skills_dir);
     if !stale.is_empty() {
         eprintln!(
             "{} Skipping {} stale entries: {}",
