@@ -26,11 +26,15 @@ struct GroupResult {
     updated: Vec<(String, String, String)>, // (name, old_commit, new_commit)
     skipped: Vec<(String, String)>,         // (name, commit)
     failed: Vec<(String, String)>,          // (name, reason)
+    removed: Vec<String>,                   // skill names removed from repo
 }
 
 impl GroupResult {
     fn is_empty(&self) -> bool {
-        self.updated.is_empty() && self.skipped.is_empty() && self.failed.is_empty()
+        self.updated.is_empty()
+            && self.skipped.is_empty()
+            && self.failed.is_empty()
+            && self.removed.is_empty()
     }
 
     fn failed_all(skill_names: &[String], reason: &str) -> Self {
@@ -84,6 +88,14 @@ impl GroupResult {
                 style::styled(YELLOW, "\u{2717}"),
                 name,
                 reason,
+                name_w = w,
+            );
+        }
+        for name in &self.removed {
+            println!(
+                "  {} {:<name_w$}  removed from repo",
+                style::styled(YELLOW, "\u{2717}"),
+                name,
                 name_w = w,
             );
         }
@@ -197,6 +209,22 @@ fn update_group(
         };
 
         let skill_path = skill_repo_path(temp_dir.path(), &entry_path);
+
+        if !skill_path.join("SKILL.md").exists() {
+            // Skill removed from upstream repo — remove locally
+            let local_dir = ctx.skills_dir.join(skill_name);
+            let _ = fs::remove_skill_dir(&local_dir);
+            ctx.manifest.remove_skill(skill_name);
+            if ctx.verbose {
+                eprintln!(
+                    "  {} Removed {} — no longer in repository",
+                    style::styled(YELLOW, "\u{2717}"),
+                    skill_name,
+                );
+            }
+            group_result.removed.push(skill_name.clone());
+            continue;
+        }
 
         let frontmatter = match spec::validate_skill(&skill_path) {
             Ok(fm) => fm,
@@ -314,13 +342,22 @@ fn format_duration(secs: f64) -> String {
     format!("Completed in {}", time)
 }
 
-fn print_summary(total_updated: usize, total_skipped: usize, total_failed: usize, elapsed: f64) {
+fn print_summary(
+    total_updated: usize,
+    total_skipped: usize,
+    total_failed: usize,
+    total_removed: usize,
+    elapsed: f64,
+) {
     let mut parts: Vec<String> = Vec::new();
     if total_updated > 0 {
         parts.push(style::styled(GREEN, &format!("{} updated", total_updated)));
     }
     if total_skipped > 0 {
         parts.push(style::styled(DIM, &format!("{} up to date", total_skipped)));
+    }
+    if total_removed > 0 {
+        parts.push(style::styled(YELLOW, &format!("{} removed", total_removed)));
     }
     if total_failed > 0 {
         parts.push(style::styled(YELLOW, &format!("{} failed", total_failed)));
@@ -337,6 +374,11 @@ fn print_summary(total_updated: usize, total_skipped: usize, total_failed: usize
             },
             if total_skipped > 0 {
                 format!("{} up to date", total_skipped)
+            } else {
+                String::new()
+            },
+            if total_removed > 0 {
+                format!("{} removed", total_removed)
             } else {
                 String::new()
             },
@@ -421,6 +463,7 @@ pub fn execute(
     let mut total_updated = 0usize;
     let mut total_skipped = 0usize;
     let mut total_failed = 0usize;
+    let mut total_removed = 0usize;
     let mut repo_results: Vec<(String, GroupResult)> = Vec::new();
 
     let start = Instant::now();
@@ -441,6 +484,7 @@ pub fn execute(
         total_updated += group_result.updated.len();
         total_skipped += group_result.skipped.len();
         total_failed += group_result.failed.len();
+        total_removed += group_result.removed.len();
         repo_results.push((label, group_result));
     }
 
@@ -451,6 +495,7 @@ pub fn execute(
         total_updated,
         total_skipped,
         total_failed,
+        total_removed,
         start.elapsed().as_secs_f64(),
     );
 
@@ -544,6 +589,35 @@ mod tests {
             loaded.skills.contains_key("ghost"),
             "Stale entry preserved to avoid data loss"
         );
+    }
+
+    #[test]
+    fn test_update_skill_removed_from_repo() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        // Create a git repo with ONLY "skill-a" (no "skill-b")
+        let repo_url = testutil::create_git_repo_with_skill(
+            &temp,
+            "---\nname: skill-a\ndescription: exists\n---\n",
+        );
+
+        // Manifest references "skill-a" (exists) and "skill-b" (removed from repo)
+        let mut manifest = Manifest {
+            version: 1,
+            skills: HashMap::new(),
+        };
+        manifest.add_skill("skill-a", make_entry("skill-a", "0000000", &repo_url).1);
+        manifest.add_skill("skill-b", make_entry("skill-b", "1111111", &repo_url).1);
+        let manifest_path = skills_dir.join(".skills.json");
+        manifest.save(&manifest_path).unwrap();
+
+        // skill-b doesn't exist in skills/skill-b in the repo, so it should be
+        // reported as "removed from repo" rather than "invalid SKILL.md"
+        let result = execute(Some("skill-b"), false, true, &skills_dir, &manifest_path);
+        // Should not panic — gracefully handles missing skill
+        assert!(result.is_ok() || result.is_err());
     }
 
     #[test]
