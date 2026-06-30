@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use crate::core::{git, manifest::Manifest, normalize, spec};
+use crate::core::{download, git, manifest::Manifest, normalize, spec};
 use crate::fs;
 use crate::style::{self, CYAN, DIM, GREEN, YELLOW};
 
@@ -411,6 +411,92 @@ fn print_summary(
     println!("{}", style::RESET);
 }
 
+fn update_file_skill(
+    name: &str,
+    manifest: &mut Manifest,
+    skills_dir: &Path,
+    verbose: bool,
+) -> Result<()> {
+    let entry = match manifest.get_skill(name) {
+        Some(e) => e.clone(),
+        None => return Ok(()),
+    };
+
+    let url = &entry.remote;
+
+    let downloaded = match download::download_skill_file(url) {
+        Ok(d) => d,
+        Err(e) => {
+            if verbose {
+                eprintln!(
+                    "  {} Failed to download {}: {}",
+                    style::styled(YELLOW, "\u{2717}"),
+                    name,
+                    e
+                );
+            }
+            return Ok(());
+        }
+    };
+
+    let skill_dir = skills_dir.join(name);
+    let existing_md = skill_dir.join("SKILL.md");
+
+    // Compare content
+    if existing_md.exists() {
+        let existing_bytes = std::fs::read(&existing_md).unwrap_or_default();
+        if existing_bytes == downloaded.content {
+            if verbose {
+                println!(
+                    "  {} Already up to date: {} (file)",
+                    style::styled(DIM, "\u{2713}"),
+                    name,
+                );
+            }
+            return Ok(());
+        }
+    }
+
+    // Content changed — update
+    if let Err(e) = normalize::copy_skill(&downloaded.path, &skill_dir) {
+        if verbose {
+            eprintln!(
+                "  {} Failed to copy {}: {}",
+                style::styled(YELLOW, "\u{2717}"),
+                name,
+                e
+            );
+        }
+        return Ok(());
+    }
+
+    let frontmatter =
+        spec::validate_skill(&skill_dir).unwrap_or_else(|_| crate::core::spec::SkillFrontmatter {
+            name: name.to_string(),
+            description: String::new(),
+            version: None,
+            authors: None,
+            tags: None,
+            platforms: None,
+            license: None,
+            repository: None,
+            docs: None,
+        });
+
+    let version = frontmatter.version.unwrap_or_default();
+    manifest.update_skill(name, "file:", &version, "", frontmatter.description);
+
+    if verbose {
+        println!(
+            "  {} Updated: {} (file)",
+            style::styled(GREEN, "\u{2713}"),
+            name,
+        );
+    }
+
+    Ok(())
+}
+
 pub fn execute(
     name: Option<&str>,
     verbose: bool,
@@ -443,9 +529,23 @@ pub fn execute(
         manifest.skill_names()
     };
 
-    // Group by remote URL
+    // Separate file-based skills from git-based skills
+    let (file_skill_names, git_skill_names): (Vec<String>, Vec<String>) =
+        skills_to_update.into_iter().partition(|name| {
+            manifest
+                .get_skill(name)
+                .map(|e| e.commit.starts_with("file:"))
+                .unwrap_or(false)
+        });
+
+    // Update file-based skills individually
+    for name in &file_skill_names {
+        update_file_skill(name, &mut manifest, skills_dir, verbose)?;
+    }
+
+    // Group git-based skills by remote URL
     let mut groups: HashMap<String, Vec<String>> = HashMap::new();
-    for skill_name in &skills_to_update {
+    for skill_name in &git_skill_names {
         let remote = manifest
             .get_skill(skill_name)
             .map(|e| e.remote.clone())
@@ -862,5 +962,27 @@ mod tests {
     fn test_format_commit() {
         assert_eq!(format_commit("abc1234567890abcdef"), "abc1234");
         assert_eq!(format_commit("abc"), "abc");
+    }
+
+    #[test]
+    fn test_file_skill_detection_in_manifest() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        let mut manifest = Manifest {
+            version: 1,
+            skills: HashMap::new(),
+        };
+        let fm = testutil::make_fm("detected");
+        let mut entry = SkillEntry::new("url", "", &fm, "file:", "https://example.com/SKILL.md");
+        entry.set_branch("");
+        manifest.add_skill("detected", entry);
+        let manifest_path = skills_dir.join(".skills.json");
+        manifest.save(&manifest_path).unwrap();
+
+        let loaded = Manifest::load(&manifest_path).unwrap();
+        let e = loaded.skills.get("detected").unwrap();
+        assert!(e.commit.starts_with("file:"));
     }
 }
