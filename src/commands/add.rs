@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use std::path::Path;
 
 use crate::core::{
-    git,
+    download, git,
     manifest::{Manifest, SkillEntry},
     normalize, parse_source, spec,
 };
@@ -18,6 +18,18 @@ pub fn execute(
     manifest_path: &Path,
 ) -> Result<()> {
     let parsed_source = parse_source::Source::parse(source)?;
+
+    // File URL path: download single file, skip git entirely
+    if parsed_source.is_file_url() {
+        return execute_file_url(
+            &parsed_source,
+            path_override,
+            force,
+            skills_dir,
+            manifest_path,
+        );
+    }
+
     let git_url = parsed_source.git_url()?;
     let label = parsed_source.label();
     let skill_name = parsed_source.skill_name().map(String::from);
@@ -192,6 +204,91 @@ pub fn execute(
     if installed.is_empty() && skipped_tracked.is_empty() && skipped_existing.is_empty() {
         eprintln!("  No new skills installed.");
     }
+
+    Ok(())
+}
+
+fn execute_file_url(
+    source: &parse_source::Source,
+    path_override: Option<String>,
+    force: bool,
+    skills_dir: &Path,
+    manifest_path: &Path,
+) -> Result<()> {
+    let url = match source {
+        parse_source::Source::FileUrl { url } => url.clone(),
+        _ => anyhow::bail!("Expected file URL"),
+    };
+
+    let label = source.label();
+
+    eprintln!(
+        "\n{} {}Downloading{} {}",
+        style::styled(CYAN, "\u{25b8}"),
+        style::BOLD,
+        style::RESET,
+        label,
+    );
+
+    let downloaded = download::download_skill_file(&url)?;
+
+    let repo_path = if let Some(ref custom_path) = path_override {
+        downloaded.path.join(custom_path)
+    } else {
+        downloaded.path
+    };
+
+    let frontmatter =
+        spec::validate_skill(&repo_path).context("Downloaded file is not a valid SKILL.md")?;
+
+    fs::ensure_skills_dir(skills_dir)?;
+    let mut manifest = Manifest::load(manifest_path)?;
+
+    let dest_dir = skills_dir.join(&frontmatter.name);
+    if dest_dir.exists() && !force {
+        if manifest.is_tracked(&frontmatter.name) {
+            eprintln!(
+                "  {} {} is already installed (use --force to overwrite)",
+                style::styled(DIM, "\u{2713}"),
+                frontmatter.name,
+            );
+            return Ok(());
+        } else {
+            eprintln!(
+                "  {} {} directory exists (not tracked, use --force)",
+                style::styled(YELLOW, "\u{26a0}"),
+                frontmatter.name,
+            );
+            return Ok(());
+        }
+    }
+
+    normalize::copy_skill(&repo_path, &dest_dir)?;
+
+    let path_value = path_override.unwrap_or_default();
+
+    let mut entry = SkillEntry::new(&label, &path_value, &frontmatter, "file:", &url);
+    entry.set_branch("");
+    manifest.add_skill(&frontmatter.name, entry);
+    manifest.save(manifest_path)?;
+
+    let version_tag = frontmatter
+        .version
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .map(|v| format!(" v{}", v))
+        .unwrap_or_default();
+
+    let skill_display = format!("{}{}", frontmatter.name, version_tag);
+
+    eprintln!();
+    eprintln!(
+        "  {} Installed {}{}{}",
+        style::styled(GREEN, "\u{2713}"),
+        style::BOLD,
+        skill_display,
+        style::RESET,
+    );
 
     Ok(())
 }
@@ -404,5 +501,27 @@ mod tests {
         let result = execute(&url, None, false, false, &skills_dir, &manifest_path);
         assert!(result.is_ok());
         assert!(skills_dir.join("FullClone").join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn test_add_file_url_invalid_skill_md() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let manifest_path = skills_dir.join(".skills.json");
+
+        // Create a file that is NOT a valid SKILL.md (no frontmatter)
+        let bad_file = temp.path().join("not-a-skill.md");
+        fs::write(&bad_file, "Just some plain text, no frontmatter.\n").unwrap();
+        let file_url = format!("file://{}", bad_file.display());
+
+        let result = execute(&file_url, None, false, true, &skills_dir, &manifest_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Invalid SKILL.md") || err.contains("not a valid"),
+            "Expected SKILL.md validation error, got: {}",
+            err
+        );
     }
 }
