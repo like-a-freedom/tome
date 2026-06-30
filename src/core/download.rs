@@ -24,7 +24,16 @@ pub fn download_skill_file(url: &str) -> Result<DownloadedSkill> {
     }
 
     let output = Command::new("curl")
-        .args(["--silent", "--fail", "--location", url])
+        .args([
+            "--silent",
+            "--fail",
+            "--location",
+            "--max-time",
+            "30",
+            "--connect-timeout",
+            "10",
+            url,
+        ])
         .output()
         .with_context(|| format!("Failed to execute curl for {}", url))?;
 
