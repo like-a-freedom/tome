@@ -44,6 +44,9 @@ pub fn detect_repo_type(repo_path: &Path) -> Result<RepoType> {
         }
     }
 
+    // Scan top-level directories for SKILL.md (e.g. tikoci/routeros-skills)
+    let top_level_skills = find_top_level_skills(repo_path)?;
+
     let root_skill = repo_path.join("SKILL.md");
     if root_skill.exists() {
         let content = fs::read_to_string(&root_skill)
@@ -51,19 +54,26 @@ pub fn detect_repo_type(repo_path: &Path) -> Result<RepoType> {
         let frontmatter = crate::core::spec::parse_frontmatter(&content)
             .context("Failed to parse root SKILL.md frontmatter")?;
 
-        match subdir_skills {
-            None => Ok(RepoType::SingleSkillAtRoot),
-            Some(skills) => {
-                // Root skill + subdir skills → MultiSkill (include root)
-                let root_info = SkillInfo {
-                    name: frontmatter.name,
-                    path: repo_path.to_path_buf(),
-                    description: Some(frontmatter.description),
-                };
+        let root_info = SkillInfo {
+            name: frontmatter.name,
+            path: repo_path.to_path_buf(),
+            description: Some(frontmatter.description),
+        };
+
+        match (&subdir_skills, &top_level_skills) {
+            (Some(skills), _) => {
+                // Root skill + subdir skills → MultiSkill
                 let mut all_skills = vec![root_info];
-                all_skills.extend(skills);
+                all_skills.extend(skills.iter().cloned());
                 Ok(RepoType::MultiSkill(all_skills))
             }
+            (None, top_levels) if !top_levels.is_empty() => {
+                // Root skill + top-level skill dirs → MultiSkill
+                let mut all_skills = vec![root_info];
+                all_skills.extend(top_levels.iter().cloned());
+                Ok(RepoType::MultiSkill(all_skills))
+            }
+            _ => Ok(RepoType::SingleSkillAtRoot),
         }
     } else if let Some(skills) = subdir_skills {
         if skills.len() == 1 {
@@ -75,9 +85,60 @@ pub fn detect_repo_type(repo_path: &Path) -> Result<RepoType> {
         } else {
             Ok(RepoType::MultiSkill(skills))
         }
+    } else if !top_level_skills.is_empty() {
+        // No root SKILL.md, no skills/ dir — top-level dirs are the skills
+        if top_level_skills.len() == 1 {
+            let skill = top_level_skills.into_iter().next().unwrap();
+            Ok(RepoType::SingleSkillInDir {
+                name: skill.name,
+                path: skill.path,
+            })
+        } else {
+            Ok(RepoType::MultiSkill(top_level_skills))
+        }
     } else {
-        bail!("No SKILL.md found in repository root, skills/, or .claude/skills/ directory")
+        bail!(
+            "No SKILL.md found in repository root, skills/, .claude/skills/ directory, or top-level skill directories"
+        )
     }
+}
+
+/// Scan only immediate children of `repo_path` for directories containing SKILL.md.
+/// Does not recurse into subdirectories.
+fn find_top_level_skills(repo_path: &Path) -> Result<Vec<SkillInfo>> {
+    let mut skills = Vec::new();
+
+    for entry in fs::read_dir(repo_path)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if !path.is_dir() {
+            continue;
+        }
+
+        if let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && (SKIP_DIRS_IN_SCAN.contains(&name) || name.starts_with('.'))
+        {
+            continue;
+        }
+
+        let skill_md = path.join("SKILL.md");
+        if skill_md.exists() {
+            let content = fs::read_to_string(&skill_md)
+                .context(format!("Failed to read {}", skill_md.display()))?;
+
+            let frontmatter = crate::core::spec::parse_frontmatter(&content)
+                .context("Failed to parse SKILL.md frontmatter")?;
+
+            skills.push(SkillInfo {
+                name: frontmatter.name,
+                path,
+                description: Some(frontmatter.description),
+            });
+        }
+    }
+
+    Ok(skills)
 }
 
 fn find_skills_in_subdir(repo_path: &Path, subdir: &str) -> Result<Option<Vec<SkillInfo>>> {
@@ -518,6 +579,76 @@ mod tests {
         let skill_b = temp.path().join("skills/skill-b");
         fs::create_dir_all(&skill_b).unwrap();
         make_skill_md(&skill_b, "skill-b", "Skill B");
+
+        let repo_type = detect_repo_type(temp.path()).unwrap();
+        match repo_type {
+            RepoType::MultiSkill(skills) => {
+                assert_eq!(skills.len(), 3);
+                let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+                assert!(names.contains(&"root-skill"));
+                assert!(names.contains(&"skill-a"));
+                assert!(names.contains(&"skill-b"));
+            }
+            other => panic!("Expected MultiSkill, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_top_level_skill_dirs() {
+        // tikoci/routeros-skills pattern: no skills/ dir, each skill is a top-level directory
+        let temp = TempDir::new().unwrap();
+
+        for name in &[
+            "routeros-firewall",
+            "routeros-fundamentals",
+            "routeros-scripting",
+        ] {
+            let dir = temp.path().join(name);
+            fs::create_dir_all(&dir).unwrap();
+            make_skill_md(&dir, name, &format!("Skill {name}"));
+        }
+
+        let repo_type = detect_repo_type(temp.path()).unwrap();
+        match repo_type {
+            RepoType::MultiSkill(skills) => {
+                assert_eq!(skills.len(), 3);
+                let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+                assert!(names.contains(&"routeros-firewall"));
+                assert!(names.contains(&"routeros-fundamentals"));
+                assert!(names.contains(&"routeros-scripting"));
+            }
+            other => panic!("Expected MultiSkill, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_top_level_single_skill_dir() {
+        let temp = TempDir::new().unwrap();
+        let dir = temp.path().join("my-skill");
+        fs::create_dir_all(&dir).unwrap();
+        make_skill_md(&dir, "my-skill", "A skill");
+
+        let repo_type = detect_repo_type(temp.path()).unwrap();
+        match repo_type {
+            RepoType::SingleSkillInDir { name, path } => {
+                assert_eq!(name, "my-skill");
+                assert!(path.join("SKILL.md").exists());
+            }
+            other => panic!("Expected SingleSkillInDir, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_root_skill_plus_top_level_dirs_is_multi() {
+        let temp = TempDir::new().unwrap();
+
+        make_skill_md(temp.path(), "root-skill", "Root skill");
+
+        for name in &["skill-a", "skill-b"] {
+            let dir = temp.path().join(name);
+            fs::create_dir_all(&dir).unwrap();
+            make_skill_md(&dir, name, "Test");
+        }
 
         let repo_type = detect_repo_type(temp.path()).unwrap();
         match repo_type {

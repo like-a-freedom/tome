@@ -39,7 +39,7 @@ pub fn download_skill_file(url: &str) -> Result<DownloadedSkill> {
     }
 
     // Validate it's valid UTF-8 (SKILL.md is text)
-    let _text = String::from_utf8(content.clone())
+    std::str::from_utf8(&content)
         .with_context(|| format!("Downloaded file is not valid UTF-8: {}", url))?;
 
     let temp_dir =

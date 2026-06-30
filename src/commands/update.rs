@@ -423,24 +423,20 @@ fn update_file_skill(
     skills_dir: &Path,
     verbose: bool,
 ) -> FileUpdateResult {
-    let entry = match manifest.get_skill(name) {
-        Some(e) => e.clone(),
+    let url = match manifest.get_skill(name) {
+        Some(e) => e.remote.clone(),
         None => return FileUpdateResult::Skipped,
     };
 
-    let url = &entry.remote;
-
-    let downloaded = match download::download_skill_file(url) {
+    let downloaded = match download::download_skill_file(&url) {
         Ok(d) => d,
         Err(e) => {
-            if verbose {
-                eprintln!(
-                    "  {} Failed to download {}: {}",
-                    style::styled(YELLOW, "\u{2717}"),
-                    name,
-                    e
-                );
-            }
+            eprintln!(
+                "  {} Failed to download {}: {}",
+                style::styled(YELLOW, "\u{2717}"),
+                name,
+                e
+            );
             return FileUpdateResult::Failed;
         }
     };
