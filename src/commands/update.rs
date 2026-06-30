@@ -411,15 +411,21 @@ fn print_summary(
     println!("{}", style::RESET);
 }
 
+enum FileUpdateResult {
+    Updated,
+    Skipped,
+    Failed,
+}
+
 fn update_file_skill(
     name: &str,
     manifest: &mut Manifest,
     skills_dir: &Path,
     verbose: bool,
-) -> Result<()> {
+) -> FileUpdateResult {
     let entry = match manifest.get_skill(name) {
         Some(e) => e.clone(),
-        None => return Ok(()),
+        None => return FileUpdateResult::Skipped,
     };
 
     let url = &entry.remote;
@@ -435,7 +441,7 @@ fn update_file_skill(
                     e
                 );
             }
-            return Ok(());
+            return FileUpdateResult::Failed;
         }
     };
 
@@ -453,7 +459,7 @@ fn update_file_skill(
                     name,
                 );
             }
-            return Ok(());
+            return FileUpdateResult::Skipped;
         }
     }
 
@@ -467,7 +473,7 @@ fn update_file_skill(
                 e
             );
         }
-        return Ok(());
+        return FileUpdateResult::Failed;
     }
 
     let frontmatter =
@@ -494,7 +500,7 @@ fn update_file_skill(
         );
     }
 
-    Ok(())
+    FileUpdateResult::Updated
 }
 
 pub fn execute(
@@ -539,8 +545,15 @@ pub fn execute(
         });
 
     // Update file-based skills individually
+    let mut file_updated = 0usize;
+    let mut file_skipped = 0usize;
+    let mut file_failed = 0usize;
     for name in &file_skill_names {
-        update_file_skill(name, &mut manifest, skills_dir, verbose)?;
+        match update_file_skill(name, &mut manifest, skills_dir, verbose) {
+            FileUpdateResult::Updated => file_updated += 1,
+            FileUpdateResult::Skipped => file_skipped += 1,
+            FileUpdateResult::Failed => file_failed += 1,
+        }
     }
 
     // Group git-based skills by remote URL
@@ -556,13 +569,15 @@ pub fn execute(
     let mut group_list: Vec<(String, Vec<String>)> = groups.into_iter().collect();
     group_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
 
-    print_update_header(&group_list);
+    if !group_list.is_empty() {
+        print_update_header(&group_list);
+    }
 
     // Clone and update each group
     let group_count = group_list.len();
-    let mut total_updated = 0usize;
-    let mut total_skipped = 0usize;
-    let mut total_failed = 0usize;
+    let mut total_updated = file_updated;
+    let mut total_skipped = file_skipped;
+    let mut total_failed = file_failed;
     let mut total_removed = 0usize;
     let mut repo_results: Vec<(String, GroupResult)> = Vec::new();
 
