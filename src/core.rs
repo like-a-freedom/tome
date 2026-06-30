@@ -1,3 +1,4 @@
+pub mod download;
 pub mod git;
 pub mod manifest;
 pub mod normalize;
