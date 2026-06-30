@@ -18,7 +18,7 @@ pub fn execute(
     manifest_path: &Path,
 ) -> Result<()> {
     let parsed_source = parse_source::Source::parse(source)?;
-    let git_url = parsed_source.git_url();
+    let git_url = parsed_source.git_url()?;
     let label = parsed_source.label();
     let skill_name = parsed_source.skill_name().map(String::from);
 

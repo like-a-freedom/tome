@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 const GITHUB_URL_PREFIX: &str = "https://github.com/";
 
@@ -8,6 +8,18 @@ fn is_url(source: &str) -> bool {
         || source.starts_with("file://")
         || source.starts_with("git@")
         || source.starts_with("ssh://")
+}
+
+fn is_file_url(source: &str) -> bool {
+    if !is_url(source) {
+        return false;
+    }
+    let path = source
+        .find("://")
+        .map(|i| &source[i + 3..])
+        .unwrap_or(source);
+    let lower = path.to_lowercase();
+    lower.ends_with(".md") || lower.contains("skill.md")
 }
 
 pub fn github_url(owner: &str, repo: &str) -> String {
@@ -30,10 +42,19 @@ pub enum Source {
         repo: String,
         skill: Option<String>,
     },
+    FileUrl {
+        url: String,
+    },
 }
 
 impl Source {
     pub fn parse(source: &str) -> Result<Self> {
+        if is_file_url(source) {
+            return Ok(Source::FileUrl {
+                url: source.to_string(),
+            });
+        }
+
         if is_url(source) {
             return Ok(Source::Url(source.to_string()));
         }
@@ -58,10 +79,11 @@ impl Source {
         })
     }
 
-    pub fn git_url(&self) -> String {
+    pub fn git_url(&self) -> Result<String> {
         match self {
-            Source::Url(url) => url.clone(),
-            Source::OwnerRepo { owner, repo, .. } => github_url(owner, repo),
+            Source::Url(url) => Ok(url.clone()),
+            Source::OwnerRepo { owner, repo, .. } => Ok(github_url(owner, repo)),
+            Source::FileUrl { .. } => bail!("Cannot clone a file URL. Use the download flow."),
         }
     }
 
@@ -69,14 +91,27 @@ impl Source {
         match self {
             Source::Url(url) => repo_label(url).to_string(),
             Source::OwnerRepo { owner, repo, .. } => format!("{}/{}", owner, repo),
+            Source::FileUrl { url } => {
+                let path = url.find("://").map(|i| &url[i + 3..]).unwrap_or(url);
+                let segment = path
+                    .split('/')
+                    .rev()
+                    .find(|s| !s.is_empty() && *s != "SKILL.md" && *s != "skill.md")
+                    .unwrap_or("skill");
+                segment.trim_end_matches(".md").to_string()
+            }
         }
     }
 
     pub fn skill_name(&self) -> Option<&str> {
         match self {
-            Source::Url(_) => None,
+            Source::Url(_) | Source::FileUrl { .. } => None,
             Source::OwnerRepo { skill, .. } => skill.as_deref(),
         }
+    }
+
+    pub fn is_file_url(&self) -> bool {
+        matches!(self, Source::FileUrl { .. })
     }
 }
 
@@ -153,5 +188,32 @@ mod tests {
     #[test]
     fn test_repo_label_plain_string() {
         assert_eq!(repo_label("owner/repo"), "owner/repo");
+    }
+
+    #[test]
+    fn test_parse_file_url() {
+        let s = Source::parse("https://example.com/SKILL.md").unwrap();
+        assert!(s.is_file_url());
+        assert_eq!(s.label(), "example.com");
+    }
+
+    #[test]
+    fn test_parse_file_url_with_path() {
+        let s = Source::parse("https://example.com/skills/my-skill.md").unwrap();
+        assert!(s.is_file_url());
+        assert_eq!(s.label(), "my-skill");
+    }
+
+    #[test]
+    fn test_parse_non_md_url_not_file_url() {
+        let s = Source::parse("https://github.com/owner/repo").unwrap();
+        assert!(!s.is_file_url());
+    }
+
+    #[test]
+    fn test_file_url_git_url_errors() {
+        let s = Source::parse("https://example.com/SKILL.md").unwrap();
+        let result = s.git_url();
+        assert!(result.is_err());
     }
 }
