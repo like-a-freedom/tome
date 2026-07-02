@@ -320,6 +320,18 @@ fn total_sources(file_skill_count: usize, git_group_count: usize) -> usize {
     file_skill_count + git_group_count
 }
 
+fn format_summary_line(summary_plain: &str, summary_styled: &str) -> String {
+    format!(
+        "{}{}",
+        CYAN,
+        style::box_line(
+            summary_plain,
+            &format!("{}{}", summary_styled, CYAN),
+            TERM_WIDTH,
+        )
+    )
+}
+
 fn print_summary(
     total_updated: usize,
     total_skipped: usize,
@@ -376,11 +388,10 @@ fn print_summary(
     let time_str = format_duration(elapsed);
 
     println!(
-        "{}{}\n{}{}\n{}{}\n{}{}",
+        "{}{}\n{}\n{}{}\n{}{}",
         CYAN,
         style::box_top("Result", TERM_WIDTH),
-        CYAN,
-        style::box_line(&summary_plain, &summary_styled, TERM_WIDTH),
+        format_summary_line(&summary_plain, &summary_styled),
         CYAN,
         style::box_line(&time_str, &time_str, TERM_WIDTH),
         CYAN,
@@ -1010,6 +1021,24 @@ mod tests {
     fn test_format_commit() {
         assert_eq!(format_commit("abc1234567890abcdef"), "abc1234");
         assert_eq!(format_commit("abc"), "abc");
+    }
+
+    #[test]
+    fn test_summary_line_restores_frame_color_after_styled_segments() {
+        let plain = "1 updated · 141 up to date";
+        let styled = format!(
+            "{} · {}",
+            style::styled(GREEN, "1 updated"),
+            style::styled(DIM, "141 up to date")
+        );
+        let rendered = format_summary_line(plain, &styled);
+        let content_end = rendered.rfind(style::RESET).unwrap() + style::RESET.len();
+
+        assert!(
+            rendered[content_end..].starts_with(CYAN),
+            "expected cyan frame after styled content, got {:?}",
+            &rendered[content_end..]
+        );
     }
 
     #[test]
