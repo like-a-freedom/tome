@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use crate::core::{download, git, manifest::Manifest, normalize, spec};
 use crate::fs;
+use crate::progress::{ProgressPhase, RepoOutcome, UpdateProgress};
 use crate::style::{self, CYAN, DIM, GREEN, YELLOW};
 
 const TERM_WIDTH: usize = 60;
@@ -102,6 +103,17 @@ impl GroupResult {
     }
 }
 
+impl From<&GroupResult> for RepoOutcome {
+    fn from(result: &GroupResult) -> Self {
+        RepoOutcome::new(
+            result.updated.len(),
+            result.skipped.len(),
+            result.failed.len(),
+            result.removed.len(),
+        )
+    }
+}
+
 // ── repo path ─────────────────────────────────────────────────────
 
 /// Locate a skill's SKILL.md directory inside a cloned repo.
@@ -147,6 +159,7 @@ struct UpdateContext<'a> {
     skills_dir: &'a Path,
     verbose: bool,
     sparse: bool,
+    progress: &'a mut UpdateProgress,
 }
 
 fn update_group(
@@ -158,19 +171,24 @@ fn update_group(
 ) -> (String, GroupResult) {
     let label = crate::core::parse_source::repo_label(remote).to_string();
 
-    if group_count > 1 {
-        eprintln!(
-            "{} [{}/{}] Cloning {} ({} skill{})",
-            style::styled(CYAN, "\u{25b8}"),
-            group_idx + 1,
-            group_count,
-            label,
-            skill_names.len(),
-            if skill_names.len() == 1 { "" } else { "s" },
-        );
-    } else {
-        eprintln!("{} Cloning {}", style::styled(CYAN, "\u{25b8}"), label,);
+    if ctx.verbose {
+        if group_count > 1 {
+            eprintln!(
+                "{} [{}/{}] Cloning {} ({} skill{})",
+                style::styled(CYAN, "\u{25b8}"),
+                group_idx + 1,
+                group_count,
+                label,
+                skill_names.len(),
+                if skill_names.len() == 1 { "" } else { "s" },
+            );
+        } else {
+            eprintln!("{} Cloning {}", style::styled(CYAN, "\u{25b8}"), label,);
+        }
     }
+    ctx.progress
+        .repo_started(group_idx + 1, group_count, &label, skill_names.len());
+    ctx.progress.phase(ProgressPhase::Cloning);
 
     let temp_dir = match fs::create_temp_dir() {
         Ok(d) => d,
@@ -180,18 +198,31 @@ fn update_group(
                 style::styled(YELLOW, "\u{2717}"),
                 e
             );
-            return (label, GroupResult::failed_all(skill_names, "temp dir"));
+            let result = GroupResult::failed_all(skill_names, "temp dir");
+            ctx.progress
+                .repo_finished(&label, RepoOutcome::from(&result));
+            return (label, result);
         }
     };
 
-    if let Err(e) = git::clone_repo_or_sparse(remote, temp_dir.path(), ctx.sparse) {
+    let git_output = if ctx.progress.enabled() {
+        git::GitOutput::Quiet
+    } else {
+        git::GitOutput::Progress
+    };
+
+    if let Err(e) = git::clone_repo_or_sparse(remote, temp_dir.path(), ctx.sparse, git_output) {
         eprintln!(
             "  {} Clone failed: {}",
             style::styled(YELLOW, "\u{2717}"),
             e
         );
-        return (label, GroupResult::failed_all(skill_names, "clone failed"));
+        let result = GroupResult::failed_all(skill_names, "clone failed");
+        ctx.progress
+            .repo_finished(&label, RepoOutcome::from(&result));
+        return (label, result);
     }
+    ctx.progress.phase(ProgressPhase::Inspecting);
 
     let new_commit =
         git::get_commit_hash(temp_dir.path()).unwrap_or_else(|_| "unknown".to_string());
@@ -203,6 +234,7 @@ fn update_group(
     let mut group_result = GroupResult::default();
 
     for skill_name in skill_names {
+        ctx.progress.phase(ProgressPhase::Checking);
         let (old_commit, entry_path) = match ctx.manifest.get_skill(skill_name) {
             Some(e) => (e.commit.clone(), e.path.clone()),
             None => continue,
@@ -223,6 +255,7 @@ fn update_group(
                 );
             }
             group_result.removed.push(skill_name.clone());
+            ctx.progress.skill_checked();
             continue;
         }
 
@@ -240,6 +273,7 @@ fn update_group(
                 group_result
                     .failed
                     .push((skill_name.clone(), "invalid SKILL.md".to_string()));
+                ctx.progress.skill_checked();
                 continue;
             }
         };
@@ -256,9 +290,11 @@ fn update_group(
             group_result
                 .skipped
                 .push((skill_name.clone(), new_commit.clone()));
+            ctx.progress.skill_checked();
             continue;
         }
 
+        ctx.progress.phase(ProgressPhase::Copying);
         let dest_dir = ctx.skills_dir.join(skill_name);
         if let Err(e) = normalize::copy_skill(&skill_path, &dest_dir) {
             if ctx.verbose {
@@ -272,6 +308,7 @@ fn update_group(
             group_result
                 .failed
                 .push((skill_name.clone(), "copy failed".to_string()));
+            ctx.progress.skill_checked();
             continue;
         }
 
@@ -305,11 +342,14 @@ fn update_group(
             }
         }
 
+        ctx.progress.skill_checked();
         group_result
             .updated
             .push((skill_name.clone(), old_commit, new_commit.clone()));
     }
 
+    ctx.progress
+        .repo_finished(&label, RepoOutcome::from(&group_result));
     (label, group_result)
 }
 
@@ -340,6 +380,10 @@ fn format_duration(secs: f64) -> String {
         format!("{:.0}m {:.0} s", secs / 60.0, secs % 60.0)
     };
     format!("Completed in {}", time)
+}
+
+fn total_sources(file_skill_count: usize, git_group_count: usize) -> usize {
+    file_skill_count + git_group_count
 }
 
 fn print_summary(
@@ -422,11 +466,16 @@ fn update_file_skill(
     manifest: &mut Manifest,
     skills_dir: &Path,
     verbose: bool,
+    progress: &mut UpdateProgress,
+    source_idx: usize,
+    source_count: usize,
 ) -> FileUpdateResult {
     let url = match manifest.get_skill(name) {
         Some(e) => e.remote.clone(),
         None => return FileUpdateResult::Skipped,
     };
+    progress.repo_started(source_idx, source_count, name, 1);
+    progress.phase(ProgressPhase::Downloading);
 
     let downloaded = match download::download_skill_file(&url) {
         Ok(d) => d,
@@ -437,6 +486,8 @@ fn update_file_skill(
                 name,
                 e
             );
+            progress.skill_checked();
+            progress.repo_finished(name, RepoOutcome::new(0, 0, 1, 0));
             return FileUpdateResult::Failed;
         }
     };
@@ -455,11 +506,14 @@ fn update_file_skill(
                     name,
                 );
             }
+            progress.skill_checked();
+            progress.repo_finished(name, RepoOutcome::new(0, 1, 0, 0));
             return FileUpdateResult::Skipped;
         }
     }
 
     // Content changed — update
+    progress.phase(ProgressPhase::Copying);
     if let Err(e) = normalize::copy_skill(&downloaded.path, &skill_dir) {
         if verbose {
             eprintln!(
@@ -469,6 +523,8 @@ fn update_file_skill(
                 e
             );
         }
+        progress.skill_checked();
+        progress.repo_finished(name, RepoOutcome::new(0, 0, 1, 0));
         return FileUpdateResult::Failed;
     }
 
@@ -496,6 +552,8 @@ fn update_file_skill(
         );
     }
 
+    progress.skill_checked();
+    progress.repo_finished(name, RepoOutcome::new(1, 0, 0, 0));
     FileUpdateResult::Updated
 }
 
@@ -540,19 +598,6 @@ pub fn execute(
                 .unwrap_or(false)
         });
 
-    // Update file-based skills individually
-    let mut file_updated = 0usize;
-    let mut file_skipped = 0usize;
-    let mut file_failed = 0usize;
-    for name in &file_skill_names {
-        match update_file_skill(name, &mut manifest, skills_dir, verbose) {
-            FileUpdateResult::Updated => file_updated += 1,
-            FileUpdateResult::Skipped => file_skipped += 1,
-            FileUpdateResult::Failed => file_failed += 1,
-        }
-    }
-
-    // Group git-based skills by remote URL
     let mut groups: HashMap<String, Vec<String>> = HashMap::new();
     for skill_name in &git_skill_names {
         let remote = manifest
@@ -565,12 +610,36 @@ pub fn execute(
     let mut group_list: Vec<(String, Vec<String>)> = groups.into_iter().collect();
     group_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
 
-    if !group_list.is_empty() {
+    let source_count = total_sources(file_skill_names.len(), group_list.len());
+    let total_skill_count = file_skill_names.len() + git_skill_names.len();
+    let mut progress = UpdateProgress::new(verbose);
+    progress.start(total_skill_count, source_count);
+
+    // Update file-based skills individually
+    let mut file_updated = 0usize;
+    let mut file_skipped = 0usize;
+    let mut file_failed = 0usize;
+    for (file_idx, name) in file_skill_names.iter().enumerate() {
+        match update_file_skill(
+            name,
+            &mut manifest,
+            skills_dir,
+            verbose,
+            &mut progress,
+            file_idx + 1,
+            source_count,
+        ) {
+            FileUpdateResult::Updated => file_updated += 1,
+            FileUpdateResult::Skipped => file_skipped += 1,
+            FileUpdateResult::Failed => file_failed += 1,
+        }
+    }
+
+    if !group_list.is_empty() && !progress.enabled() {
         print_update_header(&group_list);
     }
 
     // Clone and update each group
-    let group_count = group_list.len();
     let mut total_updated = file_updated;
     let mut total_skipped = file_skipped;
     let mut total_failed = file_failed;
@@ -583,13 +652,14 @@ pub fn execute(
         let (label, group_result) = update_group(
             remote,
             skill_names,
-            group_idx,
-            group_count,
+            file_skill_names.len() + group_idx,
+            source_count,
             &mut UpdateContext {
                 manifest: &mut manifest,
                 skills_dir,
                 verbose,
                 sparse,
+                progress: &mut progress,
             },
         );
         total_updated += group_result.updated.len();
@@ -599,7 +669,9 @@ pub fn execute(
         repo_results.push((label, group_result));
     }
 
+    progress.phase(ProgressPhase::Saving);
     manifest.save(manifest_path)?;
+    progress.finish();
 
     print_results(&repo_results, verbose);
     print_summary(
@@ -629,6 +701,37 @@ mod tests {
             name.to_string(),
             SkillEntry::new(&format!("owner/{}", name), "", &fm, commit, remote),
         )
+    }
+
+    #[test]
+    fn test_repo_outcome_from_group_result() {
+        let group_result = GroupResult {
+            updated: vec![("a".to_string(), "old".to_string(), "new".to_string())],
+            skipped: vec![("b".to_string(), "new".to_string())],
+            failed: vec![("c".to_string(), "copy failed".to_string())],
+            removed: vec!["d".to_string()],
+        };
+
+        let outcome = RepoOutcome::from(&group_result);
+
+        assert_eq!(outcome.updated, 1);
+        assert_eq!(outcome.current, 1);
+        assert_eq!(outcome.failed, 1);
+        assert_eq!(outcome.removed, 1);
+    }
+
+    #[test]
+    fn test_total_sources_counts_file_skills_and_git_groups() {
+        let file_skill_count = 2usize;
+        let git_group_count = 3usize;
+
+        assert_eq!(total_sources(file_skill_count, git_group_count), 5);
+    }
+
+    #[test]
+    fn test_total_sources_is_at_least_one_for_non_empty_update() {
+        assert_eq!(total_sources(1, 0), 1);
+        assert_eq!(total_sources(0, 1), 1);
     }
 
     #[test]

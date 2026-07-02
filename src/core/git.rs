@@ -2,6 +2,18 @@ use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitOutput {
+    Progress,
+    Quiet,
+}
+
+impl GitOutput {
+    fn is_quiet(self) -> bool {
+        matches!(self, GitOutput::Quiet)
+    }
+}
+
 /// Run a git command in the given directory and return its trimmed stdout.
 fn git_output(repo_path: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
@@ -19,34 +31,67 @@ fn git_output(repo_path: &Path, args: &[&str]) -> Result<String> {
         .map(|s| s.trim().to_string())
 }
 
-/// Clone a repo, streaming git's progress to the terminal.
-pub fn clone_repo(url: &str, dest: &Path) -> Result<()> {
-    let status = Command::new("git")
-        .args(["clone", "--depth", "1", "--progress", url])
-        .arg(dest)
-        .status()
-        .context("Failed to execute git")?;
+fn run_git_command(
+    mut command: Command,
+    context: &str,
+    failure: &str,
+    output: GitOutput,
+) -> Result<()> {
+    if output.is_quiet() {
+        let output = command.output().with_context(|| context.to_string())?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("{}: {}", failure, stderr.trim());
+        }
+        return Ok(());
+    }
 
+    let status = command.status().with_context(|| context.to_string())?;
     if !status.success() {
-        bail!("git clone failed — is the repository public and the URL correct?");
+        bail!("{}", failure);
     }
     Ok(())
+}
+
+/// Clone a repo, streaming git's progress to the terminal.
+pub fn clone_repo(url: &str, dest: &Path) -> Result<()> {
+    clone_repo_with_output(url, dest, GitOutput::Progress)
+}
+
+fn clone_repo_with_output(url: &str, dest: &Path, output: GitOutput) -> Result<()> {
+    let mut command = Command::new("git");
+    command.args(["clone", "--depth", "1"]);
+    if output.is_quiet() {
+        command.arg("--quiet");
+    } else {
+        command.arg("--progress");
+    }
+    command.arg(url).arg(dest);
+
+    run_git_command(
+        command,
+        "Failed to execute git",
+        "git clone failed - is the repository public and the URL correct?",
+        output,
+    )
 }
 
 /// Clone a repo, preferring sparse clone with fallback to full clone when:
 /// - sparse-checkout is not supported (git < 2.25)
 /// - repository has no `skills/` or root SKILL.md
-pub fn clone_repo_or_sparse(url: &str, dest: &Path, sparse: bool) -> Result<()> {
+pub fn clone_repo_or_sparse(url: &str, dest: &Path, sparse: bool, output: GitOutput) -> Result<()> {
     if !sparse {
-        return clone_repo(url, dest);
+        return clone_repo_with_output(url, dest, output);
     }
 
-    match clone_repo_sparse(url, dest) {
+    match clone_repo_sparse(url, dest, output) {
         Ok(()) => Ok(()),
         Err(e) => {
-            eprintln!("  \u{2022} Falling back to full clone ({})", e);
+            if !output.is_quiet() {
+                eprintln!("  \u{2022} Falling back to full clone ({})", e);
+            }
             let _ = std::fs::remove_dir_all(dest.join(".git"));
-            clone_repo(url, dest)
+            clone_repo_with_output(url, dest, output)
         }
     }
 }
@@ -69,25 +114,29 @@ pub fn clone_repo_quiet(url: &str, dest: &Path) -> Result<()> {
 
 /// Sparse-clone a repo: fetch tree objects only, then checkout just `skills/` and root SKILL.md.
 /// Falls back silently if sparse-checkout is not supported (git < 2.25).
-pub fn clone_repo_sparse(url: &str, dest: &Path) -> Result<()> {
+pub fn clone_repo_sparse(url: &str, dest: &Path, output: GitOutput) -> Result<()> {
     // Phase 1: Clone with blob filter, no checkout
-    let status = Command::new("git")
-        .args([
-            "clone",
-            "--filter=blob:none",
-            "--no-checkout",
-            "--depth",
-            "1",
-            "--progress",
-            url,
-        ])
-        .arg(dest)
-        .status()
-        .context("Failed to execute git (clone phase 1)")?;
-
-    if !status.success() {
-        bail!("git clone failed — is the repository public and the URL correct?");
+    let mut clone_command = Command::new("git");
+    clone_command.args([
+        "clone",
+        "--filter=blob:none",
+        "--no-checkout",
+        "--depth",
+        "1",
+    ]);
+    if output.is_quiet() {
+        clone_command.arg("--quiet");
+    } else {
+        clone_command.arg("--progress");
     }
+    clone_command.arg(url).arg(dest);
+
+    run_git_command(
+        clone_command,
+        "Failed to execute git (clone phase 1)",
+        "git clone failed - is the repository public and the URL correct?",
+        output,
+    )?;
 
     // Phase 2: Initialize sparse-checkout in cone mode
     let init_output = Command::new("git")
@@ -139,17 +188,22 @@ pub fn clone_repo_sparse(url: &str, dest: &Path) -> Result<()> {
     }
 
     // Phase 5: Checkout the filtered files (triggers on-demand blob fetch)
-    // Use .status() to let git's progress show on the terminal
-    eprintln!("  \u{2022} Fetching skill files...");
-    let checkout_status = Command::new("git")
-        .args(["checkout"])
-        .current_dir(dest)
-        .status()
-        .context("Failed to checkout files")?;
-
-    if !checkout_status.success() {
-        bail!("Failed to checkout files after sparse-checkout");
+    if !output.is_quiet() {
+        eprintln!("  \u{2022} Fetching skill files...");
     }
+    let mut checkout_command = Command::new("git");
+    checkout_command.args(["checkout"]);
+    if output.is_quiet() {
+        checkout_command.arg("--quiet");
+    }
+    checkout_command.current_dir(dest);
+
+    run_git_command(
+        checkout_command,
+        "Failed to checkout files",
+        "Failed to checkout files after sparse-checkout",
+        output,
+    )?;
 
     // Phase 6: Verify working tree is not empty
     let has_files = std::fs::read_dir(dest)
@@ -350,7 +404,7 @@ mod tests {
         let dest_path = dest.path().join("clone");
 
         let path_str = src.path().to_string_lossy().to_string();
-        clone_repo_sparse(&path_str, &dest_path).unwrap();
+        clone_repo_sparse(&path_str, &dest_path, GitOutput::Progress).unwrap();
 
         assert!(dest_path.join(".git").exists());
         assert!(dest_path.join("skills").exists());
@@ -386,7 +440,11 @@ mod tests {
 
         let dest = TempDir::new().unwrap();
         let dest_path = dest.path().join("clone");
-        let result = clone_repo_sparse(&temp.path().to_string_lossy(), &dest_path);
+        let result = clone_repo_sparse(
+            &temp.path().to_string_lossy(),
+            &dest_path,
+            GitOutput::Progress,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No SKILL.md"));
     }
@@ -483,7 +541,7 @@ mod tests {
         let dest = TempDir::new().unwrap();
         let dest_path = dest.path().join("clone");
         let path_str = temp.path().to_string_lossy().to_string();
-        clone_repo_sparse(&path_str, &dest_path).unwrap();
+        clone_repo_sparse(&path_str, &dest_path, GitOutput::Progress).unwrap();
 
         assert!(dest_path.join(".git").exists());
         assert!(dest_path.join("Skills").exists());
@@ -532,7 +590,7 @@ mod tests {
         let dest_path = dest.path().join("clone");
 
         let path_str = src.path().to_string_lossy().to_string();
-        clone_repo_sparse(&path_str, &dest_path).unwrap();
+        clone_repo_sparse(&path_str, &dest_path, GitOutput::Progress).unwrap();
 
         assert!(dest_path.join(".git").exists());
         assert!(dest_path.join(".claude").exists());
@@ -580,7 +638,7 @@ mod tests {
         let dest = TempDir::new().unwrap();
         let dest_path = dest.path().join("clone");
         let path_str = temp.path().to_string_lossy().to_string();
-        clone_repo_sparse(&path_str, &dest_path).unwrap();
+        clone_repo_sparse(&path_str, &dest_path, GitOutput::Progress).unwrap();
 
         // skills/ should be checked out, .claude/skills/ should not
         assert!(dest_path.join("skills").exists());
@@ -626,7 +684,30 @@ mod tests {
         let found = find_case_insensitive_path(temp.path(), "skills").unwrap();
         assert_eq!(found.as_deref(), Some("Skills"));
         // Now clone with the correct path
-        clone_repo_sparse(&path_str, &dest_path).unwrap();
+        clone_repo_sparse(&path_str, &dest_path, GitOutput::Progress).unwrap();
         assert!(dest_path.join("Skills").exists());
+    }
+
+    #[test]
+    fn test_clone_repo_or_sparse_accepts_quiet_output() {
+        let src = create_temp_git_repo_with_skills_dir();
+        let dest = TempDir::new().unwrap();
+        let dest_path = dest.path().join("clone");
+
+        let result = clone_repo_or_sparse(
+            &src.path().to_string_lossy(),
+            &dest_path,
+            false,
+            GitOutput::Quiet,
+        );
+
+        assert!(result.is_ok());
+        assert!(
+            dest_path
+                .join("skills")
+                .join("my-skill")
+                .join("SKILL.md")
+                .exists()
+        );
     }
 }
