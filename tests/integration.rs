@@ -417,6 +417,46 @@ fn test_update_specific_skill_not_found() {
 }
 
 #[test]
+fn test_update_details_require_verbose() {
+    let temp = TempDir::new().unwrap();
+    let repo_dir = temp.path().join("repo");
+
+    fs::create_dir_all(&repo_dir).unwrap();
+    fs::write(
+        repo_dir.join("SKILL.md"),
+        "---\nname: CompactSkill\ndescription: compact update test\n---\n",
+    )
+    .unwrap();
+    common::init_git_repo(&repo_dir);
+
+    let skills_dir = temp.path().join(".agents/skills");
+    let repo_url = format!("file://{}", repo_dir.display());
+
+    let mut add = Command::cargo_bin("tome").unwrap();
+    add.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .arg("add")
+        .arg(&repo_url)
+        .assert()
+        .success();
+
+    let mut compact = Command::cargo_bin("tome").unwrap();
+    compact
+        .env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .arg("update")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("CompactSkill").not());
+
+    let mut verbose = Command::cargo_bin("tome").unwrap();
+    verbose
+        .env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .args(["update", "--verbose"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Already up to date: CompactSkill"));
+}
+
+#[test]
 fn test_add_sparse_clone_with_skills_dir() {
     let temp = TempDir::new().unwrap();
     let repo_dir = temp.path().join("repo");
