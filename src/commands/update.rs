@@ -10,7 +10,6 @@ use crate::style::{self, CYAN, DIM, GREEN, YELLOW};
 
 const TERM_WIDTH: usize = 60;
 const SHORT_COMMIT_LEN: usize = 7;
-const DEFAULT_MAX_NAME_WIDTH: usize = 10;
 
 fn format_commit(commit: &str) -> String {
     if commit.len() >= SHORT_COMMIT_LEN {
@@ -45,60 +44,6 @@ impl GroupResult {
                 .map(|n| (n.clone(), reason.to_string()))
                 .collect(),
             ..Default::default()
-        }
-    }
-
-    fn max_name_width(&self) -> usize {
-        self.updated
-            .iter()
-            .map(|(n, _, _)| n.len())
-            .chain(self.skipped.iter().map(|(n, _)| n.len()))
-            .chain(self.failed.iter().map(|(n, _)| n.len()))
-            .max()
-            .unwrap_or(DEFAULT_MAX_NAME_WIDTH)
-    }
-
-    fn print(&self) {
-        if self.is_empty() {
-            return;
-        }
-        let w = self.max_name_width();
-
-        for (name, old_commit, new_commit) in &self.updated {
-            println!(
-                "  {} {:<name_w$}  {} → {}",
-                style::styled(GREEN, "\u{2713}"),
-                name,
-                format_commit(old_commit),
-                format_commit(new_commit),
-                name_w = w,
-            );
-        }
-        for (name, commit) in &self.skipped {
-            println!(
-                "  {} {:<name_w$}  up to date ({})",
-                style::styled(DIM, "\u{2713}"),
-                name,
-                format_commit(commit),
-                name_w = w,
-            );
-        }
-        for (name, reason) in &self.failed {
-            println!(
-                "  {} {:<name_w$}  {}",
-                style::styled(YELLOW, "\u{2717}"),
-                name,
-                reason,
-                name_w = w,
-            );
-        }
-        for name in &self.removed {
-            println!(
-                "  {} {:<name_w$}  removed from repo",
-                style::styled(YELLOW, "\u{2717}"),
-                name,
-                name_w = w,
-            );
         }
     }
 }
@@ -229,7 +174,9 @@ fn update_group(
     let branch =
         git::get_branch(temp_dir.path()).unwrap_or_else(|_| crate::DEFAULT_BRANCH.to_string());
 
-    eprintln!();
+    if ctx.verbose {
+        eprintln!();
+    }
 
     let mut group_result = GroupResult::default();
 
@@ -355,20 +302,7 @@ fn update_group(
 
 fn print_results(repo_results: &[(String, GroupResult)], verbose: bool) {
     let has_results = repo_results.iter().any(|(_, r)| !r.is_empty());
-    if has_results && !verbose {
-        println!();
-        for (i, (label, group_result)) in repo_results.iter().enumerate() {
-            if group_result.is_empty() {
-                continue;
-            }
-            if i > 0 {
-                println!();
-            }
-            println!("  {}{}{}", CYAN, style::styled(CYAN, label), style::RESET,);
-            group_result.print();
-        }
-        println!();
-    } else if verbose && has_results {
+    if verbose && has_results {
         println!();
     }
 }
