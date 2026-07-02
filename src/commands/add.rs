@@ -52,8 +52,13 @@ pub fn execute(
     // When --path is specified, use a full clone (the target
     // may be outside skills/ or root SKILL.md)
     let do_sparse = sparse && path_override.is_none();
-    git::clone_repo_or_sparse(&git_url, temp_dir.path(), do_sparse)
-        .with_context(|| format!("Failed to clone {}", git_url))?;
+    git::clone_repo_or_sparse(
+        &git_url,
+        temp_dir.path(),
+        do_sparse,
+        git::GitOutput::Progress,
+    )
+    .with_context(|| format!("Failed to clone {}", git_url))?;
 
     let commit =
         git::get_commit_hash(temp_dir.path()).with_context(|| "Failed to get commit hash")?;
