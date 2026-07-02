@@ -8,6 +8,8 @@ use crossterm::{
 };
 use std::io::{self, Write};
 
+use crate::style::{char_display_width, display_width};
+
 struct RawModeGuard;
 
 impl RawModeGuard {
@@ -32,31 +34,6 @@ const DEFAULT_ROWS: u16 = 24;
 const MENU_PREFIX_WIDTH: usize = 13;
 const MIN_DESC_WIDTH: usize = 15;
 const MAX_DESC_WIDTH: usize = 60;
-
-fn char_display_width(c: char) -> usize {
-    let cp = c as u32;
-    if (0x1100..=0x115F).contains(&cp)
-        || (0x2E80..=0x303E).contains(&cp)
-        || (0x3040..=0x33BF).contains(&cp)
-        || (0x3400..=0x4DBF).contains(&cp)
-        || (0x4E00..=0x9FFF).contains(&cp)
-        || (0xA000..=0xA4CF).contains(&cp)
-        || (0xAC00..=0xD7AF).contains(&cp)
-        || (0xF900..=0xFAFF).contains(&cp)
-        || (0xFE30..=0xFE6F).contains(&cp)
-        || (0xFF01..=0xFF60).contains(&cp)
-        || (0xFFE0..=0xFFE6).contains(&cp)
-        || (0x20000..=0x2FA1F).contains(&cp)
-    {
-        2
-    } else {
-        1
-    }
-}
-
-fn display_width(s: &str) -> usize {
-    s.chars().map(char_display_width).sum()
-}
 
 pub struct SelectItem {
     pub name: String,
