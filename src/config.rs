@@ -66,6 +66,9 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Export install commands for all tracked skills
+    Export,
 }
 
 fn default_skills_dir() -> PathBuf {
@@ -191,6 +194,12 @@ mod tests {
             Commands::List { json } => assert!(json),
             _ => panic!("Expected List"),
         }
+    }
+
+    #[test]
+    fn test_export_command_parsing() {
+        let cli = Cli::parse_from(["tome", "export"]);
+        assert!(matches!(cli.command, Commands::Export));
     }
 
     #[test]
