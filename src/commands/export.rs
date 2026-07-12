@@ -139,4 +139,37 @@ mod tests {
         let output = execute_to_string(&manifest_path).unwrap();
         assert_eq!(output, "tome add owner/repo --path skills/nested\n");
     }
+
+    #[test]
+    fn test_export_via_execute_function() {
+        let temp = TempDir::new().unwrap();
+        let mut manifest = Manifest {
+            version: 1,
+            skills: std::collections::HashMap::new(),
+        };
+        manifest.add_skill(
+            "skill-b",
+            SkillEntry::new(
+                "owner/repo",
+                "",
+                &testutil::make_fm("skill-b"),
+                "abc",
+                "https://github.com/owner/repo.git",
+            ),
+        );
+        manifest.add_skill(
+            "skill-a",
+            SkillEntry::new(
+                "owner/other",
+                "skills/a",
+                &testutil::make_fm("skill-a"),
+                "def",
+                "https://github.com/owner/other.git",
+            ),
+        );
+        let (skills_dir, manifest_path) = make_temp_manifest(&temp, &manifest);
+
+        let result = execute(&skills_dir, &manifest_path);
+        assert!(result.is_ok());
+    }
 }
