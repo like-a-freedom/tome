@@ -58,6 +58,7 @@ Use `keenable` MCP for web search when context7 has no match.
 cargo run -- add owner/repo
 cargo run -- add owner/repo@skill-name
 cargo run -- add owner/repo --no-sparse
+cargo run -- add file:///path/to/local/repo
 cargo run -- list
 cargo run -- list --json
 cargo run -- remove skill-name
@@ -82,7 +83,7 @@ SKILLS_DIR=/path/to/skills cargo run -- list
 
 ```ascii
 main.rs → lib.rs::run() → commands/{add,list,remove,update}
-                           core/{spec,manifest,git,normalize,parse_source}
+                           core/{spec,manifest,git,normalize,parse_source,download}
                            fs.rs (temp dirs, directory copy)
                            progress.rs (compact update status)
                            style.rs (ANSI helpers, box-drawing)
@@ -94,7 +95,10 @@ Key design decisions in `docs/DESIGN.md`, full architecture in `docs/ARCHITECTUR
 ## Project scope
 
 - GitHub public repos only (v1)
+- File URL support: `file:///path/to/local/repo`
 - SKILL.md format only, no translation
 - `.agents/skills/` as single source of truth, `.skills.json` manifest
+- `.agents/skills/` bundle support: sparse-checkout fetches nested `.agents/skills/` when present
+- Top-level skill directories: detects `skill-name/SKILL.md` at repo root
 - `tome update` uses compact crossterm progress in interactive terminals and stays line-based in non-TTY output
 - No telemetry, no server, no configuration beyond `.skills.json`
