@@ -35,9 +35,9 @@ pub struct SkillInfo {
 }
 
 pub fn detect_repo_type(repo_path: &Path) -> Result<RepoType> {
-    // Check subdirectories in priority order: skills/ first, then .claude/skills/
+    // Check subdirectories in priority order: skills/ first, then .claude/skills/, then .agents/skills/
     let mut subdir_skills: Option<Vec<SkillInfo>> = None;
-    for subdir in &["skills", ".claude/skills"] {
+    for subdir in &["skills", ".claude/skills", ".agents/skills"] {
         if let Some(skills) = find_skills_in_subdir(repo_path, subdir)? {
             subdir_skills = Some(skills);
             break;
@@ -98,7 +98,7 @@ pub fn detect_repo_type(repo_path: &Path) -> Result<RepoType> {
         }
     } else {
         bail!(
-            "No SKILL.md found in repository root, skills/, .claude/skills/ directory, or top-level skill directories"
+            "No SKILL.md found in repository root, skills/, .claude/skills/, .agents/skills/ directory, or top-level skill directories"
         )
     }
 }
@@ -522,6 +522,44 @@ mod tests {
         match repo_type {
             RepoType::MultiSkill(skills) => assert_eq!(skills.len(), 2),
             _ => panic!("Expected MultiSkill"),
+        }
+    }
+
+    #[test]
+    fn test_detect_agents_skills_dir() {
+        let temp = TempDir::new().unwrap();
+        let skill_dir = temp
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("impeccable");
+        fs::create_dir_all(&skill_dir).unwrap();
+        make_skill_md(&skill_dir, "impeccable", "Design frontend interfaces");
+
+        let repo_type = detect_repo_type(temp.path()).unwrap();
+        match repo_type {
+            RepoType::SingleSkillInDir { name, .. } => {
+                assert_eq!(name, "impeccable");
+            }
+            _ => panic!("Expected SingleSkillInDir, got {:?}", repo_type),
+        }
+    }
+
+    #[test]
+    fn test_detect_multi_skill_in_agents_skills() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join(".agents/skills");
+
+        for name in &["skill-a", "skill-b"] {
+            let dir = skills_dir.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            make_skill_md(&dir, name, "Test");
+        }
+
+        let repo_type = detect_repo_type(temp.path()).unwrap();
+        match repo_type {
+            RepoType::MultiSkill(skills) => assert_eq!(skills.len(), 2),
+            _ => panic!("Expected MultiSkill, got {:?}", repo_type),
         }
     }
 
