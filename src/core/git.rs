@@ -138,9 +138,51 @@ pub fn clone_repo_sparse(url: &str, dest: &Path, output: GitOutput) -> Result<()
         output,
     )?;
 
-    // Phase 2: Initialize sparse-checkout in cone mode
+    // Phase 2: Inspect tree to decide what to fetch
+    let skills_path = find_case_insensitive_path(dest, "skills")?;
+    let claude_skills_path = if skills_path.is_none() && has_path_in_tree(dest, ".claude/skills")? {
+        Some(".claude/skills".to_string())
+    } else {
+        None
+    };
+    let agents_skills_path = if skills_path.is_none()
+        && claude_skills_path.is_none()
+        && has_path_in_tree(dest, ".agents/skills")?
+    {
+        Some(".agents/skills".to_string())
+    } else {
+        None
+    };
+    let has_root_skill = has_path_in_tree(dest, "SKILL.md")?;
+
+    // Phase 3: Set sparse-checkout paths
+    let mut paths: Vec<String> = Vec::new();
+    if let Some(path) = skills_path {
+        paths.push(path);
+    } else if let Some(path) = claude_skills_path {
+        paths.push(path);
+    } else if let Some(ref path) = agents_skills_path {
+        paths.push(path.to_string());
+    }
+    if has_root_skill {
+        paths.push("SKILL.md".to_string());
+    }
+
+    if paths.is_empty() {
+        bail!(
+            "No SKILL.md found in repository root, skills/, .claude/skills/, or .agents/skills/ directory"
+        );
+    }
+
+    // Cone mode only supports top-level directories; .agents/skills is nested
+    let use_cone = agents_skills_path.is_none();
+    let init_args = if use_cone {
+        vec!["sparse-checkout", "init", "--cone"]
+    } else {
+        vec!["sparse-checkout", "init"]
+    };
     let init_output = Command::new("git")
-        .args(["sparse-checkout", "init", "--cone"])
+        .args(&init_args)
         .current_dir(dest)
         .output()
         .context("Failed to initialize sparse-checkout")?;
@@ -150,34 +192,17 @@ pub fn clone_repo_sparse(url: &str, dest: &Path, output: GitOutput) -> Result<()
         bail!("git sparse-checkout not supported: {}", stderr.trim());
     }
 
-    // Phase 3: Inspect tree to decide what to fetch
-    let skills_path = find_case_insensitive_path(dest, "skills")?;
-    let claude_skills_path = if skills_path.is_none() && has_path_in_tree(dest, ".claude/skills")? {
-        Some(".claude/skills".to_string())
+    let set_args = if use_cone {
+        let mut args = vec!["sparse-checkout", "set"];
+        let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+        args.extend(path_refs);
+        args
     } else {
-        None
+        vec!["sparse-checkout", "set", "--no-cone"]
     };
-    let has_root_skill = has_path_in_tree(dest, "SKILL.md")?;
-
-    // Phase 4: Set sparse-checkout paths
-    let mut paths: Vec<String> = Vec::new();
-    if let Some(path) = skills_path {
-        paths.push(path);
-    } else if let Some(path) = claude_skills_path {
-        paths.push(path);
-    }
-    if has_root_skill {
-        paths.push("SKILL.md".to_string());
-    }
-
-    if paths.is_empty() {
-        bail!("No SKILL.md found in repository root, skills/, or .claude/skills/ directory");
-    }
-
-    let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
     let set_output = Command::new("git")
-        .args(["sparse-checkout", "set"])
-        .args(&path_refs)
+        .args(&set_args)
+        .args(&paths)
         .current_dir(dest)
         .output()
         .context("Failed to set sparse-checkout paths")?;
@@ -686,6 +711,42 @@ mod tests {
         // Now clone with the correct path
         clone_repo_sparse(&path_str, &dest_path, GitOutput::Progress).unwrap();
         assert!(dest_path.join("Skills").exists());
+    }
+
+    #[test]
+    fn test_sparse_checkout_includes_agents_skills() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(repo.join(".agents/skills/my-skill")).unwrap();
+        fs::write(
+            repo.join(".agents/skills/my-skill/SKILL.md"),
+            "---\nname: my-skill\ndescription: test\n---\n",
+        )
+        .unwrap();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+
+        let dest = temp.path().join("out");
+        clone_repo_sparse(&repo.to_string_lossy(), &dest, GitOutput::Quiet).unwrap();
+
+        assert!(
+            dest.join(".agents/skills/my-skill/SKILL.md").exists(),
+            "sparse checkout should include .agents/skills/"
+        );
     }
 
     #[test]
