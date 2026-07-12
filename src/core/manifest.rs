@@ -56,6 +56,14 @@ impl SkillEntry {
     pub fn set_branch(&mut self, branch: &str) {
         self.branch = branch.to_string();
     }
+
+    pub fn install_source(&self) -> String {
+        if self.remote.starts_with("file:") {
+            self.remote.clone()
+        } else {
+            self.source.clone()
+        }
+    }
 }
 
 impl Manifest {
@@ -443,6 +451,54 @@ mod tests {
         // installed and updated should be recent timestamps
         assert!(!entry.installed.is_empty());
         assert_eq!(entry.installed, entry.updated);
+    }
+
+    #[test]
+    fn test_install_source_git_repo() {
+        let entry = SkillEntry {
+            source: "owner/repo".into(),
+            path: "skills/test".into(),
+            installed: "i".into(),
+            updated: "u".into(),
+            version: "v".into(),
+            description: "d".into(),
+            commit: "c".into(),
+            branch: "main".into(),
+            remote: "https://github.com/owner/repo.git".into(),
+        };
+        assert_eq!(entry.install_source(), "owner/repo");
+    }
+
+    #[test]
+    fn test_install_source_file_url() {
+        let entry = SkillEntry {
+            source: "".into(),
+            path: "skills/test".into(),
+            installed: "i".into(),
+            updated: "u".into(),
+            version: "v".into(),
+            description: "d".into(),
+            commit: "c".into(),
+            branch: "main".into(),
+            remote: "file:///Users/test/SKILL.md".into(),
+        };
+        assert_eq!(entry.install_source(), "file:///Users/test/SKILL.md");
+    }
+
+    #[test]
+    fn test_install_source_empty_source_uses_remote() {
+        let entry = SkillEntry {
+            source: "".into(),
+            path: "skills/test".into(),
+            installed: "i".into(),
+            updated: "u".into(),
+            version: "v".into(),
+            description: "d".into(),
+            commit: "c".into(),
+            branch: "main".into(),
+            remote: "https://github.com/owner/repo".into(),
+        };
+        assert_eq!(entry.install_source(), "");
     }
 
     #[test]
