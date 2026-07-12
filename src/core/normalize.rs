@@ -584,6 +584,26 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_prefers_claude_skills_over_agents_skills() {
+        let temp = TempDir::new().unwrap();
+
+        // Both .claude/skills/ and .agents/skills/ exist — should prefer .claude/skills/
+        let claude_dir = temp.path().join(".claude/skills/my-skill");
+        fs::create_dir_all(&claude_dir).unwrap();
+        make_skill_md(&claude_dir, "claude-skill", "Should be this one");
+
+        let agents_dir = temp.path().join(".agents/skills/other-skill");
+        fs::create_dir_all(&agents_dir).unwrap();
+        make_skill_md(&agents_dir, "agents-skill", "Should not be picked");
+
+        let repo_type = detect_repo_type(temp.path()).unwrap();
+        match repo_type {
+            RepoType::SingleSkillInDir { name, .. } => assert_eq!(name, "claude-skill"),
+            _ => panic!("Expected SingleSkillInDir"),
+        }
+    }
+
+    #[test]
     fn test_detect_single_skill_nested_category() {
         let temp = TempDir::new().unwrap();
         let skills_dir = temp.path().join("skills");
