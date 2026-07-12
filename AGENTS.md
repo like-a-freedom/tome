@@ -66,6 +66,7 @@ cargo run -- update
 cargo run -- update --verbose
 cargo run -- update my-skill
 cargo run -- update --no-sparse
+cargo run -- export
 SKILLS_DIR=/path/to/skills cargo run -- list
 ```
 
@@ -82,7 +83,7 @@ SKILLS_DIR=/path/to/skills cargo run -- list
 ## Architecture
 
 ```ascii
-main.rs → lib.rs::run() → commands/{add,list,remove,update}
+main.rs → lib.rs::run() → commands/{add,list,remove,update,export}
                            core/{spec,manifest,git,normalize,parse_source,download}
                            fs.rs (temp dirs, directory copy)
                            progress.rs (compact update status)
@@ -101,4 +102,5 @@ Key design decisions in `docs/DESIGN.md`, full architecture in `docs/ARCHITECTUR
 - `.agents/skills/` bundle support: sparse-checkout fetches nested `.agents/skills/` when present
 - Top-level skill directories: detects `skill-name/SKILL.md` at repo root
 - `tome update` uses compact crossterm progress in interactive terminals and stays line-based in non-TTY output
+- `tome export` outputs `tome add` commands for all tracked skills (sorted alphabetically)
 - No telemetry, no server, no configuration beyond `.skills.json`
