@@ -50,5 +50,6 @@ pub fn run(cli: Cli) -> Result<()> {
         config::Commands::List { json } => {
             commands::list::execute(json, &skills_dir, &manifest_path)
         }
+        config::Commands::Export => commands::export::execute(&skills_dir, &manifest_path),
     }
 }
