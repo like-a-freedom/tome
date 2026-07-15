@@ -2,23 +2,7 @@ use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const SKIP_DIRS_IN_SCAN: &[&str] = &[
-    ".git",
-    ".github",
-    ".claude-plugin",
-    ".cursor",
-    ".agents",
-    "node_modules",
-    "target",
-    "dist",
-    "build",
-    "__pycache__",
-    ".claude",
-    ".gemini",
-    ".opencode",
-    ".codex",
-    ".windsurf",
-];
+use super::skip::SKIP_DIRS;
 
 #[derive(Debug, Clone)]
 pub enum RepoType {
@@ -117,7 +101,7 @@ fn find_top_level_skills(repo_path: &Path) -> Result<Vec<SkillInfo>> {
         }
 
         if let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && (SKIP_DIRS_IN_SCAN.contains(&name) || name.starts_with('.'))
+            && (SKIP_DIRS.contains(&name) || name.starts_with('.'))
         {
             continue;
         }
@@ -166,7 +150,7 @@ fn find_skills_in_dir(dir: &Path) -> Result<Vec<SkillInfo>> {
         }
 
         if let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && (SKIP_DIRS_IN_SCAN.contains(&name) || name.starts_with('.'))
+            && (SKIP_DIRS.contains(&name) || name.starts_with('.'))
         {
             continue;
         }
