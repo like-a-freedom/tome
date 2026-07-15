@@ -5,8 +5,9 @@ use std::time::Instant;
 use anyhow::{Result, bail};
 
 use crate::core::manifest::Manifest;
+use crate::output;
 use crate::progress::UpdateProgress;
-use crate::style::{self, CYAN, YELLOW};
+use crate::style::{self, CYAN};
 
 pub(crate) mod file_skill;
 pub(crate) mod git_group;
@@ -65,12 +66,7 @@ pub fn execute(
 
     let stale = manifest.find_stale(skills_dir);
     if !stale.is_empty() {
-        eprintln!(
-            "{} Skipping {} stale entries: {}",
-            style::styled(YELLOW, "\u{26a0}"),
-            stale.len(),
-            stale.join(", ")
-        );
+        output::print_stale_header(stale.len(), &stale);
     }
 
     let skills_to_update: Vec<String> = if let Some(specific_name) = name {

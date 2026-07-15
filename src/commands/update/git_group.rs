@@ -2,8 +2,9 @@ use std::path::{Path, PathBuf};
 
 use crate::core::{git, repo_detect, spec};
 use crate::fs;
+use crate::output;
 use crate::progress::{ProgressPhase, RepoOutcome};
-use crate::style::{self, CYAN, DIM, GREEN, YELLOW};
+use crate::style::{self, YELLOW};
 
 use super::UpdateContext;
 use super::summary::format_commit;
@@ -77,23 +78,12 @@ pub(crate) fn update_group(
     let label = crate::core::parse_source::repo_label(config.remote).to_string();
 
     if ctx.verbose {
-        if config.group_count > 1 {
-            eprintln!(
-                "{} [{}/{}] Cloning {} ({} skill{})",
-                style::styled(CYAN, "\u{25b8}"),
-                config.group_idx + 1,
-                config.group_count,
-                label,
-                config.skill_names.len(),
-                if config.skill_names.len() == 1 {
-                    ""
-                } else {
-                    "s"
-                },
-            );
-        } else {
-            eprintln!("{} Cloning {}", style::styled(CYAN, "\u{25b8}"), label,);
-        }
+        output::print_cloning_multi(
+            &label,
+            config.group_idx,
+            config.group_count,
+            config.skill_names.len(),
+        );
     }
     ctx.progress.repo_started(
         config.group_idx + 1,
@@ -106,11 +96,7 @@ pub(crate) fn update_group(
     let temp_dir = match fs::create_temp_dir() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!(
-                "  {} Failed to create temp dir: {}",
-                style::styled(YELLOW, "\u{2717}"),
-                e
-            );
+            output::print_failed_action("Failed to create temp dir", &e.to_string());
             let result = GroupResult::failed_all(config.skill_names, "temp dir");
             ctx.progress
                 .repo_finished(&label, RepoOutcome::from(&result));
@@ -127,11 +113,7 @@ pub(crate) fn update_group(
     if let Err(e) =
         git::clone_repo_or_sparse(config.remote, temp_dir.path(), ctx.sparse, git_output)
     {
-        eprintln!(
-            "  {} Clone failed: {}",
-            style::styled(YELLOW, "\u{2717}"),
-            e
-        );
+        output::print_failed_action("Clone failed", &e.to_string());
         let result = GroupResult::failed_all(config.skill_names, "clone failed");
         ctx.progress
             .repo_finished(&label, RepoOutcome::from(&result));
@@ -164,11 +146,7 @@ pub(crate) fn update_group(
             let _ = fs::remove_skill_dir(&local_dir);
             ctx.manifest.remove_skill(skill_name);
             if ctx.verbose {
-                eprintln!(
-                    "  {} Removed {} \u{2014} no longer in repository",
-                    style::styled(YELLOW, "\u{2717}"),
-                    skill_name,
-                );
+                output::print_removed(skill_name);
             }
             group_result.removed.push(skill_name.clone());
             ctx.progress.skill_checked();
@@ -196,12 +174,7 @@ pub(crate) fn update_group(
 
         if format_commit(&new_commit) == format_commit(&old_commit) {
             if ctx.verbose {
-                println!(
-                    "  {} Already up to date: {} ({})",
-                    style::styled(DIM, "\u{2713}"),
-                    skill_name,
-                    format_commit(&new_commit)
-                );
+                output::print_up_to_date(skill_name, &format_commit(&new_commit));
             }
             group_result
                 .skipped
@@ -214,12 +187,7 @@ pub(crate) fn update_group(
         let dest_dir = ctx.skills_dir.join(skill_name);
         if let Err(e) = fs::copy_skill(&skill_path, &dest_dir) {
             if ctx.verbose {
-                eprintln!(
-                    "  {} Failed to copy {}: {}",
-                    style::styled(YELLOW, "\u{2717}"),
-                    skill_name,
-                    e
-                );
+                output::print_failed(skill_name, "copy", &e.to_string());
             }
             group_result
                 .failed
@@ -238,24 +206,12 @@ pub(crate) fn update_group(
         );
 
         if ctx.verbose {
-            if version.is_empty() {
-                println!(
-                    "  {} Updated: {} ({} -> {})",
-                    style::styled(GREEN, "\u{2713}"),
-                    skill_name,
-                    format_commit(&old_commit),
-                    format_commit(&new_commit)
-                );
-            } else {
-                println!(
-                    "  {} Updated: {} {} ({} -> {})",
-                    style::styled(GREEN, "\u{2713}"),
-                    skill_name,
-                    version,
-                    format_commit(&old_commit),
-                    format_commit(&new_commit)
-                );
-            }
+            output::print_updated(
+                skill_name,
+                &version,
+                &format_commit(&old_commit),
+                &format_commit(&new_commit),
+            );
         }
 
         ctx.progress.skill_checked();
