@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use crate::core::{download, git, manifest::Manifest, normalize, spec};
+use crate::core::{download, git, manifest::Manifest, repo_detect, spec};
 use crate::fs;
 use crate::progress::{ProgressPhase, RepoOutcome, UpdateProgress};
 use crate::style::{self, CYAN, DIM, GREEN, YELLOW};
@@ -64,9 +64,9 @@ impl From<&GroupResult> for RepoOutcome {
 /// Locate a skill's SKILL.md directory inside a cloned repo.
 fn skill_repo_path(clone_dir: &Path, entry_path: &str) -> PathBuf {
     if entry_path.is_empty() {
-        match normalize::detect_repo_type(clone_dir) {
-            Ok(normalize::RepoType::SingleSkillAtRoot) => clone_dir.to_path_buf(),
-            Ok(normalize::RepoType::SingleSkillInDir { name: _, path: p }) => p,
+        match repo_detect::detect_repo_type(clone_dir) {
+            Ok(repo_detect::RepoType::SingleSkillAtRoot) => clone_dir.to_path_buf(),
+            Ok(repo_detect::RepoType::SingleSkillInDir { name: _, path: p }) => p,
             _ => clone_dir.to_path_buf(),
         }
     } else {
@@ -243,7 +243,7 @@ fn update_group(
 
         ctx.progress.phase(ProgressPhase::Copying);
         let dest_dir = ctx.skills_dir.join(skill_name);
-        if let Err(e) = normalize::copy_skill(&skill_path, &dest_dir) {
+        if let Err(e) = fs::copy_skill(&skill_path, &dest_dir) {
             if ctx.verbose {
                 eprintln!(
                     "  {} Failed to copy {}: {}",
@@ -459,7 +459,7 @@ fn update_file_skill(
 
     // Content changed — update
     progress.phase(ProgressPhase::Copying);
-    if let Err(e) = normalize::copy_skill(&downloaded.path, &skill_dir) {
+    if let Err(e) = fs::copy_skill(&downloaded.path, &skill_dir) {
         if verbose {
             eprintln!(
                 "  {} Failed to copy {}: {}",
@@ -640,6 +640,8 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    use crate::fs::copy_skill;
+
     fn make_entry(name: &str, commit: &str, remote: &str) -> (String, SkillEntry) {
         let fm = testutil::make_fm(name);
         (
@@ -804,7 +806,7 @@ mod tests {
         // Find the SKILL.md and copy it
         let fm = spec::validate_skill(clone_temp.path()).unwrap();
         let dest = skills_dir.join(&fm.name);
-        normalize::copy_skill(clone_temp.path(), &dest).unwrap();
+        copy_skill(clone_temp.path(), &dest).unwrap();
 
         let result = execute(Some("my-skill"), false, true, &skills_dir, &manifest_path);
         // Should succeed (skill is up to date)
@@ -838,7 +840,7 @@ mod tests {
         // Install the skill
         let fm = spec::validate_skill(clone_temp.path()).unwrap();
         let dest = skills_dir.join(&fm.name);
-        normalize::copy_skill(clone_temp.path(), &dest).unwrap();
+        copy_skill(clone_temp.path(), &dest).unwrap();
 
         let result = execute(Some("skip-skill"), false, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
@@ -874,7 +876,7 @@ mod tests {
 
         let fm = spec::validate_skill(clone_temp.path()).unwrap();
         let dest = skills_dir.join(&fm.name);
-        normalize::copy_skill(clone_temp.path(), &dest).unwrap();
+        copy_skill(clone_temp.path(), &dest).unwrap();
 
         let result = execute(Some("verb-skip"), true, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
@@ -906,7 +908,7 @@ mod tests {
 
         let fm = spec::validate_skill(clone_temp.path()).unwrap();
         let dest = skills_dir.join(&fm.name);
-        normalize::copy_skill(clone_temp.path(), &dest).unwrap();
+        copy_skill(clone_temp.path(), &dest).unwrap();
 
         let result = execute(Some("short-hash"), false, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
@@ -941,7 +943,7 @@ mod tests {
 
         let fm = spec::validate_skill(clone_temp.path()).unwrap();
         let dest = skills_dir.join(&fm.name);
-        normalize::copy_skill(clone_temp.path(), &dest).unwrap();
+        copy_skill(clone_temp.path(), &dest).unwrap();
 
         let result = execute(Some("changed"), false, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
@@ -990,10 +992,10 @@ mod tests {
         // Install skill-a (validate that the clone is well-formed)
         spec::validate_skill(clone_temp.path()).unwrap();
         let dest_a = skills_dir.join("group-skill-a");
-        normalize::copy_skill(clone_temp.path(), &dest_a).unwrap();
+        copy_skill(clone_temp.path(), &dest_a).unwrap();
         // Install skill-b (same clone)
         let dest_b = skills_dir.join("group-skill-b");
-        normalize::copy_skill(clone_temp.path(), &dest_b).unwrap();
+        copy_skill(clone_temp.path(), &dest_b).unwrap();
 
         let result = execute(None, false, true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
