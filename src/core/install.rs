@@ -23,6 +23,55 @@ pub struct ResolvedSkill {
     pub branch: String,
 }
 
+impl ResolvedSkill {
+    pub fn from_detected(
+        repo_path: std::path::PathBuf,
+        temp_root: &Path,
+        frontmatter: SkillFrontmatter,
+        label: String,
+        commit: String,
+        remote: String,
+        branch: String,
+    ) -> Self {
+        let path = if repo_path == temp_root {
+            String::new()
+        } else {
+            repo_path
+                .strip_prefix(temp_root)
+                .unwrap_or(&repo_path)
+                .to_string_lossy()
+                .into_owned()
+        };
+        Self {
+            repo_path,
+            frontmatter,
+            label,
+            path,
+            commit,
+            remote,
+            branch,
+        }
+    }
+
+    pub fn from_file_url(
+        repo_path: std::path::PathBuf,
+        frontmatter: SkillFrontmatter,
+        label: String,
+        path: String,
+        url: String,
+    ) -> Self {
+        Self {
+            repo_path,
+            frontmatter,
+            label,
+            path,
+            commit: "file:".to_string(),
+            remote: url,
+            branch: String::new(),
+        }
+    }
+}
+
 /// Format a version tag for display: " v1.2.3" or "" if no version.
 fn format_version_tag(frontmatter: &SkillFrontmatter) -> String {
     frontmatter
