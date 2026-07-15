@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::core::{
     download, git,
     manifest::{Manifest, SkillEntry},
-    normalize, parse_source, spec,
+    parse_source, repo_detect, spec,
 };
 use crate::fs;
 use crate::style::{self, CYAN, DIM, GREEN, YELLOW};
@@ -71,16 +71,16 @@ pub fn execute(
         let frontmatter = spec::validate_skill(&repo_path).context("Invalid SKILL.md")?;
         vec![(repo_path, frontmatter)]
     } else {
-        let repo_type = normalize::detect_repo_type(temp_dir.path())
+        let repo_type = repo_detect::detect_repo_type(temp_dir.path())
             .context("Failed to detect repository structure")?;
 
         match repo_type {
-            normalize::RepoType::SingleSkillAtRoot => {
+            repo_detect::RepoType::SingleSkillAtRoot => {
                 let frontmatter =
                     spec::validate_skill(temp_dir.path()).context("Invalid SKILL.md")?;
                 vec![(temp_dir.path().to_path_buf(), frontmatter)]
             }
-            normalize::RepoType::SingleSkillInDir { name, path } => {
+            repo_detect::RepoType::SingleSkillInDir { name, path } => {
                 if let Some(ref requested) = skill_name
                     && requested != &name
                 {
@@ -89,7 +89,7 @@ pub fn execute(
                 let frontmatter = spec::validate_skill(&path).context("Invalid SKILL.md")?;
                 vec![(path, frontmatter)]
             }
-            normalize::RepoType::MultiSkill(skills) => {
+            repo_detect::RepoType::MultiSkill(skills) => {
                 let selected = if let Some(ref requested) = skill_name {
                     let skill = skills
                         .iter()
@@ -107,7 +107,7 @@ pub fn execute(
                         })?;
                     vec![skill.clone()]
                 } else {
-                    normalize::select_skills(&skills)?
+                    select_skills(&skills)?
                 };
 
                 let mut result = Vec::new();
@@ -139,7 +139,7 @@ pub fn execute(
             }
         }
 
-        normalize::copy_skill(repo_path, &dest_dir)?;
+        fs::copy_skill(repo_path, &dest_dir)?;
 
         let path_value = if *repo_path == *temp_dir.path() {
             String::new()
@@ -268,7 +268,7 @@ fn execute_file_url(
         }
     }
 
-    normalize::copy_skill(&repo_path, &dest_dir)?;
+    fs::copy_skill(&repo_path, &dest_dir)?;
 
     let path_value = path_override.unwrap_or_default();
 
@@ -296,6 +296,36 @@ fn execute_file_url(
     );
 
     Ok(())
+}
+
+fn select_skills(skills: &[repo_detect::SkillInfo]) -> Result<Vec<repo_detect::SkillInfo>> {
+    if skills.len() == 1 {
+        return Ok(vec![skills[0].clone()]);
+    }
+
+    let mut items: Vec<crate::tui::SelectItem> = skills
+        .iter()
+        .map(|s| crate::tui::SelectItem {
+            name: s.name.clone(),
+            description: s.description.clone().unwrap_or_default(),
+            selected: true,
+        })
+        .collect();
+
+    crate::tui::multi_select(&mut items)?;
+
+    let selected: Vec<repo_detect::SkillInfo> = skills
+        .iter()
+        .zip(items.iter())
+        .filter(|(_, item)| item.selected)
+        .map(|(skill, _)| skill.clone())
+        .collect();
+
+    if selected.is_empty() {
+        bail!("No skills selected");
+    }
+
+    Ok(selected)
 }
 
 #[cfg(test)]
@@ -528,5 +558,17 @@ mod tests {
             "Expected SKILL.md validation error, got: {}",
             err
         );
+    }
+
+    #[test]
+    fn test_select_skill_single_returns_first() {
+        let skills = vec![repo_detect::SkillInfo {
+            name: "only".to_string(),
+            path: std::path::PathBuf::from("/tmp"),
+            description: Some("desc".to_string()),
+        }];
+        let result = select_skills(&skills).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "only");
     }
 }
