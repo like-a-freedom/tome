@@ -1,11 +1,17 @@
 use crate::style::{self, CYAN, DIM, GREEN, YELLOW};
 use crossterm::{
-    ExecutableCommand, cursor,
+    cursor, execute,
+    style::Print,
     terminal::{Clear, ClearType},
 };
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 
 const SPINNER_FRAMES: &[&str] = &["-", "\\", "|", "/"];
+
+/// Maximum display width for repo labels in the live progress line.
+/// Prevents line wrapping on 80-col terminals when labels are long
+/// (e.g. "deanpeters/Product-Manager-Skills" at 33 chars).
+const MAX_LABEL_WIDTH: usize = 25;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProgressPhase {
@@ -144,18 +150,27 @@ impl UpdateProgress {
 
         if let Some(state) = &self.state {
             let mut stderr = io::stderr();
-            let _ = stderr.execute(cursor::MoveToColumn(0));
-            let _ = stderr.execute(Clear(ClearType::CurrentLine));
-            let _ = write!(stderr, "{}", format_live_line(state));
-            let _ = stderr.flush();
+            // Use the execute! macro to chain MoveToColumn(0), Clear(CurrentLine),
+            // and Print in a single batch. The macro queues all commands and
+            // flushes once, so the terminal sees one atomic update — preventing
+            // interleaving when the draw is called rapidly.
+            let _ = execute!(
+                stderr,
+                cursor::MoveToColumn(0),
+                Clear(ClearType::CurrentLine),
+                Print(format_live_line(state))
+            );
         }
     }
 }
 
 fn clear_live_line() {
     let mut stderr = io::stderr();
-    let _ = stderr.execute(cursor::MoveToColumn(0));
-    let _ = stderr.execute(Clear(ClearType::CurrentLine));
+    let _ = execute!(
+        stderr,
+        cursor::MoveToColumn(0),
+        Clear(ClearType::CurrentLine)
+    );
 }
 
 fn pluralize(count: usize, singular: &str, plural: &str) -> String {
@@ -177,12 +192,13 @@ fn format_header(total_skills: usize, total_sources: usize) -> String {
 
 fn format_live_line(state: &ProgressState) -> String {
     let frame = SPINNER_FRAMES[state.frame_idx % SPINNER_FRAMES.len()];
+    let label = crate::tui::truncate_str(&state.label, MAX_LABEL_WIDTH);
     format!(
         "{} source {}/{} - {} - {} - {}/{} skills checked",
         style::styled(CYAN, frame),
         state.source_idx,
         state.source_count,
-        state.label,
+        label,
         state.phase.label(),
         state.checked_skills,
         state.total_skills,
@@ -264,6 +280,32 @@ mod tests {
         assert_eq!(
             rendered,
             "- source 2/5 - owner/repo - checking - 3/7 skills checked"
+        );
+    }
+
+    #[test]
+    fn test_format_live_line_truncates_long_label() {
+        let state = ProgressState {
+            source_idx: 2,
+            source_count: 5,
+            label: "deanpeters/Product-Manager-Skills".to_string(),
+            phase: ProgressPhase::Checking,
+            checked_skills: 3,
+            total_skills: 7,
+            frame_idx: 0,
+        };
+
+        let rendered = strip_ansi(&format_live_line(&state));
+        let prefix = "- source 2/5 - deanpeters/Produc";
+        assert!(
+            rendered.starts_with(prefix),
+            "expected truncation of long label, got: {:?}",
+            rendered
+        );
+        assert!(
+            rendered.len() <= 80,
+            "live line should fit in 80 cols: {}",
+            rendered.len()
         );
     }
 
