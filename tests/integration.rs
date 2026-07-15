@@ -483,3 +483,116 @@ fn test_add_sparse_clone_with_skills_dir() {
 
     assert!(skills_dir.join("IntSparseSkill").join("SKILL.md").exists());
 }
+
+#[test]
+fn test_remove_by_source_label() {
+    let temp = TempDir::new().unwrap();
+    let skills_dir = temp.path().join(".agents/skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+
+    // Create two skills from the same "repo"
+    for name in &["git-commit", "code-review"] {
+        let dir = skills_dir.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {}\ndescription: from same repo\n---\n", name),
+        )
+        .unwrap();
+    }
+
+    let manifest = skills_dir.join(".skills.json");
+    let manifest_data = r#"{
+        "version": 1,
+        "skills": {
+            "git-commit": {
+                "source": "leonardomso/rust-skills", "path": "", "installed": "2026-01-01T00:00:00Z",
+                "updated": "2026-01-01T00:00:00Z", "version": "1.0.0",
+                "description": "from same repo", "commit": "abc", "branch": "main",
+                "remote": "https://github.com/leonardomso/rust-skills.git"
+            },
+            "code-review": {
+                "source": "leonardomso/rust-skills", "path": "", "installed": "2026-01-01T00:00:00Z",
+                "updated": "2026-01-01T00:00:00Z", "version": "1.0.0",
+                "description": "from same repo", "commit": "abc", "branch": "main",
+                "remote": "https://github.com/leonardomso/rust-skills.git"
+            }
+        }
+    }"#;
+    fs::write(&manifest, manifest_data).unwrap();
+
+    let mut cmd = Command::cargo_bin("tome").unwrap();
+    cmd.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .arg("remove")
+        .arg("--force")
+        .arg("leonardomso/rust-skills")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed: git-commit"))
+        .stdout(predicate::str::contains("Removed: code-review"));
+
+    assert!(!skills_dir.join("git-commit").exists());
+    assert!(!skills_dir.join("code-review").exists());
+
+    let raw = fs::read_to_string(&manifest).unwrap();
+    assert!(!raw.contains("git-commit"));
+    assert!(!raw.contains("code-review"));
+}
+
+#[test]
+fn test_remove_by_url() {
+    let temp = TempDir::new().unwrap();
+    let skills_dir = temp.path().join(".agents/skills");
+    fs::create_dir_all(skills_dir.join("my-skill")).unwrap();
+    fs::write(
+        skills_dir.join("my-skill").join("SKILL.md"),
+        "---\nname: my-skill\ndescription: test\n---\n",
+    )
+    .unwrap();
+
+    let manifest = skills_dir.join(".skills.json");
+    let manifest_data = r#"{
+        "version": 1,
+        "skills": {
+            "my-skill": {
+                "source": "owner/repo", "path": "", "installed": "2026-01-01T00:00:00Z",
+                "updated": "2026-01-01T00:00:00Z", "version": "1.0.0",
+                "description": "test", "commit": "abc", "branch": "main",
+                "remote": "https://github.com/owner/repo.git"
+            }
+        }
+    }"#;
+    fs::write(&manifest, manifest_data).unwrap();
+
+    let mut cmd = Command::cargo_bin("tome").unwrap();
+    cmd.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .arg("remove")
+        .arg("--force")
+        .arg("https://github.com/owner/repo")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed: my-skill"));
+
+    assert!(!skills_dir.join("my-skill").exists());
+}
+
+#[test]
+fn test_remove_by_source_not_found() {
+    let temp = TempDir::new().unwrap();
+    let skills_dir = temp.path().join(".agents/skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+    fs::write(
+        skills_dir.join(".skills.json"),
+        r#"{"version":1,"skills":{}}"#,
+    )
+    .unwrap();
+
+    let mut cmd = Command::cargo_bin("tome").unwrap();
+    cmd.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .arg("remove")
+        .arg("--force")
+        .arg("nonexistent/repo")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not installed by tome"));
+}

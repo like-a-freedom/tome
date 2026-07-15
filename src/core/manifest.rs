@@ -110,6 +110,32 @@ impl Manifest {
         self.skills.get(name)
     }
 
+    /// Resolve a user-provided identifier to manifest skill names.
+    ///
+    /// Accepts a raw skill name (direct key match), an `owner/repo` label,
+    /// or a full URL. Returns all matching skill names (multiple for multi-skill repos).
+    pub fn resolve_names(&self, input: &str) -> Vec<String> {
+        if self.is_tracked(input) {
+            return vec![input.to_string()];
+        }
+
+        let label = if input.starts_with("http://")
+            || input.starts_with("https://")
+            || input.starts_with("git@")
+            || input.starts_with("ssh://")
+        {
+            crate::core::parse_source::repo_label(input).to_string()
+        } else {
+            input.to_string()
+        };
+
+        self.skills
+            .iter()
+            .filter(|(_, entry)| entry.source == label)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
     pub fn update_skill(
         &mut self,
         name: &str,
@@ -546,5 +572,85 @@ mod tests {
         assert_eq!(entry.commit, "newhash");
         assert_eq!(entry.version, "2.0.0");
         assert!(entry.updated > old_updated);
+    }
+
+    fn make_manifest_with_source(source: &str, name: &str) -> Manifest {
+        let mut manifest = Manifest {
+            version: 1,
+            skills: HashMap::new(),
+        };
+        manifest.add_skill(
+            name,
+            SkillEntry {
+                source: source.into(),
+                path: "p".into(),
+                installed: "i".into(),
+                updated: "u".into(),
+                version: "v".into(),
+                description: "d".into(),
+                commit: "c".into(),
+                branch: "b".into(),
+                remote: "https://github.com/".to_string() + source + ".git",
+            },
+        );
+        manifest
+    }
+
+    #[test]
+    fn test_resolve_names_direct_match() {
+        let manifest = make_manifest_with_source("owner/repo", "my-skill");
+        assert_eq!(manifest.resolve_names("my-skill"), vec!["my-skill"]);
+    }
+
+    #[test]
+    fn test_resolve_names_by_source_label() {
+        let manifest = make_manifest_with_source("leonardomso/rust-skills", "git-commit");
+        assert_eq!(
+            manifest.resolve_names("leonardomso/rust-skills"),
+            vec!["git-commit"]
+        );
+    }
+
+    #[test]
+    fn test_resolve_names_by_url() {
+        let manifest = make_manifest_with_source("leonardomso/rust-skills", "git-commit");
+        assert_eq!(
+            manifest.resolve_names("https://github.com/leonardomso/rust-skills"),
+            vec!["git-commit"]
+        );
+    }
+
+    #[test]
+    fn test_resolve_names_multi_skill_repo() {
+        let mut manifest = Manifest {
+            version: 1,
+            skills: HashMap::new(),
+        };
+        for name in &["git-commit", "code-review"] {
+            manifest.add_skill(
+                name,
+                SkillEntry {
+                    source: "leonardomso/rust-skills".into(),
+                    path: "".into(),
+                    installed: "i".into(),
+                    updated: "u".into(),
+                    version: "v".into(),
+                    description: "d".into(),
+                    commit: "c".into(),
+                    branch: "b".into(),
+                    remote: "https://github.com/leonardomso/rust-skills.git".into(),
+                },
+            );
+        }
+        let mut names = manifest.resolve_names("leonardomso/rust-skills");
+        names.sort();
+        assert_eq!(names, vec!["code-review", "git-commit"]);
+    }
+
+    #[test]
+    fn test_resolve_names_no_match() {
+        let manifest = make_manifest_with_source("owner/repo", "my-skill");
+        assert!(manifest.resolve_names("unknown-skill").is_empty());
+        assert!(manifest.resolve_names("other/repo").is_empty());
     }
 }
