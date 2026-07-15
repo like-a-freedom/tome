@@ -5,7 +5,7 @@ use std::path::Path;
 
 pub const MAX_SKILL_NAME_LEN: usize = 50;
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct SkillFrontmatter {
     pub name: String,
     pub description: String,

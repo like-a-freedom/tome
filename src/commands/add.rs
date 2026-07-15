@@ -1,11 +1,7 @@
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
-use crate::core::{
-    download, git,
-    manifest::{Manifest, SkillEntry},
-    parse_source, repo_detect, spec,
-};
+use crate::core::{download, git, install, parse_source, repo_detect, spec};
 use crate::fs;
 use crate::style::{self, CYAN, DIM, GREEN, YELLOW};
 
@@ -121,76 +117,57 @@ pub fn execute(
         }
     };
 
-    fs::ensure_skills_dir(skills_dir)?;
-    let mut manifest = Manifest::load(manifest_path)?;
-    let mut installed = Vec::new();
-    let mut skipped_tracked = Vec::new();
-    let mut skipped_existing = Vec::new();
-
-    for (repo_path, frontmatter) in &selected_skills {
-        let dest_dir = skills_dir.join(&frontmatter.name);
-        if dest_dir.exists() && !force {
-            if manifest.is_tracked(&frontmatter.name) {
-                skipped_tracked.push(frontmatter.name.clone());
-                continue;
+    let resolved: Vec<install::ResolvedSkill> = selected_skills
+        .iter()
+        .map(|(repo_path, frontmatter)| {
+            let path_value = if *repo_path == *temp_dir.path() {
+                String::new()
             } else {
-                skipped_existing.push(frontmatter.name.clone());
-                continue;
+                repo_path
+                    .strip_prefix(temp_dir.path())
+                    .unwrap_or(repo_path)
+                    .to_string_lossy()
+                    .into_owned()
+            };
+            install::ResolvedSkill {
+                repo_path: repo_path.clone(),
+                frontmatter: frontmatter.clone(),
+                label: label.clone(),
+                path: path_value,
+                commit: commit.clone(),
+                remote: remote.clone(),
+                branch: branch.clone(),
             }
-        }
+        })
+        .collect();
 
-        fs::copy_skill(repo_path, &dest_dir)?;
-
-        let path_value = if *repo_path == *temp_dir.path() {
-            String::new()
-        } else {
-            repo_path
-                .strip_prefix(temp_dir.path())
-                .unwrap_or(repo_path)
-                .to_string_lossy()
-                .into_owned()
-        };
-
-        let mut entry = SkillEntry::new(&label, &path_value, frontmatter, &commit, &remote);
-        entry.set_branch(&branch);
-        manifest.add_skill(&frontmatter.name, entry);
-
-        let version_tag = frontmatter
-            .version
-            .as_deref()
-            .filter(|v| !v.is_empty())
-            .map(|v| format!(" v{}", v))
-            .unwrap_or_default();
-        installed.push(format!("{}{}", frontmatter.name, version_tag));
-    }
-
-    manifest.save(manifest_path)?;
+    let install_result = install::install_skills(&resolved, force, skills_dir, manifest_path)?;
 
     // --- Output ---
-    if !installed.is_empty() {
+    if !install_result.installed.is_empty() {
         eprintln!();
-        if installed.len() == 1 {
+        if install_result.installed.len() == 1 {
             eprintln!(
                 "  {} Installed {}{}{}",
                 style::styled(GREEN, "\u{2713}"),
                 style::BOLD,
-                installed[0],
+                install_result.installed[0],
                 style::RESET,
             );
         } else {
             eprintln!(
                 "  {} Installed {} skills:\n",
                 style::styled(GREEN, "\u{2713}"),
-                installed.len(),
+                install_result.installed.len(),
             );
 
-            for name in &installed {
+            for name in &install_result.installed {
                 eprintln!("    {}", name);
             }
         }
     }
 
-    for name in &skipped_tracked {
+    for name in &install_result.skipped_tracked {
         eprintln!(
             "  {} {} is already installed (use --force to overwrite)",
             style::styled(DIM, "\u{2713}"),
@@ -198,7 +175,7 @@ pub fn execute(
         );
     }
 
-    for name in &skipped_existing {
+    for name in &install_result.skipped_existing {
         eprintln!(
             "  {} {} directory exists (not tracked, use --force)",
             style::styled(YELLOW, "\u{26a0}"),
@@ -206,7 +183,10 @@ pub fn execute(
         );
     }
 
-    if installed.is_empty() && skipped_tracked.is_empty() && skipped_existing.is_empty() {
+    if install_result.installed.is_empty()
+        && install_result.skipped_tracked.is_empty()
+        && install_result.skipped_existing.is_empty()
+    {
         eprintln!("  No new skills installed.");
     }
 
@@ -246,54 +226,41 @@ fn execute_file_url(
     let frontmatter =
         spec::validate_skill(&repo_path).context("Downloaded file is not a valid SKILL.md")?;
 
-    fs::ensure_skills_dir(skills_dir)?;
-    let mut manifest = Manifest::load(manifest_path)?;
-
-    let dest_dir = skills_dir.join(&frontmatter.name);
-    if dest_dir.exists() && !force {
-        if manifest.is_tracked(&frontmatter.name) {
-            eprintln!(
-                "  {} {} is already installed (use --force to overwrite)",
-                style::styled(DIM, "\u{2713}"),
-                frontmatter.name,
-            );
-            return Ok(());
-        } else {
-            eprintln!(
-                "  {} {} directory exists (not tracked, use --force)",
-                style::styled(YELLOW, "\u{26a0}"),
-                frontmatter.name,
-            );
-            return Ok(());
-        }
-    }
-
-    fs::copy_skill(&repo_path, &dest_dir)?;
-
     let path_value = path_override.unwrap_or_default();
+    let resolved = vec![install::ResolvedSkill {
+        repo_path,
+        frontmatter,
+        label,
+        path: path_value,
+        commit: "file:".to_string(),
+        remote: url,
+        branch: String::new(),
+    }];
 
-    let mut entry = SkillEntry::new(&label, &path_value, &frontmatter, "file:", &url);
-    entry.set_branch("");
-    manifest.add_skill(&frontmatter.name, entry);
-    manifest.save(manifest_path)?;
+    let install_result = install::install_skills(&resolved, force, skills_dir, manifest_path)?;
 
-    let version_tag = frontmatter
-        .version
-        .as_deref()
-        .filter(|v| !v.is_empty())
-        .map(|v| format!(" v{}", v))
-        .unwrap_or_default();
-
-    let skill_display = format!("{}{}", frontmatter.name, version_tag);
-
-    eprintln!();
-    eprintln!(
-        "  {} Installed {}{}{}",
-        style::styled(GREEN, "\u{2713}"),
-        style::BOLD,
-        skill_display,
-        style::RESET,
-    );
+    if let Some(name) = install_result.installed.first() {
+        eprintln!();
+        eprintln!(
+            "  {} Installed {}{}{}",
+            style::styled(GREEN, "\u{2713}"),
+            style::BOLD,
+            name,
+            style::RESET,
+        );
+    } else if !install_result.skipped_tracked.is_empty() {
+        eprintln!(
+            "  {} {} is already installed (use --force to overwrite)",
+            style::styled(DIM, "\u{2713}"),
+            install_result.skipped_tracked[0],
+        );
+    } else if !install_result.skipped_existing.is_empty() {
+        eprintln!(
+            "  {} {} directory exists (not tracked, use --force)",
+            style::styled(YELLOW, "\u{26a0}"),
+            install_result.skipped_existing[0],
+        );
+    }
 
     Ok(())
 }
