@@ -522,10 +522,11 @@ pub fn execute(
     }
 
     let skills_to_update: Vec<String> = if let Some(specific_name) = name {
-        if !manifest.is_tracked(specific_name) {
+        let resolved = manifest.resolve_names(specific_name);
+        if resolved.is_empty() {
             bail!("Skill '{}' not found in manifest.", specific_name);
         }
-        vec![specific_name.to_string()]
+        resolved
     } else {
         if manifest.is_empty() {
             println!("No skills to update.");

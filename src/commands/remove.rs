@@ -7,7 +7,8 @@ use crate::fs;
 pub fn execute(name: &str, force: bool, skills_dir: &Path, manifest_path: &Path) -> Result<()> {
     let mut manifest = Manifest::load(manifest_path)?;
 
-    if !manifest.is_tracked(name) {
+    let names = manifest.resolve_names(name);
+    if names.is_empty() {
         bail!(
             "Skill '{}' is not installed by tome. Use `rm -rf` to remove manually-placed skills.",
             name
@@ -15,7 +16,17 @@ pub fn execute(name: &str, force: bool, skills_dir: &Path, manifest_path: &Path)
     }
 
     if !force {
-        print!("Remove skill '{}'? [y/N]: ", name);
+        let label = if names.len() == 1 {
+            format!("Remove skill '{}'?", names[0])
+        } else {
+            format!(
+                "Remove {} skills from '{}'? ({})",
+                names.len(),
+                name,
+                names.join(", ")
+            )
+        };
+        print!("{} [y/N]: ", label);
         use std::io::{self, Write};
         io::stdout().flush()?;
         let mut input = String::new();
@@ -26,13 +37,14 @@ pub fn execute(name: &str, force: bool, skills_dir: &Path, manifest_path: &Path)
         }
     }
 
-    let skill_dir = skills_dir.join(name);
-    fs::remove_skill_dir(&skill_dir)?;
+    for n in &names {
+        let skill_dir = skills_dir.join(n);
+        fs::remove_skill_dir(&skill_dir)?;
+        manifest.remove_skill(n);
+        println!("Removed: {}", n);
+    }
 
-    manifest.remove_skill(name);
     manifest.save(manifest_path)?;
-
-    println!("Removed: {}", name);
     Ok(())
 }
 
