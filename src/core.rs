@@ -3,4 +3,5 @@ pub mod git;
 pub mod manifest;
 pub mod normalize;
 pub mod parse_source;
+pub(crate) mod skip;
 pub mod spec;

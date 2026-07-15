@@ -2,6 +2,8 @@ use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 
+use super::skip::SKIP_DIRS;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitOutput {
     Progress,
@@ -166,6 +168,11 @@ pub fn clone_repo_sparse(url: &str, dest: &Path, output: GitOutput) -> Result<()
     }
     if has_root_skill {
         paths.push("SKILL.md".to_string());
+        // Include sibling directories for root skill with supporting content
+        if paths.len() == 1 {
+            let sibling_dirs = find_sibling_dirs(dest)?;
+            paths.extend(sibling_dirs);
+        }
     }
 
     if paths.is_empty() {
@@ -274,6 +281,46 @@ fn find_case_insensitive_path(repo_path: &Path, name: &str) -> Result<Option<Str
     } else {
         Ok(None)
     }
+}
+
+/// Find non-hidden sibling directories at repo root for sparse checkout.
+/// Used when a root-level SKILL.md exists without a `skills/` directory.
+/// Uses `git ls-tree` since the working tree may be empty after --no-checkout clone.
+fn find_sibling_dirs(repo_path: &Path) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .args(["ls-tree", "--name-only", "HEAD"])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to list git tree")?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut dirs = Vec::new();
+
+    for line in stdout.lines() {
+        let name = line.trim();
+        if name.is_empty() || name.starts_with('.') || SKIP_DIRS.contains(&name) {
+            continue;
+        }
+
+        // Check if it's a directory (tree object) by running ls-tree on it
+        let check = Command::new("git")
+            .args(["ls-tree", "--name-only", "HEAD", "--", name])
+            .current_dir(repo_path)
+            .output()
+            .context("Failed to inspect git tree entry")?;
+
+        if check.status.success() && !check.stdout.is_empty() {
+            // It's a tree (directory) if ls-tree returns children
+            dirs.push(name.to_string());
+        }
+    }
+
+    dirs.sort();
+    Ok(dirs)
 }
 
 pub fn get_commit_hash(repo_path: &Path) -> Result<String> {
@@ -769,6 +816,107 @@ mod tests {
                 .join("my-skill")
                 .join("SKILL.md")
                 .exists()
+        );
+    }
+
+    #[test]
+    fn test_find_sibling_dirs_for_root_skill() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+
+        // Create root SKILL.md + supporting dirs with files
+        fs::write(
+            repo.join("SKILL.md"),
+            "---\nname: test\ndescription: test\n---\n",
+        )
+        .unwrap();
+        fs::create_dir(repo.join("rules")).unwrap();
+        fs::write(repo.join("rules").join("a.md"), "rule a").unwrap();
+        fs::create_dir(repo.join("checks")).unwrap();
+        fs::write(repo.join("checks").join("b.md"), "check b").unwrap();
+
+        // Create dirs that should be skipped
+        fs::create_dir(repo.join(".git")).unwrap();
+        fs::create_dir(repo.join(".github")).unwrap();
+        fs::create_dir(repo.join("node_modules")).unwrap();
+
+        // Init git repo so git ls-tree works
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+
+        let dirs = find_sibling_dirs(&repo).unwrap();
+        assert!(dirs.contains(&"rules".to_string()));
+        assert!(dirs.contains(&"checks".to_string()));
+        assert!(!dirs.contains(&".git".to_string()));
+        assert!(!dirs.contains(&".github".to_string()));
+        assert!(!dirs.contains(&"node_modules".to_string()));
+    }
+
+    #[test]
+    fn test_clone_sparse_includes_sibling_dirs_for_root_skill() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+
+        // Root SKILL.md + rules/ dir with files
+        fs::write(
+            repo.join("SKILL.md"),
+            "---\nname: test\ndescription: test\n---\n",
+        )
+        .unwrap();
+        fs::create_dir(repo.join("rules")).unwrap();
+        fs::write(repo.join("rules").join("a.md"), "rule a").unwrap();
+        fs::create_dir(repo.join("checks")).unwrap();
+        fs::write(repo.join("checks").join("b.md"), "check b").unwrap();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+
+        let dest = temp.path().join("out");
+        clone_repo_sparse(&repo.to_string_lossy(), &dest, GitOutput::Quiet).unwrap();
+
+        assert!(
+            dest.join("SKILL.md").exists(),
+            "sparse checkout should include SKILL.md"
+        );
+        assert!(
+            dest.join("rules").exists(),
+            "sparse checkout should include rules/ sibling dir"
+        );
+        assert!(
+            dest.join("rules").join("a.md").exists(),
+            "sparse checkout should include files in rules/"
+        );
+        assert!(
+            dest.join("checks").exists(),
+            "sparse checkout should include checks/ sibling dir"
         );
     }
 }
