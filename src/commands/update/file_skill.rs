@@ -2,8 +2,8 @@ use std::path::Path;
 
 use crate::core::{download, manifest::Manifest, spec};
 use crate::fs;
+use crate::output;
 use crate::progress::{ProgressPhase, RepoOutcome, UpdateProgress};
-use crate::style::{self, DIM, GREEN, YELLOW};
 
 pub(crate) enum FileUpdateResult {
     Updated,
@@ -30,12 +30,7 @@ pub(crate) fn update_file_skill(
     let downloaded = match download::download_skill_file(&url) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!(
-                "  {} Failed to download {}: {}",
-                style::styled(YELLOW, "\u{2717}"),
-                name,
-                e
-            );
+            output::print_failed(name, "download", &e.to_string());
             progress.skill_checked();
             progress.repo_finished(name, RepoOutcome::new(0, 0, 1, 0));
             return FileUpdateResult::Failed;
@@ -49,11 +44,7 @@ pub(crate) fn update_file_skill(
         let existing_bytes = std::fs::read(&existing_md).unwrap_or_default();
         if existing_bytes == downloaded.content {
             if verbose {
-                println!(
-                    "  {} Already up to date: {} (file)",
-                    style::styled(DIM, "\u{2713}"),
-                    name,
-                );
+                output::print_up_to_date(name, "file");
             }
             progress.skill_checked();
             progress.repo_finished(name, RepoOutcome::new(0, 1, 0, 0));
@@ -64,12 +55,7 @@ pub(crate) fn update_file_skill(
     progress.phase(ProgressPhase::Copying);
     if let Err(e) = fs::copy_skill(&downloaded.path, &skill_dir) {
         if verbose {
-            eprintln!(
-                "  {} Failed to copy {}: {}",
-                style::styled(YELLOW, "\u{2717}"),
-                name,
-                e
-            );
+            output::print_failed(name, "copy", &e.to_string());
         }
         progress.skill_checked();
         progress.repo_finished(name, RepoOutcome::new(0, 0, 1, 0));
@@ -93,11 +79,7 @@ pub(crate) fn update_file_skill(
     manifest.update_skill(name, "file:", &version, "", frontmatter.description);
 
     if verbose {
-        println!(
-            "  {} Updated: {} (file)",
-            style::styled(GREEN, "\u{2713}"),
-            name,
-        );
+        output::print_file_updated(name);
     }
 
     progress.skill_checked();

@@ -3,7 +3,8 @@ use std::path::Path;
 
 use crate::core::{download, git, install, parse_source, repo_detect, spec};
 use crate::fs;
-use crate::style::{self, CYAN, DIM, GREEN, YELLOW};
+use crate::output;
+use crate::style::{self, CYAN};
 
 pub fn execute(
     source: &str,
@@ -147,40 +148,18 @@ pub fn execute(
     if !install_result.installed.is_empty() {
         eprintln!();
         if install_result.installed.len() == 1 {
-            eprintln!(
-                "  {} Installed {}{}{}",
-                style::styled(GREEN, "\u{2713}"),
-                style::BOLD,
-                install_result.installed[0],
-                style::RESET,
-            );
+            output::print_installed(&install_result.installed[0]);
         } else {
-            eprintln!(
-                "  {} Installed {} skills:\n",
-                style::styled(GREEN, "\u{2713}"),
-                install_result.installed.len(),
-            );
-
-            for name in &install_result.installed {
-                eprintln!("    {}", name);
-            }
+            output::print_installed_multi(&install_result.installed);
         }
     }
 
     for name in &install_result.skipped_tracked {
-        eprintln!(
-            "  {} {} is already installed (use --force to overwrite)",
-            style::styled(DIM, "\u{2713}"),
-            name,
-        );
+        output::print_skipped_tracked(name);
     }
 
     for name in &install_result.skipped_existing {
-        eprintln!(
-            "  {} {} directory exists (not tracked, use --force)",
-            style::styled(YELLOW, "\u{26a0}"),
-            name,
-        );
+        output::print_skipped_existing(name);
     }
 
     if install_result.installed.is_empty()
@@ -241,25 +220,11 @@ fn execute_file_url(
 
     if let Some(name) = install_result.installed.first() {
         eprintln!();
-        eprintln!(
-            "  {} Installed {}{}{}",
-            style::styled(GREEN, "\u{2713}"),
-            style::BOLD,
-            name,
-            style::RESET,
-        );
+        output::print_installed(name);
     } else if !install_result.skipped_tracked.is_empty() {
-        eprintln!(
-            "  {} {} is already installed (use --force to overwrite)",
-            style::styled(DIM, "\u{2713}"),
-            install_result.skipped_tracked[0],
-        );
+        output::print_skipped_tracked(&install_result.skipped_tracked[0]);
     } else if !install_result.skipped_existing.is_empty() {
-        eprintln!(
-            "  {} {} directory exists (not tracked, use --force)",
-            style::styled(YELLOW, "\u{26a0}"),
-            install_result.skipped_existing[0],
-        );
+        output::print_skipped_existing(&install_result.skipped_existing[0]);
     }
 
     Ok(())
