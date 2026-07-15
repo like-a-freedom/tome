@@ -305,4 +305,101 @@ mod tests {
         };
         assert_eq!(format_version_tag(&fm_empty), "");
     }
+
+    #[test]
+    fn test_from_detected_root_path() {
+        let temp = TempDir::new().unwrap();
+        let fm = make_fm("my-skill");
+        let skill = ResolvedSkill::from_detected(
+            temp.path().to_path_buf(),
+            temp.path(),
+            fm,
+            "owner/repo".to_string(),
+            "abc1234".to_string(),
+            "https://github.com/owner/repo.git".to_string(),
+            "main".to_string(),
+        );
+        assert_eq!(skill.path, "", "root path should yield empty relative path");
+        assert_eq!(skill.commit, "abc1234");
+        assert_eq!(skill.branch, "main");
+        assert_eq!(skill.remote, "https://github.com/owner/repo.git");
+    }
+
+    #[test]
+    fn test_from_detected_subdirectory_path() {
+        let temp = TempDir::new().unwrap();
+        let repo_root = temp.path();
+        let subdir = repo_root.join("skills").join("my-skill");
+        let fm = make_fm("my-skill");
+
+        let skill = ResolvedSkill::from_detected(
+            subdir,
+            repo_root,
+            fm,
+            "owner/repo".to_string(),
+            "abc1234".to_string(),
+            "https://github.com/owner/repo.git".to_string(),
+            "main".to_string(),
+        );
+        assert_eq!(
+            skill.path, "skills/my-skill",
+            "should compute relative path"
+        );
+        assert_eq!(skill.commit, "abc1234");
+    }
+
+    #[test]
+    fn test_from_detected_path_outside_root() {
+        // Edge case: repo_path not under temp_root — should keep full path
+        let temp = TempDir::new().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let fm = make_fm("my-skill");
+
+        let skill = ResolvedSkill::from_detected(
+            other.path().to_path_buf(),
+            temp.path(),
+            fm,
+            "owner/repo".to_string(),
+            "abc1234".to_string(),
+            "https://github.com/owner/repo.git".to_string(),
+            "main".to_string(),
+        );
+        // Path outside root should fall back to full repo_path
+        assert!(
+            !skill.path.is_empty(),
+            "fallback should produce non-empty path"
+        );
+    }
+
+    #[test]
+    fn test_from_file_url() {
+        let temp = TempDir::new().unwrap();
+        let fm = make_fm("my-skill");
+        let skill = ResolvedSkill::from_file_url(
+            temp.path().to_path_buf(),
+            fm,
+            "file:///path/to/SKILL.md".to_string(),
+            String::new(),
+            "https://example.com/SKILL.md".to_string(),
+        );
+        assert_eq!(skill.commit, "file:", "file URL commit should be 'file:'");
+        assert_eq!(skill.branch, "", "file URL should have empty branch");
+        assert_eq!(skill.remote, "https://example.com/SKILL.md");
+        assert_eq!(skill.path, "");
+    }
+
+    #[test]
+    fn test_from_file_url_with_path_override() {
+        let temp = TempDir::new().unwrap();
+        let fm = make_fm("sub-skill");
+        let skill = ResolvedSkill::from_file_url(
+            temp.path().to_path_buf(),
+            fm,
+            "file:///path/to/SKILL.md".to_string(),
+            "sub/dir".to_string(),
+            "https://example.com/SKILL.md".to_string(),
+        );
+        assert_eq!(skill.path, "sub/dir", "should preserve custom path");
+        assert_eq!(skill.commit, "file:");
+    }
 }

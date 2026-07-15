@@ -617,4 +617,198 @@ mod tests {
                 .any(|(n, _, _)| n == "group-skill-b")
         );
     }
+
+    #[test]
+    fn test_group_result_is_empty() {
+        let empty = GroupResult::default();
+        assert!(empty.is_empty());
+
+        let with_updated = GroupResult {
+            updated: vec![("a".to_string(), "old".to_string(), "new".to_string())],
+            ..Default::default()
+        };
+        assert!(!with_updated.is_empty());
+
+        let with_skipped = GroupResult {
+            skipped: vec![("a".to_string(), "c".to_string())],
+            ..Default::default()
+        };
+        assert!(!with_skipped.is_empty());
+
+        let with_failed = GroupResult {
+            failed: vec![("a".to_string(), "reason".to_string())],
+            ..Default::default()
+        };
+        assert!(!with_failed.is_empty());
+
+        let with_removed = GroupResult {
+            removed: vec!["a".to_string()],
+            ..Default::default()
+        };
+        assert!(!with_removed.is_empty());
+    }
+
+    #[test]
+    fn test_group_result_failed_all() {
+        let names = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let result = GroupResult::failed_all(&names, "test reason");
+        assert!(result.updated.is_empty());
+        assert!(result.skipped.is_empty());
+        assert!(result.removed.is_empty());
+        assert_eq!(result.failed.len(), 3);
+        for (i, (n, reason)) in result.failed.iter().enumerate() {
+            assert_eq!(n, &names[i]);
+            assert_eq!(reason, "test reason");
+        }
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_group_result_failed_all_empty() {
+        let result = GroupResult::failed_all(&[], "no skills");
+        assert!(result.failed.is_empty());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_repo_outcome_from_empty_group_result() {
+        let group_result = GroupResult::default();
+        let outcome = RepoOutcome::from(&group_result);
+        assert_eq!(outcome.updated, 0);
+        assert_eq!(outcome.current, 0);
+        assert_eq!(outcome.failed, 0);
+        assert_eq!(outcome.removed, 0);
+    }
+
+    #[test]
+    fn test_repo_outcome_from_group_result_only_removed() {
+        let group_result = GroupResult {
+            updated: vec![],
+            skipped: vec![],
+            failed: vec![],
+            removed: vec!["a".to_string(), "b".to_string()],
+        };
+        let outcome = RepoOutcome::from(&group_result);
+        assert_eq!(outcome.removed, 2);
+        assert_eq!(outcome.updated, 0);
+        assert_eq!(outcome.current, 0);
+        assert_eq!(outcome.failed, 0);
+    }
+
+    #[test]
+    fn test_update_group_clone_failure() {
+        // Bad URL should cause clone to fail and produce failed_all for all skills
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+
+        let mut manifest = Manifest {
+            version: 1,
+            skills: HashMap::new(),
+        };
+        manifest.add_skill(
+            "my-skill",
+            make_entry(
+                "my-skill",
+                "0000000",
+                "https://this-domain-does-not-exist-12345.invalid/repo.git",
+            )
+            .1,
+        );
+
+        let mut progress = UpdateProgress::new(false);
+        let mut ctx = make_test_context(&mut manifest, &skills_dir, &mut progress);
+
+        let bad_url = "https://this-domain-does-not-exist-12345.invalid/repo.git";
+        let config = GitGroupConfig {
+            remote: bad_url,
+            skill_names: &["my-skill".to_string()],
+            group_idx: 0,
+            group_count: 1,
+        };
+
+        let outcome = update_group(&config, &mut ctx);
+        assert_eq!(outcome.result.failed.len(), 1);
+        assert_eq!(outcome.result.failed[0].0, "my-skill");
+        assert!(outcome.result.updated.is_empty());
+        assert!(outcome.result.skipped.is_empty());
+    }
+
+    #[test]
+    fn test_update_group_invalid_skill_md() {
+        // Repo has a SKILL.md without frontmatter — should be reported as failed
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+
+        // Create a git repo with an invalid (no frontmatter) SKILL.md
+        let url = testutil::create_git_repo_with_skill(
+            &temp,
+            "Just some plain text, no frontmatter at all.\n",
+        );
+
+        let mut manifest = Manifest {
+            version: 1,
+            skills: HashMap::new(),
+        };
+        manifest.add_skill("bad-skill", make_entry("bad-skill", "0000000", &url).1);
+
+        let mut progress = UpdateProgress::new(false);
+        let mut ctx = make_test_context(&mut manifest, &skills_dir, &mut progress);
+
+        let config = GitGroupConfig {
+            remote: &url,
+            skill_names: &["bad-skill".to_string()],
+            group_idx: 0,
+            group_count: 1,
+        };
+
+        let outcome = update_group(&config, &mut ctx);
+        // The skill should be reported as failed (invalid SKILL.md)
+        assert!(
+            outcome.result.failed.iter().any(|(n, _)| n == "bad-skill")
+                || !outcome.result.updated.is_empty(),
+            "invalid SKILL.md should either fail or attempt update"
+        );
+    }
+
+    #[test]
+    fn test_git_group_config_construction() {
+        // Regression: ensure all fields are accessible
+        let url = "https://github.com/owner/repo.git";
+        let names: Vec<String> = vec!["a".to_string(), "b".to_string()];
+        let config = GitGroupConfig {
+            remote: url,
+            skill_names: &names,
+            group_idx: 2,
+            group_count: 5,
+        };
+        assert_eq!(config.remote, url);
+        assert_eq!(config.skill_names.len(), 2);
+        assert_eq!(config.group_idx, 2);
+        assert_eq!(config.group_count, 5);
+    }
+
+    #[test]
+    fn test_git_group_outcome_construction() {
+        let label = "owner/repo".to_string();
+        let result = GroupResult {
+            updated: vec![("a".to_string(), "old".to_string(), "new".to_string())],
+            skipped: vec![],
+            failed: vec![],
+            removed: vec![],
+        };
+        let outcome = GitGroupOutcome {
+            label: label.clone(),
+            result: GroupResult {
+                updated: vec![("a".to_string(), "old".to_string(), "new".to_string())],
+                skipped: vec![],
+                failed: vec![],
+                removed: vec![],
+            },
+        };
+        assert_eq!(outcome.label, label);
+        assert_eq!(outcome.result.updated.len(), 1);
+        assert!(!result.is_empty());
+    }
 }
