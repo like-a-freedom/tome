@@ -17,3 +17,7 @@ pub(crate) const SKIP_DIRS: &[&str] = &[
     ".codex",
     ".windsurf",
 ];
+
+/// Canonical skill-directory names, in priority order.
+/// Used by sparse checkout (git.rs) and repo detection (repo_detect.rs).
+pub(crate) const SKILL_SUBDIRS: &[&str] = &["skills", ".claude/skills", ".agents/skills"];
