@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::skip::SKIP_DIRS;
+use super::skip::{SKILL_SUBDIRS, SKIP_DIRS};
 
 #[derive(Debug, Clone)]
 pub enum RepoType {
@@ -20,7 +20,7 @@ pub struct SkillInfo {
 
 pub fn detect_repo_type(repo_path: &Path) -> Result<RepoType> {
     let mut subdir_skills: Option<Vec<SkillInfo>> = None;
-    for subdir in &["skills", ".claude/skills", ".agents/skills"] {
+    for subdir in SKILL_SUBDIRS {
         if let Some(skills) = find_skills_in_subdir(repo_path, subdir)? {
             subdir_skills = Some(skills);
             break;

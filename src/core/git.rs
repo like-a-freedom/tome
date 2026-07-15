@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 
-use super::skip::SKIP_DIRS;
+use super::skip::{SKILL_SUBDIRS, SKIP_DIRS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitOutput {
@@ -141,30 +141,19 @@ pub fn clone_repo_sparse(url: &str, dest: &Path, output: GitOutput) -> Result<()
     )?;
 
     // Phase 2: Inspect tree to decide what to fetch
-    let skills_path = find_case_insensitive_path(dest, "skills")?;
-    let claude_skills_path = if skills_path.is_none() && has_path_in_tree(dest, ".claude/skills")? {
-        Some(".claude/skills".to_string())
-    } else {
-        None
-    };
-    let agents_skills_path = if skills_path.is_none()
-        && claude_skills_path.is_none()
-        && has_path_in_tree(dest, ".agents/skills")?
-    {
-        Some(".agents/skills".to_string())
-    } else {
-        None
-    };
+    let mut skills_subdir: Option<String> = None;
+    for subdir in SKILL_SUBDIRS {
+        if let Some(path) = find_case_insensitive_path(dest, subdir)? {
+            skills_subdir = Some(path);
+            break;
+        }
+    }
     let has_root_skill = has_path_in_tree(dest, "SKILL.md")?;
 
     // Phase 3: Set sparse-checkout paths
     let mut paths: Vec<String> = Vec::new();
-    if let Some(path) = skills_path {
-        paths.push(path);
-    } else if let Some(path) = claude_skills_path {
-        paths.push(path);
-    } else if let Some(ref path) = agents_skills_path {
-        paths.push(path.to_string());
+    if let Some(path) = &skills_subdir {
+        paths.push(path.clone());
     }
     if has_root_skill {
         paths.push("SKILL.md".to_string());
@@ -182,7 +171,7 @@ pub fn clone_repo_sparse(url: &str, dest: &Path, output: GitOutput) -> Result<()
     }
 
     // Cone mode only supports top-level directories; .agents/skills is nested
-    let use_cone = agents_skills_path.is_none();
+    let use_cone = skills_subdir.as_deref() != Some(".agents/skills");
     let init_args = if use_cone {
         vec!["sparse-checkout", "init", "--cone"]
     } else {
