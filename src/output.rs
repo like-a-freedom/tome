@@ -1,137 +1,397 @@
 use crate::style::{self, CYAN, DIM, GREEN, YELLOW};
 
-pub(crate) fn print_installed(name: &str) {
-    eprintln!(
+fn check_mark() -> &'static str {
+    "\u{2713}"
+}
+fn warning_mark() -> &'static str {
+    "\u{26a0}"
+}
+fn cross_mark() -> &'static str {
+    "\u{2717}"
+}
+fn arrow_mark() -> &'static str {
+    "\u{25b8}"
+}
+
+pub(crate) fn format_installed(name: &str) -> String {
+    format!(
         "  {} Installed {}{}{}",
-        style::styled(GREEN, "\u{2713}"),
+        style::styled(GREEN, check_mark()),
         style::BOLD,
         name,
         style::RESET,
-    );
+    )
+}
+
+pub(crate) fn print_installed(name: &str) {
+    eprintln!("{}", format_installed(name));
+}
+
+pub(crate) fn format_installed_multi(names: &[String]) -> String {
+    let mut out = String::new();
+    out.push('\n');
+    out.push_str(&format!(
+        "  {} Installed {} skills:\n",
+        style::styled(GREEN, check_mark()),
+        names.len(),
+    ));
+    for name in names {
+        out.push_str(&format!("    {}\n", name));
+    }
+    out
 }
 
 pub(crate) fn print_installed_multi(names: &[String]) {
-    eprintln!();
-    eprintln!(
-        "  {} Installed {} skills:\n",
-        style::styled(GREEN, "\u{2713}"),
-        names.len(),
-    );
-    for name in names {
-        eprintln!("    {}", name);
-    }
+    eprint!("{}", format_installed_multi(names));
 }
 
-pub(crate) fn print_updated(name: &str, version: &str, old_commit: &str, new_commit: &str) {
+pub(crate) fn format_updated(
+    name: &str,
+    version: &str,
+    old_commit: &str,
+    new_commit: &str,
+) -> String {
     if version.is_empty() {
-        println!(
+        format!(
             "  {} Updated: {} ({} -> {})",
-            style::styled(GREEN, "\u{2713}"),
+            style::styled(GREEN, check_mark()),
             name,
             old_commit,
             new_commit,
-        );
+        )
     } else {
-        println!(
+        format!(
             "  {} Updated: {} {} ({} -> {})",
-            style::styled(GREEN, "\u{2713}"),
+            style::styled(GREEN, check_mark()),
             name,
             version,
             old_commit,
             new_commit,
-        );
+        )
     }
 }
 
-pub(crate) fn print_up_to_date(name: &str, commit: &str) {
-    if commit.is_empty() || commit == "file" {
-        println!(
+pub(crate) fn print_updated(name: &str, version: &str, old_commit: &str, new_commit: &str) {
+    println!("{}", format_updated(name, version, old_commit, new_commit));
+}
+
+pub(crate) fn format_up_to_date(name: &str, commit_or_marker: &str) -> String {
+    if commit_or_marker.is_empty() || commit_or_marker == "file" {
+        format!(
             "  {} Already up to date: {} (file)",
-            style::styled(DIM, "\u{2713}"),
+            style::styled(DIM, check_mark()),
             name,
-        );
+        )
     } else {
-        println!(
+        format!(
             "  {} Already up to date: {} ({})",
-            style::styled(DIM, "\u{2713}"),
+            style::styled(DIM, check_mark()),
             name,
-            commit,
-        );
+            commit_or_marker,
+        )
     }
+}
+
+pub(crate) fn print_up_to_date(name: &str, commit_or_marker: &str) {
+    println!("{}", format_up_to_date(name, commit_or_marker));
+}
+
+pub(crate) fn format_file_updated(name: &str) -> String {
+    format!(
+        "  {} Updated: {} (file)",
+        style::styled(GREEN, check_mark()),
+        name,
+    )
 }
 
 pub(crate) fn print_file_updated(name: &str) {
-    println!(
-        "  {} Updated: {} (file)",
-        style::styled(GREEN, "\u{2713}"),
+    println!("{}", format_file_updated(name));
+}
+
+pub(crate) fn format_skipped_tracked(name: &str) -> String {
+    format!(
+        "  {} {} is already installed (use --force to overwrite)",
+        style::styled(DIM, check_mark()),
         name,
-    );
+    )
 }
 
 pub(crate) fn print_skipped_tracked(name: &str) {
-    eprintln!(
-        "  {} {} is already installed (use --force to overwrite)",
-        style::styled(DIM, "\u{2713}"),
+    eprintln!("{}", format_skipped_tracked(name));
+}
+
+pub(crate) fn format_skipped_existing(name: &str) -> String {
+    format!(
+        "  {} {} directory exists (not tracked, use --force)",
+        style::styled(YELLOW, warning_mark()),
         name,
-    );
+    )
 }
 
 pub(crate) fn print_skipped_existing(name: &str) {
-    eprintln!(
-        "  {} {} directory exists (not tracked, use --force)",
-        style::styled(YELLOW, "\u{26a0}"),
+    eprintln!("{}", format_skipped_existing(name));
+}
+
+pub(crate) fn format_failed(name: &str, action: &str, detail: &str) -> String {
+    format!(
+        "  {} Failed to {} {}: {}",
+        style::styled(YELLOW, cross_mark()),
+        action,
         name,
-    );
+        detail,
+    )
 }
 
 pub(crate) fn print_failed(name: &str, action: &str, detail: &str) {
-    eprintln!(
-        "  {} Failed to {} {}: {}",
-        style::styled(YELLOW, "\u{2717}"),
+    eprintln!("{}", format_failed(name, action, detail));
+}
+
+pub(crate) fn format_failed_action(action: &str, detail: &str) -> String {
+    format!(
+        "  {} {}: {}",
+        style::styled(YELLOW, cross_mark()),
         action,
-        name,
         detail,
-    );
+    )
 }
 
 pub(crate) fn print_failed_action(action: &str, detail: &str) {
-    eprintln!(
-        "  {} {}: {}",
-        style::styled(YELLOW, "\u{2717}"),
-        action,
-        detail,
-    );
+    eprintln!("{}", format_failed_action(action, detail));
+}
+
+pub(crate) fn format_removed(name: &str) -> String {
+    format!(
+        "  {} Removed {} \u{2014} no longer in repository",
+        style::styled(YELLOW, cross_mark()),
+        name,
+    )
 }
 
 pub(crate) fn print_removed(name: &str) {
-    eprintln!(
-        "  {} Removed {} \u{2014} no longer in repository",
-        style::styled(YELLOW, "\u{2717}"),
-        name,
-    );
+    eprintln!("{}", format_removed(name));
+}
+
+pub(crate) fn format_stale_header(count: usize, names: &[String]) -> String {
+    format!(
+        "{} Skipping {} stale entries: {}",
+        style::styled(YELLOW, warning_mark()),
+        count,
+        names.join(", "),
+    )
 }
 
 pub(crate) fn print_stale_header(count: usize, names: &[String]) {
-    eprintln!(
-        "{} Skipping {} stale entries: {}",
-        style::styled(YELLOW, "\u{26a0}"),
-        count,
-        names.join(", "),
-    );
+    eprintln!("{}", format_stale_header(count, names));
 }
 
-pub(crate) fn print_cloning_multi(label: &str, idx: usize, count: usize, skill_count: usize) {
+pub(crate) fn format_cloning_multi(
+    label: &str,
+    idx: usize,
+    count: usize,
+    skill_count: usize,
+) -> String {
     if count > 1 {
-        eprintln!(
+        format!(
             "{} [{}/{}] Cloning {} ({} skill{})",
-            style::styled(CYAN, "\u{25b8}"),
+            style::styled(CYAN, arrow_mark()),
             idx + 1,
             count,
             label,
             skill_count,
             if skill_count == 1 { "" } else { "s" },
-        );
+        )
     } else {
-        eprintln!("{} Cloning {}", style::styled(CYAN, "\u{25b8}"), label,);
+        format!("{} Cloning {}", style::styled(CYAN, arrow_mark()), label)
+    }
+}
+
+pub(crate) fn print_cloning_multi(label: &str, idx: usize, count: usize, skill_count: usize) {
+    eprintln!("{}", format_cloning_multi(label, idx, count, skill_count));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_installed() {
+        let out = format_installed("my-skill");
+        assert!(out.contains("Installed"));
+        assert!(out.contains("my-skill"));
+        assert!(out.contains(&style::styled(GREEN, check_mark())));
+    }
+
+    #[test]
+    fn test_format_installed_bold_name() {
+        let out = format_installed("my-skill");
+        assert!(out.contains(&format!("{}{}", style::BOLD, "my-skill")));
+    }
+
+    #[test]
+    fn test_format_installed_multi_single() {
+        let names = vec!["alpha".to_string()];
+        let out = format_installed_multi(&names);
+        assert!(out.contains("Installed 1 skills"));
+        assert!(out.contains("    alpha"));
+    }
+
+    #[test]
+    fn test_format_installed_multi_multiple() {
+        let names = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
+        let out = format_installed_multi(&names);
+        assert!(out.contains("Installed 3 skills"));
+        assert!(out.contains("    alpha"));
+        assert!(out.contains("    beta"));
+        assert!(out.contains("    gamma"));
+    }
+
+    #[test]
+    fn test_format_installed_multi_starts_with_newline() {
+        let out = format_installed_multi(&["a".to_string()]);
+        assert!(out.starts_with('\n'));
+    }
+
+    #[test]
+    fn test_format_installed_multi_ends_with_newline() {
+        let out = format_installed_multi(&["a".to_string()]);
+        assert!(out.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_format_updated_no_version() {
+        let out = format_updated("my-skill", "", "abc1234", "def5678");
+        assert!(out.contains("Updated: my-skill"));
+        assert!(out.contains("(abc1234 -> def5678)"));
+        assert!(!out.contains("v1"));
+    }
+
+    #[test]
+    fn test_format_updated_with_version() {
+        let out = format_updated("my-skill", "v1.2.3", "abc1234", "def5678");
+        assert!(out.contains("Updated: my-skill v1.2.3"));
+        assert!(out.contains("(abc1234 -> def5678)"));
+    }
+
+    #[test]
+    fn test_format_up_to_date_with_commit() {
+        let out = format_up_to_date("my-skill", "abc1234");
+        assert!(out.contains("Already up to date: my-skill"));
+        assert!(out.contains("(abc1234)"));
+    }
+
+    #[test]
+    fn test_format_up_to_date_with_file_marker() {
+        let out = format_up_to_date("my-skill", "file");
+        assert!(out.contains("Already up to date: my-skill"));
+        assert!(out.contains("(file)"));
+        assert!(!out.contains("(file "));
+    }
+
+    #[test]
+    fn test_format_up_to_date_with_empty_marker() {
+        // Empty marker treated as file marker (defensive)
+        let out = format_up_to_date("my-skill", "");
+        assert!(out.contains("(file)"));
+    }
+
+    #[test]
+    fn test_format_up_to_date_uses_dim_color() {
+        let out = format_up_to_date("my-skill", "abc");
+        assert!(out.contains(&style::styled(DIM, check_mark())));
+    }
+
+    #[test]
+    fn test_format_file_updated() {
+        let out = format_file_updated("my-skill");
+        assert!(out.contains("Updated: my-skill (file)"));
+    }
+
+    #[test]
+    fn test_format_skipped_tracked() {
+        let out = format_skipped_tracked("my-skill");
+        assert!(out.contains("my-skill is already installed"));
+        assert!(out.contains("--force"));
+    }
+
+    #[test]
+    fn test_format_skipped_existing() {
+        let out = format_skipped_existing("my-skill");
+        assert!(out.contains("my-skill directory exists"));
+        assert!(out.contains("not tracked"));
+        assert!(out.contains("--force"));
+    }
+
+    #[test]
+    fn test_format_skipped_existing_uses_warning_mark() {
+        let out = format_skipped_existing("my-skill");
+        assert!(out.contains(&style::styled(YELLOW, warning_mark())));
+    }
+
+    #[test]
+    fn test_format_failed_with_name() {
+        let out = format_failed("my-skill", "copy", "permission denied");
+        assert!(out.contains("Failed to copy my-skill: permission denied"));
+    }
+
+    #[test]
+    fn test_format_failed_action_no_name() {
+        let out = format_failed_action("Clone failed", "network error");
+        assert!(out.contains("Clone failed: network error"));
+    }
+
+    #[test]
+    fn test_format_failed_uses_cross_mark() {
+        let out = format_failed("name", "action", "detail");
+        assert!(out.contains(&style::styled(YELLOW, cross_mark())));
+    }
+
+    #[test]
+    fn test_format_removed() {
+        let out = format_removed("dead-skill");
+        assert!(out.contains("Removed dead-skill"));
+        assert!(out.contains("no longer in repository"));
+    }
+
+    #[test]
+    fn test_format_stale_header() {
+        let names = vec!["a".to_string(), "b".to_string()];
+        let out = format_stale_header(2, &names);
+        assert!(out.contains("Skipping 2 stale entries"));
+        assert!(out.contains("a, b"));
+    }
+
+    #[test]
+    fn test_format_cloning_multi_single_repo() {
+        let out = format_cloning_multi("owner/repo", 0, 1, 3);
+        assert!(out.contains("Cloning owner/repo"));
+        assert!(
+            !out.contains("[1/1]"),
+            "single-repo format should not include [N/M]"
+        );
+        assert!(
+            !out.contains("(3 skill"),
+            "single-repo format should not include skill count"
+        );
+    }
+
+    #[test]
+    fn test_format_cloning_multi_multiple_repos() {
+        let out = format_cloning_multi("owner/repo", 2, 5, 3);
+        assert!(out.contains("[3/5]"));
+        assert!(out.contains("Cloning owner/repo"));
+        assert!(out.contains("3 skills"));
+    }
+
+    #[test]
+    fn test_format_cloning_multi_singular_skill() {
+        let out = format_cloning_multi("owner/repo", 0, 2, 1);
+        assert!(out.contains("1 skill)"));
+        assert!(!out.contains("1 skills"));
+    }
+
+    #[test]
+    fn test_format_cloning_multi_plural_skills() {
+        let out = format_cloning_multi("owner/repo", 0, 2, 3);
+        assert!(out.contains("3 skills"));
     }
 }
