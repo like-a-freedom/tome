@@ -121,24 +121,15 @@ pub fn execute(
     let resolved: Vec<install::ResolvedSkill> = selected_skills
         .iter()
         .map(|(repo_path, frontmatter)| {
-            let path_value = if *repo_path == *temp_dir.path() {
-                String::new()
-            } else {
-                repo_path
-                    .strip_prefix(temp_dir.path())
-                    .unwrap_or(repo_path)
-                    .to_string_lossy()
-                    .into_owned()
-            };
-            install::ResolvedSkill {
-                repo_path: repo_path.clone(),
-                frontmatter: frontmatter.clone(),
-                label: label.clone(),
-                path: path_value,
-                commit: commit.clone(),
-                remote: remote.clone(),
-                branch: branch.clone(),
-            }
+            install::ResolvedSkill::from_detected(
+                repo_path.clone(),
+                temp_dir.path(),
+                frontmatter.clone(),
+                label.clone(),
+                commit.clone(),
+                remote.clone(),
+                branch.clone(),
+            )
         })
         .collect();
 
@@ -206,15 +197,13 @@ fn execute_file_url(
         spec::validate_skill(&repo_path).context("Downloaded file is not a valid SKILL.md")?;
 
     let path_value = path_override.unwrap_or_default();
-    let resolved = vec![install::ResolvedSkill {
+    let resolved = vec![install::ResolvedSkill::from_file_url(
         repo_path,
         frontmatter,
         label,
-        path: path_value,
-        commit: "file:".to_string(),
-        remote: url,
-        branch: String::new(),
-    }];
+        path_value,
+        url,
+    )];
 
     let install_result = install::install_skills(&resolved, force, skills_dir, manifest_path)?;
 
