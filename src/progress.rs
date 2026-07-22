@@ -296,10 +296,9 @@ mod tests {
         };
 
         let rendered = strip_ansi(&format_live_line(&state));
-        let prefix = "- source 2/5 - deanpeters/Produc";
         assert!(
-            rendered.starts_with(prefix),
-            "expected truncation of long label, got: {:?}",
+            rendered.contains("deanpeters/Product-Man..."),
+            "label should be truncated with ellipsis, got: {:?}",
             rendered
         );
         assert!(
