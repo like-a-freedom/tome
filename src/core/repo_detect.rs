@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -123,7 +124,8 @@ fn find_skills_in_subdir(repo_path: &Path, subdir: &str) -> Result<Option<Vec<Sk
     if !dir.exists() || !dir.is_dir() {
         return Ok(None);
     }
-    let skills = find_skills_in_dir(&dir)?;
+    let mut seen = HashSet::new();
+    let skills = find_skills_in_dir(&dir, &mut seen)?;
     if skills.is_empty() {
         Ok(None)
     } else {
@@ -131,7 +133,7 @@ fn find_skills_in_subdir(repo_path: &Path, subdir: &str) -> Result<Option<Vec<Sk
     }
 }
 
-fn find_skills_in_dir(dir: &Path) -> Result<Vec<SkillInfo>> {
+fn find_skills_in_dir(dir: &Path, seen: &mut HashSet<String>) -> Result<Vec<SkillInfo>> {
     let mut skills = Vec::new();
 
     for entry in fs::read_dir(dir)? {
@@ -156,13 +158,15 @@ fn find_skills_in_dir(dir: &Path) -> Result<Vec<SkillInfo>> {
             let frontmatter = crate::core::spec::parse_frontmatter(&content)
                 .context("Failed to parse SKILL.md frontmatter")?;
 
-            skills.push(SkillInfo {
-                name: frontmatter.name,
-                path,
-                description: Some(frontmatter.description),
-            });
+            if seen.insert(frontmatter.name.clone()) {
+                skills.push(SkillInfo {
+                    name: frontmatter.name,
+                    path,
+                    description: Some(frontmatter.description),
+                });
+            }
         } else {
-            skills.extend(find_skills_in_dir(&path)?);
+            skills.extend(find_skills_in_dir(&path, seen)?);
         }
     }
 
@@ -267,7 +271,7 @@ mod tests {
             fs::create_dir_all(&dir).unwrap();
             make_skill_md(&dir, "skipped", "should not appear");
         }
-        let result = find_skills_in_dir(&skills_dir).unwrap();
+        let result = find_skills_in_dir(&skills_dir, &mut HashSet::new()).unwrap();
         assert!(result.is_empty());
     }
 
@@ -282,7 +286,7 @@ mod tests {
         fs::create_dir_all(&prod_skill).unwrap();
         make_skill_md(&prod_skill, "grill-me", "Grill me");
         fs::write(skills_dir.join("engineering").join("README.md"), "readme").unwrap();
-        let result = find_skills_in_dir(&skills_dir).unwrap();
+        let result = find_skills_in_dir(&skills_dir, &mut HashSet::new()).unwrap();
         assert_eq!(result.len(), 2);
         let names: Vec<&str> = result.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"grill-with-docs"));
@@ -560,6 +564,35 @@ mod tests {
                 assert!(path.join("SKILL.md").exists());
             }
             other => panic!("Expected SingleSkillInDir, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_deduplicates_skills_with_same_name_across_agents() {
+        let temp = TempDir::new().unwrap();
+        // Same skill name in both claude/ and codex/
+        let claude_skill = temp.path().join("Skills/claude/nmt-chat");
+        fs::create_dir_all(&claude_skill).unwrap();
+        make_skill_md(&claude_skill, "nmt-chat", "Chat skill for claude");
+        let codex_skill = temp.path().join("Skills/codex/nmt-chat");
+        fs::create_dir_all(&codex_skill).unwrap();
+        make_skill_md(&codex_skill, "nmt-chat", "Chat skill for codex");
+        // Different skill only in codex/
+        let codex_diag = temp.path().join("Skills/codex/nmt-diagnose");
+        fs::create_dir_all(&codex_diag).unwrap();
+        make_skill_md(&codex_diag, "nmt-diagnose", "Diagnose skill");
+
+        let repo_type = detect_repo_type(temp.path()).unwrap();
+        match repo_type {
+            RepoType::MultiSkill(skills) => {
+                // nmt-chat appears once (from claude/, first alphabetically),
+                // nmt-diagnose appears once (from codex/)
+                assert_eq!(skills.len(), 2);
+                let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+                assert!(names.contains(&"nmt-chat"));
+                assert!(names.contains(&"nmt-diagnose"));
+            }
+            other => panic!("Expected MultiSkill, got {:?}", other),
         }
     }
 }
