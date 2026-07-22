@@ -166,12 +166,13 @@ pub fn clone_repo_sparse(url: &str, dest: &Path, output: GitOutput) -> Result<()
 
     if paths.is_empty() {
         bail!(
-            "No SKILL.md found in repository root, skills/, .claude/skills/, or .agents/skills/ directory"
+            "No SKILL.md found in repository root, skills/, Skills/, .claude/skills/, or .agents/skills/ directory"
         );
     }
 
-    // Cone mode only supports top-level directories; .agents/skills is nested
-    let use_cone = skills_subdir.as_deref() != Some(".agents/skills");
+    // Cone mode only supports top-level directories; nested paths like
+    // .agents/skills or Skills/claude need --no-cone
+    let use_cone = !skills_subdir.as_deref().is_some_and(|p| p.contains('/'));
     let init_args = if use_cone {
         vec!["sparse-checkout", "init", "--cone"]
     } else {
@@ -906,6 +907,57 @@ mod tests {
         assert!(
             dest.join("checks").exists(),
             "sparse checkout should include checks/ sibling dir"
+        );
+    }
+
+    #[test]
+    fn test_clone_sparse_with_skills_dir_agent_nesting() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(repo.join("Skills/claude/nmt-chat")).unwrap();
+        fs::write(
+            repo.join("Skills/claude/nmt-chat/SKILL.md"),
+            "---\name: nmt-chat\ndescription: Chat skill\n---\n",
+        )
+        .unwrap();
+        fs::create_dir_all(repo.join("Skills/codex/nmt-diagnose")).unwrap();
+        fs::write(
+            repo.join("Skills/codex/nmt-diagnose/SKILL.md"),
+            "---\nname: nmt-diagnose\ndescription: Diagnose skill\n---\n",
+        )
+        .unwrap();
+        fs::write(repo.join("README.md"), "not a skill").unwrap();
+
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+
+        let dest = temp.path().join("out");
+        clone_repo_sparse(&repo.to_string_lossy(), &dest, GitOutput::Quiet).unwrap();
+
+        assert!(
+            dest.join("Skills").exists(),
+            "sparse checkout should include Skills/"
+        );
+        assert!(
+            dest.join("Skills/claude/nmt-chat/SKILL.md").exists(),
+            "sparse checkout should include nested skill SKILL.md"
+        );
+        assert!(
+            dest.join("Skills/codex/nmt-diagnose/SKILL.md").exists(),
+            "sparse checkout should include second agent's skills"
         );
     }
 }
