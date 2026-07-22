@@ -84,7 +84,8 @@ SKILLS_DIR=/path/to/skills cargo run -- list
 
 ```ascii
 main.rs → lib.rs::run() → commands/{add,list,remove,update,export}
-                           core/{spec,manifest,git,normalize,parse_source,download}
+                           core/{spec,manifest,git,repo_detect,skip,install,download,parse_source}
+                           output.rs (shared format/print functions)
                            fs.rs (temp dirs, directory copy)
                            progress.rs (compact update status)
                            style.rs (ANSI helpers, box-drawing)
@@ -100,6 +101,7 @@ Key design decisions in `docs/DESIGN.md`, full architecture in `docs/ARCHITECTUR
 - SKILL.md format only, no translation
 - `.agents/skills/` as single source of truth, `.skills.json` manifest
 - `.agents/skills/` bundle support: sparse-checkout fetches nested `.agents/skills/` when present
+- `Skills/` directory support: detects `Skills/<agent>/<skill-name>/SKILL.md` with deduplication across agents
 - Top-level skill directories: detects `skill-name/SKILL.md` at repo root
 - `tome update` uses compact crossterm progress in interactive terminals and stays line-based in non-TTY output
 - `tome export` outputs `tome add` commands for all tracked skills (sorted alphabetically)
