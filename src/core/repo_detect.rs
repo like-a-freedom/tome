@@ -77,7 +77,7 @@ pub fn detect_repo_type(repo_path: &Path) -> Result<RepoType> {
         }
     } else {
         bail!(
-            "No SKILL.md found in repository root, skills/, .claude/skills/, .agents/skills/ directory, or top-level skill directories"
+            "No SKILL.md found in repository root, skills/, Skills/, .claude/skills/, .agents/skills/ directory, or top-level skill directories"
         )
     }
 }
@@ -523,6 +523,43 @@ mod tests {
                 assert!(names.contains(&"skill-a"));
             }
             other => panic!("Expected MultiSkill, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_multi_skill_in_skills_dir_agent_nesting() {
+        let temp = TempDir::new().unwrap();
+        let claude_skill = temp.path().join("Skills/claude/nmt-chat");
+        fs::create_dir_all(&claude_skill).unwrap();
+        make_skill_md(&claude_skill, "nmt-chat", "Chat skill");
+        let codex_skill = temp.path().join("Skills/codex/nmt-diagnose");
+        fs::create_dir_all(&codex_skill).unwrap();
+        make_skill_md(&codex_skill, "nmt-diagnose", "Diagnose skill");
+        let repo_type = detect_repo_type(temp.path()).unwrap();
+        match repo_type {
+            RepoType::MultiSkill(skills) => {
+                assert_eq!(skills.len(), 2);
+                let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+                assert!(names.contains(&"nmt-chat"));
+                assert!(names.contains(&"nmt-diagnose"));
+            }
+            other => panic!("Expected MultiSkill, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_detect_single_skill_in_skills_dir_agent_nesting() {
+        let temp = TempDir::new().unwrap();
+        let skill_dir = temp.path().join("Skills/claude/nmt-chat");
+        fs::create_dir_all(&skill_dir).unwrap();
+        make_skill_md(&skill_dir, "nmt-chat", "Chat skill");
+        let repo_type = detect_repo_type(temp.path()).unwrap();
+        match repo_type {
+            RepoType::SingleSkillInDir { name, path } => {
+                assert_eq!(name, "nmt-chat");
+                assert!(path.join("SKILL.md").exists());
+            }
+            other => panic!("Expected SingleSkillInDir, got {:?}", other),
         }
     }
 }
