@@ -195,11 +195,13 @@ pub fn clone_repo_sparse(url: &str, dest: &Path, output: GitOutput) -> Result<()
         args.extend(path_refs);
         args
     } else {
-        vec!["sparse-checkout", "set", "--no-cone"]
+        let mut args = vec!["sparse-checkout", "set", "--no-cone"];
+        let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+        args.extend(path_refs);
+        args
     };
     let set_output = Command::new("git")
         .args(&set_args)
-        .args(&paths)
         .current_dir(dest)
         .output()
         .context("Failed to set sparse-checkout paths")?;
