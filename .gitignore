@@ -6,3 +6,9 @@
 .DS_Store
 .pi/
 docs/
+.mimocode/
+.commandcode/
+.vscode/
+.zed/
+.superpowers/
+.agents/prompts
