@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
+use std::process::Command as ProcessCommand;
 use tempfile::TempDir;
 
 mod common;
@@ -457,6 +458,136 @@ fn test_update_details_require_verbose() {
 }
 
 #[test]
+fn test_update_changed_git_skill_through_cli() {
+    let temp = TempDir::new().unwrap();
+    let repo_dir = temp.path().join("repo");
+    fs::create_dir_all(&repo_dir).unwrap();
+    fs::write(
+        repo_dir.join("SKILL.md"),
+        "---\nname: ChangedSkill\ndescription: old\n---\nold body\n",
+    )
+    .unwrap();
+    common::init_git_repo(&repo_dir);
+
+    let skills_dir = temp.path().join(".agents/skills");
+    let repo_url = format!("file://{}", repo_dir.display());
+    let mut add = Command::cargo_bin("tome").unwrap();
+    add.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .arg("add")
+        .arg(&repo_url)
+        .assert()
+        .success();
+
+    fs::write(
+        repo_dir.join("SKILL.md"),
+        "---\nname: ChangedSkill\ndescription: new\n---\nnew body\n",
+    )
+    .unwrap();
+    ProcessCommand::new("git")
+        .args(["add", "SKILL.md"])
+        .current_dir(&repo_dir)
+        .status()
+        .unwrap();
+    ProcessCommand::new("git")
+        .args(["commit", "-m", "update skill"])
+        .current_dir(&repo_dir)
+        .status()
+        .unwrap();
+
+    let mut update = Command::cargo_bin("tome").unwrap();
+    update
+        .env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .args(["update", "--verbose"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated: ChangedSkill"));
+
+    let installed = fs::read_to_string(skills_dir.join("ChangedSkill/SKILL.md")).unwrap();
+    assert!(installed.contains("new body"));
+}
+
+#[test]
+fn test_update_removes_skill_deleted_from_custom_source_path() {
+    let temp = TempDir::new().unwrap();
+    let repo_dir = temp.path().join("repo");
+    let source_skill = repo_dir.join("skills/custom");
+    fs::create_dir_all(&source_skill).unwrap();
+    fs::write(
+        source_skill.join("SKILL.md"),
+        "---\nname: CustomPathSkill\ndescription: custom path\n---\n",
+    )
+    .unwrap();
+    common::init_git_repo(&repo_dir);
+
+    let skills_dir = temp.path().join(".agents/skills");
+    let repo_url = format!("file://{}", repo_dir.display());
+    let mut add = Command::cargo_bin("tome").unwrap();
+    add.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .args(["add", "--path", "skills/custom", &repo_url])
+        .assert()
+        .success();
+
+    fs::remove_dir_all(&source_skill).unwrap();
+    ProcessCommand::new("git")
+        .args(["add", "--all"])
+        .current_dir(&repo_dir)
+        .status()
+        .unwrap();
+    ProcessCommand::new("git")
+        .args(["commit", "-m", "delete custom skill"])
+        .current_dir(&repo_dir)
+        .status()
+        .unwrap();
+
+    let mut update = Command::cargo_bin("tome").unwrap();
+    update
+        .env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .args(["update", "--no-sparse", "--verbose"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Removed CustomPathSkill"));
+
+    assert!(!skills_dir.join("CustomPathSkill").exists());
+}
+
+#[test]
+fn test_update_changed_file_url_skill_through_cli() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("SKILL.md");
+    fs::write(
+        &source,
+        "---\nname: FileSkill\ndescription: old\n---\nold body\n",
+    )
+    .unwrap();
+    let skills_dir = temp.path().join(".agents/skills");
+    let file_url = format!("file://{}", source.display());
+
+    let mut add = Command::cargo_bin("tome").unwrap();
+    add.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .arg("add")
+        .arg(&file_url)
+        .assert()
+        .success();
+
+    fs::write(
+        &source,
+        "---\nname: FileSkill\ndescription: new\n---\nnew body\n",
+    )
+    .unwrap();
+
+    let mut update = Command::cargo_bin("tome").unwrap();
+    update
+        .env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .args(["update", "--verbose"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated: FileSkill (file)"));
+
+    let installed = fs::read_to_string(skills_dir.join("FileSkill/SKILL.md")).unwrap();
+    assert!(installed.contains("new body"));
+}
+
+#[test]
 fn test_add_sparse_clone_with_skills_dir() {
     let temp = TempDir::new().unwrap();
     let repo_dir = temp.path().join("repo");
@@ -577,6 +708,38 @@ fn test_remove_by_url() {
 }
 
 #[test]
+fn test_remove_file_url_source() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("SKILL.md");
+    fs::write(
+        &source,
+        "---\nname: FileRemove\ndescription: file removal\n---\n",
+    )
+    .unwrap();
+    let skills_dir = temp.path().join(".agents/skills");
+    let file_url = format!("file://{}", source.display());
+
+    let mut add = Command::cargo_bin("tome").unwrap();
+    add.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .arg("add")
+        .arg(&file_url)
+        .assert()
+        .success();
+
+    let mut remove = Command::cargo_bin("tome").unwrap();
+    remove
+        .env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .arg("remove")
+        .arg("--force")
+        .arg(&file_url)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed: FileRemove"));
+
+    assert!(!skills_dir.join("FileRemove").exists());
+}
+
+#[test]
 fn test_remove_by_source_not_found() {
     let temp = TempDir::new().unwrap();
     let skills_dir = temp.path().join(".agents/skills");
@@ -595,4 +758,35 @@ fn test_remove_by_source_not_found() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("not installed by tome"));
+}
+
+#[test]
+fn test_export_tracked_skills_through_cli() {
+    let temp = TempDir::new().unwrap();
+    let skills_dir = temp.path().join(".agents/skills");
+    fs::create_dir_all(&skills_dir).unwrap();
+    fs::write(
+        skills_dir.join(".skills.json"),
+        r#"{
+            "version": 1,
+            "skills": {
+                "exported-skill": {
+                    "source": "owner/repo", "path": "skills/exported", "installed": "2026-01-01T00:00:00Z",
+                    "updated": "2026-01-01T00:00:00Z", "version": "1.0.0",
+                    "description": "export test", "commit": "abc", "branch": "main",
+                    "remote": "https://github.com/owner/repo.git"
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let mut cmd = Command::cargo_bin("tome").unwrap();
+    cmd.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .arg("export")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "tome add owner/repo --path skills/exported",
+        ));
 }

@@ -1,3 +1,4 @@
+use crate::services::update_service::UpdateReporter;
 use crate::style::{self, CYAN, DIM, GREEN, YELLOW};
 use crossterm::{
     cursor, execute,
@@ -13,15 +14,7 @@ const SPINNER_FRAMES: &[&str] = &["-", "\\", "|", "/"];
 /// (e.g. "deanpeters/Product-Manager-Skills" at 33 chars).
 const MAX_LABEL_WIDTH: usize = 25;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProgressPhase {
-    Downloading,
-    Cloning,
-    Inspecting,
-    Checking,
-    Copying,
-    Saving,
-}
+pub use crate::services::update_service::{ProgressPhase, RepoOutcome};
 
 impl ProgressPhase {
     fn label(self) -> &'static str {
@@ -36,24 +29,7 @@ impl ProgressPhase {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RepoOutcome {
-    pub updated: usize,
-    pub current: usize,
-    pub failed: usize,
-    pub removed: usize,
-}
-
 impl RepoOutcome {
-    pub fn new(updated: usize, current: usize, failed: usize, removed: usize) -> Self {
-        Self {
-            updated,
-            current,
-            failed,
-            removed,
-        }
-    }
-
     fn is_clean(self) -> bool {
         self.failed == 0 && self.removed == 0
     }
@@ -88,8 +64,11 @@ impl UpdateProgress {
     }
 
     pub fn start(&mut self, total_skills: usize, total_sources: usize) {
+        let header = format_header(total_skills, total_sources);
         if self.live {
-            eprintln!("{}", format_header(total_skills, total_sources));
+            eprintln!("{}", header);
+        } else {
+            println!("{}", header);
         }
     }
 
@@ -116,8 +95,10 @@ impl UpdateProgress {
         if let Some(state) = &mut self.state {
             state.phase = phase;
             state.frame_idx = state.frame_idx.wrapping_add(1);
+            self.draw();
+        } else if matches!(phase, ProgressPhase::Saving) {
+            println!("Saving manifest...");
         }
-        self.draw();
     }
 
     pub fn skill_checked(&mut self) {
@@ -235,6 +216,38 @@ fn format_repo_line(label: &str, outcome: RepoOutcome) -> String {
     }
 
     format!("{} {:<24} {}", marker, label, parts.join(" - "))
+}
+
+impl UpdateReporter for UpdateProgress {
+    fn start(&mut self, total_skills: usize, total_sources: usize) {
+        UpdateProgress::start(self, total_skills, total_sources);
+    }
+
+    fn repo_started(
+        &mut self,
+        source_idx: usize,
+        source_count: usize,
+        label: &str,
+        skill_count: usize,
+    ) {
+        UpdateProgress::repo_started(self, source_idx, source_count, label, skill_count);
+    }
+
+    fn phase(&mut self, phase: ProgressPhase) {
+        UpdateProgress::phase(self, phase);
+    }
+
+    fn skill_checked(&mut self) {
+        UpdateProgress::skill_checked(self);
+    }
+
+    fn repo_finished(&mut self, label: &str, outcome: RepoOutcome) {
+        UpdateProgress::repo_finished(self, label, outcome);
+    }
+
+    fn is_live(&self) -> bool {
+        self.enabled()
+    }
 }
 
 #[cfg(test)]

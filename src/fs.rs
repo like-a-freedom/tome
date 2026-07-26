@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 pub fn create_temp_dir() -> Result<tempfile::TempDir> {
     tempfile::tempdir().context("Failed to create temp directory")
@@ -18,6 +18,70 @@ pub fn remove_skill_dir(path: &Path) -> Result<()> {
         std::fs::remove_dir_all(path).context("Failed to remove skill directory")?;
     }
     Ok(())
+}
+
+pub fn resolve_path_within(root: &Path, relative: &str) -> Result<PathBuf> {
+    let relative_path = Path::new(relative);
+    if relative_path.is_absolute()
+        || relative.contains('\\')
+        || relative_path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        anyhow::bail!("Path must remain within its source directory: {relative}");
+    }
+
+    let candidate = root.join(relative_path);
+    let canonical_root = root
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve source root {}", root.display()))?;
+    let mut existing_ancestor = candidate.as_path();
+    while !existing_ancestor.exists() {
+        existing_ancestor = existing_ancestor
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Path has no source ancestor: {relative}"))?;
+    }
+    let canonical_ancestor = existing_ancestor.canonicalize().with_context(|| {
+        format!(
+            "Failed to resolve source path {}",
+            existing_ancestor.display()
+        )
+    })?;
+    if !canonical_ancestor.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "Path {} escapes source directory {}",
+            candidate.display(),
+            root.display()
+        );
+    }
+
+    if candidate.exists() {
+        path_within(root, &candidate)
+    } else {
+        Ok(candidate)
+    }
+}
+
+pub fn path_within(root: &Path, candidate: &Path) -> Result<PathBuf> {
+    let canonical_root = root
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve source root {}", root.display()))?;
+    let canonical_candidate = candidate
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve source path {}", candidate.display()))?;
+
+    if !canonical_candidate.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "Path {} escapes source directory {}",
+            candidate.display(),
+            root.display()
+        );
+    }
+
+    Ok(canonical_candidate)
 }
 
 pub fn copy_skill(src: &Path, dest: &Path) -> Result<()> {
@@ -80,6 +144,30 @@ mod tests {
         let file = temp.path().join("test.txt");
         std::fs::write(&file, "data").unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "data");
+    }
+
+    #[test]
+    fn test_resolve_path_within_rejects_escape_and_absolute_paths() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("root");
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+
+        assert!(resolve_path_within(&root, "../outside").is_err());
+        assert!(resolve_path_within(&root, root.to_str().unwrap()).is_err());
+        assert!(resolve_path_within(&root, "nested").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_path_within_rejects_symlink_escape() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+
+        assert!(resolve_path_within(&root, "link").is_err());
     }
 
     #[test]

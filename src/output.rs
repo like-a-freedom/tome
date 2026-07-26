@@ -1,4 +1,4 @@
-use crate::style::{self, CYAN, DIM, GREEN, YELLOW};
+use crate::style::{self, DIM, GREEN, YELLOW};
 
 fn check_mark() -> &'static str {
     "\u{2713}"
@@ -8,9 +8,6 @@ fn warning_mark() -> &'static str {
 }
 fn cross_mark() -> &'static str {
     "\u{2717}"
-}
-fn arrow_mark() -> &'static str {
-    "\u{25b8}"
 }
 
 pub(crate) fn format_installed(name: &str) -> String {
@@ -108,6 +105,32 @@ pub(crate) fn print_file_updated(name: &str) {
     println!("{}", format_file_updated(name));
 }
 
+pub(crate) fn format_failed(name: &str, action: &str, detail: &str) -> String {
+    format!(
+        "  {} Failed to {} {}: {}",
+        style::styled(YELLOW, cross_mark()),
+        action,
+        name,
+        detail,
+    )
+}
+
+pub(crate) fn print_failed(name: &str, action: &str, detail: &str) {
+    eprintln!("{}", format_failed(name, action, detail));
+}
+
+pub(crate) fn format_removed(name: &str) -> String {
+    format!(
+        "  {} Removed {} \u{2014} no longer in repository",
+        style::styled(YELLOW, cross_mark()),
+        name,
+    )
+}
+
+pub(crate) fn print_removed(name: &str) {
+    eprintln!("{}", format_removed(name));
+}
+
 pub(crate) fn format_skipped_tracked(name: &str) -> String {
     format!(
         "  {} {} is already installed (use --force to overwrite)",
@@ -132,45 +155,6 @@ pub(crate) fn print_skipped_existing(name: &str) {
     eprintln!("{}", format_skipped_existing(name));
 }
 
-pub(crate) fn format_failed(name: &str, action: &str, detail: &str) -> String {
-    format!(
-        "  {} Failed to {} {}: {}",
-        style::styled(YELLOW, cross_mark()),
-        action,
-        name,
-        detail,
-    )
-}
-
-pub(crate) fn print_failed(name: &str, action: &str, detail: &str) {
-    eprintln!("{}", format_failed(name, action, detail));
-}
-
-pub(crate) fn format_failed_action(action: &str, detail: &str) -> String {
-    format!(
-        "  {} {}: {}",
-        style::styled(YELLOW, cross_mark()),
-        action,
-        detail,
-    )
-}
-
-pub(crate) fn print_failed_action(action: &str, detail: &str) {
-    eprintln!("{}", format_failed_action(action, detail));
-}
-
-pub(crate) fn format_removed(name: &str) -> String {
-    format!(
-        "  {} Removed {} \u{2014} no longer in repository",
-        style::styled(YELLOW, cross_mark()),
-        name,
-    )
-}
-
-pub(crate) fn print_removed(name: &str) {
-    eprintln!("{}", format_removed(name));
-}
-
 pub(crate) fn format_stale_header(count: usize, names: &[String]) -> String {
     format!(
         "{} Skipping {} stale entries: {}",
@@ -182,31 +166,6 @@ pub(crate) fn format_stale_header(count: usize, names: &[String]) -> String {
 
 pub(crate) fn print_stale_header(count: usize, names: &[String]) {
     eprintln!("{}", format_stale_header(count, names));
-}
-
-pub(crate) fn format_cloning_multi(
-    label: &str,
-    idx: usize,
-    count: usize,
-    skill_count: usize,
-) -> String {
-    if count > 1 {
-        format!(
-            "{} [{}/{}] Cloning {} ({} skill{})",
-            style::styled(CYAN, arrow_mark()),
-            idx + 1,
-            count,
-            label,
-            skill_count,
-            if skill_count == 1 { "" } else { "s" },
-        )
-    } else {
-        format!("{} Cloning {}", style::styled(CYAN, arrow_mark()), label)
-    }
-}
-
-pub(crate) fn print_cloning_multi(label: &str, idx: usize, count: usize, skill_count: usize) {
-    eprintln!("{}", format_cloning_multi(label, idx, count, skill_count));
 }
 
 #[cfg(test)]
@@ -307,6 +266,19 @@ mod tests {
     }
 
     #[test]
+    fn test_format_failed() {
+        let out = format_failed("my-skill", "update", "download failed");
+        assert!(out.contains("Failed to update my-skill: download failed"));
+        assert!(out.contains(&style::styled(YELLOW, cross_mark())));
+    }
+
+    #[test]
+    fn test_format_removed() {
+        let out = format_removed("dead-skill");
+        assert!(out.contains("Removed dead-skill"));
+    }
+
+    #[test]
     fn test_format_skipped_tracked() {
         let out = format_skipped_tracked("my-skill");
         assert!(out.contains("my-skill is already installed"));
@@ -328,70 +300,10 @@ mod tests {
     }
 
     #[test]
-    fn test_format_failed_with_name() {
-        let out = format_failed("my-skill", "copy", "permission denied");
-        assert!(out.contains("Failed to copy my-skill: permission denied"));
-    }
-
-    #[test]
-    fn test_format_failed_action_no_name() {
-        let out = format_failed_action("Clone failed", "network error");
-        assert!(out.contains("Clone failed: network error"));
-    }
-
-    #[test]
-    fn test_format_failed_uses_cross_mark() {
-        let out = format_failed("name", "action", "detail");
-        assert!(out.contains(&style::styled(YELLOW, cross_mark())));
-    }
-
-    #[test]
-    fn test_format_removed() {
-        let out = format_removed("dead-skill");
-        assert!(out.contains("Removed dead-skill"));
-        assert!(out.contains("no longer in repository"));
-    }
-
-    #[test]
     fn test_format_stale_header() {
         let names = vec!["a".to_string(), "b".to_string()];
         let out = format_stale_header(2, &names);
         assert!(out.contains("Skipping 2 stale entries"));
         assert!(out.contains("a, b"));
-    }
-
-    #[test]
-    fn test_format_cloning_multi_single_repo() {
-        let out = format_cloning_multi("owner/repo", 0, 1, 3);
-        assert!(out.contains("Cloning owner/repo"));
-        assert!(
-            !out.contains("[1/1]"),
-            "single-repo format should not include [N/M]"
-        );
-        assert!(
-            !out.contains("(3 skill"),
-            "single-repo format should not include skill count"
-        );
-    }
-
-    #[test]
-    fn test_format_cloning_multi_multiple_repos() {
-        let out = format_cloning_multi("owner/repo", 2, 5, 3);
-        assert!(out.contains("[3/5]"));
-        assert!(out.contains("Cloning owner/repo"));
-        assert!(out.contains("3 skills"));
-    }
-
-    #[test]
-    fn test_format_cloning_multi_singular_skill() {
-        let out = format_cloning_multi("owner/repo", 0, 2, 1);
-        assert!(out.contains("1 skill)"));
-        assert!(!out.contains("1 skills"));
-    }
-
-    #[test]
-    fn test_format_cloning_multi_plural_skills() {
-        let out = format_cloning_multi("owner/repo", 0, 2, 3);
-        assert!(out.contains("3 skills"));
     }
 }

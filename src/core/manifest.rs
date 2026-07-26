@@ -77,6 +77,10 @@ impl Manifest {
         let content = fs::read_to_string(path).context("Failed to read manifest")?;
         let manifest: Manifest =
             serde_json::from_str(&content).context("Failed to parse manifest")?;
+        for name in manifest.skills.keys() {
+            crate::core::spec::validate_skill_name(name)
+                .with_context(|| format!("Invalid skill name in manifest: {name}"))?;
+        }
         Ok(manifest)
     }
 
@@ -131,7 +135,9 @@ impl Manifest {
 
         self.skills
             .iter()
-            .filter(|(_, entry)| entry.source == label)
+            .filter(|(_, entry)| {
+                entry.source == label || entry.remote == input || entry.install_source() == input
+            })
             .map(|(name, _)| name.clone())
             .collect()
     }
@@ -187,6 +193,8 @@ impl Manifest {
                             .and_then(|n| n.to_str())
                             .unwrap_or("unknown")
                             .to_string();
+                        crate::core::spec::validate_skill_name(&frontmatter.name)?;
+                        crate::core::spec::validate_skill_name(&skill_name)?;
 
                         manifest.add_skill(
                             &skill_name,
@@ -234,6 +242,33 @@ mod tests {
         let manifest = Manifest::load(&path).unwrap();
         assert_eq!(manifest.version, 1);
         assert!(manifest.skills.is_empty());
+    }
+
+    #[test]
+    fn test_load_rejects_unsafe_skill_name() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join(".skills.json");
+        let mut manifest = Manifest {
+            version: 1,
+            skills: HashMap::new(),
+        };
+        manifest.add_skill(
+            "../escape",
+            SkillEntry {
+                source: "owner/repo".into(),
+                path: "".into(),
+                installed: "i".into(),
+                updated: "u".into(),
+                version: "v".into(),
+                description: "d".into(),
+                commit: "c".into(),
+                branch: "main".into(),
+                remote: "remote".into(),
+            },
+        );
+        manifest.save(&path).unwrap();
+
+        assert!(Manifest::load(&path).is_err());
     }
 
     #[test]
@@ -617,6 +652,33 @@ mod tests {
         assert_eq!(
             manifest.resolve_names("https://github.com/leonardomso/rust-skills"),
             vec!["git-commit"]
+        );
+    }
+
+    #[test]
+    fn test_resolve_names_by_file_url() {
+        let mut manifest = Manifest {
+            version: 1,
+            skills: HashMap::new(),
+        };
+        manifest.add_skill(
+            "file-skill",
+            SkillEntry {
+                source: "example.com".into(),
+                path: "".into(),
+                installed: "i".into(),
+                updated: "u".into(),
+                version: "v".into(),
+                description: "d".into(),
+                commit: "file:".into(),
+                branch: "".into(),
+                remote: "file:///tmp/SKILL.md".into(),
+            },
+        );
+
+        assert_eq!(
+            manifest.resolve_names("file:///tmp/SKILL.md"),
+            vec!["file-skill"]
         );
     }
 

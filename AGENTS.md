@@ -84,6 +84,7 @@ SKILLS_DIR=/path/to/skills cargo run -- list
 
 ```ascii
 main.rs → lib.rs::run() → commands/{add,list,remove,update,export}
+                           services.rs → services/{skill_service,update_service}
                            core/{spec,manifest,git,repo_detect,skip,install,download,parse_source}
                            output.rs (shared format/print functions)
                            fs.rs (temp dirs, directory copy)

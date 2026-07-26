@@ -31,7 +31,7 @@ pub fn detect_repo_type(repo_path: &Path) -> Result<RepoType> {
     let top_level_skills = find_top_level_skills(repo_path)?;
 
     let root_skill = repo_path.join("SKILL.md");
-    if root_skill.exists() {
+    if fs::symlink_metadata(&root_skill).is_ok_and(|metadata| metadata.file_type().is_file()) {
         let content = fs::read_to_string(&root_skill)
             .context(format!("Failed to read {}", root_skill.display()))?;
         let frontmatter = crate::core::spec::parse_frontmatter(&content)
@@ -90,7 +90,7 @@ fn find_top_level_skills(repo_path: &Path) -> Result<Vec<SkillInfo>> {
         let entry = entry?;
         let path = entry.path();
 
-        if !path.is_dir() {
+        if !entry.file_type()?.is_dir() {
             continue;
         }
 
@@ -101,7 +101,7 @@ fn find_top_level_skills(repo_path: &Path) -> Result<Vec<SkillInfo>> {
         }
 
         let skill_md = path.join("SKILL.md");
-        if skill_md.exists() {
+        if fs::symlink_metadata(&skill_md).is_ok_and(|metadata| metadata.file_type().is_file()) {
             let content = fs::read_to_string(&skill_md)
                 .context(format!("Failed to read {}", skill_md.display()))?;
 
@@ -121,7 +121,7 @@ fn find_top_level_skills(repo_path: &Path) -> Result<Vec<SkillInfo>> {
 
 fn find_skills_in_subdir(repo_path: &Path, subdir: &str) -> Result<Option<Vec<SkillInfo>>> {
     let dir = repo_path.join(subdir);
-    if !dir.exists() || !dir.is_dir() {
+    if !fs::symlink_metadata(&dir).is_ok_and(|metadata| metadata.file_type().is_dir()) {
         return Ok(None);
     }
     let mut seen = HashSet::new();
@@ -140,7 +140,7 @@ fn find_skills_in_dir(dir: &Path, seen: &mut HashSet<String>) -> Result<Vec<Skil
         let entry = entry?;
         let path = entry.path();
 
-        if !path.is_dir() {
+        if !entry.file_type()?.is_dir() {
             continue;
         }
 
@@ -151,7 +151,7 @@ fn find_skills_in_dir(dir: &Path, seen: &mut HashSet<String>) -> Result<Vec<Skil
         }
 
         let skill_md = path.join("SKILL.md");
-        if skill_md.exists() {
+        if fs::symlink_metadata(&skill_md).is_ok_and(|metadata| metadata.file_type().is_file()) {
             let content = fs::read_to_string(&skill_md)
                 .context(format!("Failed to read {}", skill_md.display()))?;
 
@@ -237,6 +237,21 @@ mod tests {
         make_skill_md(&hidden, "hidden", "Should be skipped");
         let result = detect_repo_type(temp.path());
         assert!(result.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_detection_rejects_symlinked_skill_directories() {
+        let temp = TempDir::new().unwrap();
+        let outside_temp = TempDir::new().unwrap();
+        let outside = outside_temp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        make_skill_md(&outside, "escape", "outside");
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        std::os::unix::fs::symlink(&outside, skills_dir.join("escape")).unwrap();
+
+        assert!(detect_repo_type(temp.path()).is_err());
     }
 
     #[test]

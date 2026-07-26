@@ -18,130 +18,34 @@ pub struct SkillFrontmatter {
     pub docs: Option<String>,
 }
 
-fn parse_list_value(value: &str) -> Vec<String> {
-    let value = value.trim();
-    if value.is_empty() {
-        return vec![];
-    }
-    // Inline YAML list: [a, b, c]
-    if value.starts_with('[') && value.ends_with(']') {
-        return value[1..value.len() - 1]
-            .split(',')
-            .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-    }
-    // Single item (not a list in frontmatter, but treat as single-element)
-    vec![value.trim_matches('"').trim_matches('\'').to_string()]
+fn preprocess_frontmatter(yaml: &str) -> String {
+    yaml.lines()
+        .map(preprocess_frontmatter_line)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-fn parse_frontmatter_fallback(yaml: &str) -> Result<SkillFrontmatter> {
-    let mut fm = SkillFrontmatter {
-        name: String::new(),
-        description: String::new(),
-        version: None,
-        authors: None,
-        tags: None,
-        platforms: None,
-        license: None,
-        repository: None,
-        docs: None,
+fn preprocess_frontmatter_line(line: &str) -> String {
+    let trimmed = line.trim_start();
+    let Some(description) = trimmed.strip_prefix("description:") else {
+        return line.to_string();
     };
 
-    let mut collecting_authors = false;
-    let mut authors_buf: Vec<String> = vec![];
-
-    for line in yaml.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        // Handle multi-line YAML list items (leading dash)
-        if collecting_authors {
-            if let Some(item) = trimmed.strip_prefix("- ") {
-                authors_buf.push(item.trim_matches('"').trim_matches('\'').to_string());
-                continue;
-            } else {
-                // End of multi-line list, save authors
-                fm.authors = Some(authors_buf);
-                authors_buf = vec![];
-                collecting_authors = false;
-                // Fall through to process this line as a new key
-            }
-        }
-
-        // Split on the FIRST colon
-        let Some((key, value)) = trimmed.split_once(':') else {
-            continue;
-        };
-        let key = key.trim();
-        let value = value.trim();
-
-        match key {
-            "name" => fm.name = unquote(value),
-            "description" => fm.description = unquote(value),
-            "version" => {
-                if !value.is_empty() {
-                    fm.version = Some(unquote(value));
-                }
-            }
-            "license" => {
-                if !value.is_empty() {
-                    fm.license = Some(unquote(value));
-                }
-            }
-            "repository" => {
-                if !value.is_empty() {
-                    fm.repository = Some(unquote(value));
-                }
-            }
-            "docs" => {
-                if !value.is_empty() {
-                    fm.docs = Some(unquote(value));
-                }
-            }
-            "authors" => {
-                if value.is_empty() || value == "-" {
-                    // Multi-line YAML list starting
-                    collecting_authors = true;
-                    authors_buf = vec![];
-                } else {
-                    fm.authors = Some(parse_list_value(value));
-                }
-            }
-            "tags" if !value.is_empty() => {
-                fm.tags = Some(parse_list_value(value));
-            }
-            "platforms" if !value.is_empty() => {
-                fm.platforms = Some(parse_list_value(value));
-            }
-            _ => {}
-        }
+    let value = description.trim();
+    if value.is_empty()
+        || !value.contains(": ")
+        || value.starts_with('"')
+        || value.starts_with('\'')
+        || value.starts_with('|')
+        || value.starts_with('>')
+    {
+        return line.to_string();
     }
 
-    // Flush pending multi-line authors
-    if collecting_authors && !authors_buf.is_empty() {
-        fm.authors = Some(authors_buf);
-    }
-
-    if fm.name.is_empty() {
-        bail!("Failed to parse frontmatter: name is required");
-    }
-    if fm.description.is_empty() {
-        bail!("Failed to parse frontmatter: description is required");
-    }
-
-    Ok(fm)
-}
-
-fn unquote(s: &str) -> String {
-    let s = s.trim();
-    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
-        s[1..s.len() - 1].to_string()
-    } else {
-        s.to_string()
-    }
+    let indentation_len = line.len() - trimmed.len();
+    let prefix_len = indentation_len + "description:".len();
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("{} \"{}\"", &line[..prefix_len], escaped)
 }
 
 pub fn parse_frontmatter(content: &str) -> Result<SkillFrontmatter> {
@@ -151,12 +55,32 @@ pub fn parse_frontmatter(content: &str) -> Result<SkillFrontmatter> {
     }
     let yaml_text = parts[1];
 
-    // Try strict YAML parser first, then fallback for edge-case frontmatter
-    // (long unquoted descriptions with ": " inside that trip up strict YAML parsers)
-    serde_yaml::from_str::<SkillFrontmatter>(yaml_text).or_else(|e| {
-        parse_frontmatter_fallback(yaml_text)
-            .map_err(|_| anyhow::anyhow!("Failed to parse YAML frontmatter: {}", e))
-    })
+    let preprocessed_yaml = preprocess_frontmatter(yaml_text);
+    serde_yaml::from_str::<SkillFrontmatter>(&preprocessed_yaml)
+        .map_err(|error| anyhow::anyhow!("Failed to parse YAML frontmatter: {error}"))
+}
+
+pub(crate) fn validate_skill_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        bail!("Skill name must not be empty");
+    }
+    if name.len() > MAX_SKILL_NAME_LEN {
+        bail!(
+            "Skill name must be under {} characters (got {})",
+            MAX_SKILL_NAME_LEN,
+            name.len()
+        );
+    }
+    if name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains(':')
+        || name.chars().any(|character| character.is_control())
+    {
+        bail!("Skill name must be a safe single directory name");
+    }
+    Ok(())
 }
 
 pub fn validate_skill(dir_path: &Path) -> Result<SkillFrontmatter> {
@@ -165,18 +89,10 @@ pub fn validate_skill(dir_path: &Path) -> Result<SkillFrontmatter> {
         bail!("SKILL.md not found at {}", skill_md.display());
     }
     let content = fs::read_to_string(&skill_md).context("Failed to read SKILL.md")?;
-    // Note: name/description emptiness is already enforced by parse_frontmatter
-    // (serde_yaml requires them, and the fallback parser bails on empty values).
-    // Only the length check is unique to validation.
+
     let frontmatter = parse_frontmatter(&content)?;
 
-    if frontmatter.name.len() > MAX_SKILL_NAME_LEN {
-        bail!(
-            "Skill name must be under {} characters (got {})",
-            MAX_SKILL_NAME_LEN,
-            frontmatter.name.len()
-        );
-    }
+    validate_skill_name(&frontmatter.name)?;
 
     Ok(frontmatter)
 }
@@ -279,7 +195,7 @@ This is the body.
     }
 
     #[test]
-    fn test_parse_fallback_long_description_with_colon() {
+    fn test_parse_description_with_colons() {
         let content = r#"---
 name: diagnose
 description: Diagnose a product against a methodology: it finds all the risks (every weak node: traced upstream), all the growth points, and says which to tackle first.
@@ -298,7 +214,7 @@ user-invocable: true
     }
 
     #[test]
-    fn test_parse_fallback_inline_list() {
+    fn test_parse_inline_lists() {
         let content = r#"---
 name: test
 description: desc
@@ -318,7 +234,7 @@ version: 1.0.0
     }
 
     #[test]
-    fn test_parse_fallback_multi_line_authors() {
+    fn test_parse_multi_line_authors() {
         let content = r#"---
 name: test
 description: desc
@@ -333,19 +249,19 @@ authors:
     }
 
     #[test]
-    fn test_parse_fallback_real_world_diagnose() {
-        // This is the actual YAML that fails with strict serde_yaml
+    fn test_parse_real_world_description_with_colons() {
         let yaml = r#"name: diagnose
 description: Diagnose a product against Ivan Zamesin's Next Move Theory / Advanced Jobs To Be Done methodology (distinct from generic Christensen JTBD) and route to the next move. A conversational, chat-first skill — through up to ~15 adaptive questions it challenges the goal you walked in with (climbing your business-Job graph to find a higher-leverage growth point), then surfaces EVERYTHING the methodology can find: all the risks (every weak node on the chain to profit, each traced to its upstream cause), all the growth points (kill a Job, Previous/Next Job, climb a level, adjacent-segment Small Jobs, underserved success criteria), and the risky assumptions hiding inside your current initiatives (RAT). It is comprehensive on findings and focused on action — it lists them all, then says which one to tackle first and which existing skill executes it (market-research, craft-value-proposition, product-requirements, craft-go-to-market, ask-nmt). The front door for LIVE products the way market-research is the front door for new ideas. Use when the user says "diagnose my product", "what should I do next", "a metric dropped", "where are my risks / growth points", "where is this breaking", or is unsure what to work on. Chat-first: writes nothing unless asked; recommends the next skill but the user launches it. Plain language; defaults to English.
 user-invocable: true
 "#;
-        let fm = parse_frontmatter_fallback(yaml).unwrap();
+        let content = format!("---\n{}---\n", yaml);
+        let fm = parse_frontmatter(&content).unwrap();
         assert_eq!(fm.name, "diagnose");
         assert!(
             fm.description
                 .contains("methodology can find: all the risks"),
-            "Fallback should handle colons inside description, got: {}",
-            &fm.description[..fm.description.len().min(200)]
+            "Description should preserve colons, got: {}",
+            fm.description
         );
         assert!(
             fm.description.starts_with("Diagnose a product against"),
@@ -358,10 +274,34 @@ user-invocable: true
     }
 
     #[test]
-    fn test_parse_fallback_missing_required() {
-        let result = parse_frontmatter_fallback("version: 1.0.0");
+    fn test_parse_missing_required() {
+        let result = parse_frontmatter("---\nversion: 1.0.0\n---\n");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("name"));
+    }
+
+    #[test]
+    fn test_validate_skill_name_rejects_path_components() {
+        for name in ["../escape", "nested/skill", "..", "\\\\escape"] {
+            assert!(
+                validate_skill_name(name).is_err(),
+                "accepted unsafe name: {name}"
+            );
+        }
+        assert!(validate_skill_name("safe skill").is_ok());
+    }
+
+    #[test]
+    fn test_validate_skill_rejects_unsafe_frontmatter_name() {
+        let temp = TempDir::new().unwrap();
+        let skill_md = temp.path().join("SKILL.md");
+        fs::write(
+            &skill_md,
+            "---\nname: ../escape\ndescription: unsafe\n---\n",
+        )
+        .unwrap();
+
+        assert!(validate_skill(temp.path()).is_err());
     }
 
     #[test]
