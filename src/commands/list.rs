@@ -105,7 +105,6 @@ fn scan_untracked_skills(skills_dir: &Path, manifest: &Manifest) -> Result<Vec<U
             }
             untracked.push(UntrackedSkill {
                 name: fm.name,
-                dir_name: dir_name.to_string(),
                 description: fm.description,
                 version: fm.version.unwrap_or(NO_VERSION_SENTINEL.into()),
             });
@@ -322,8 +321,6 @@ const DEFAULT_ROWS: u16 = 24;
 
 struct UntrackedSkill {
     name: String,
-    #[allow(dead_code)]
-    dir_name: String,
     description: String,
     version: String,
 }
@@ -585,7 +582,7 @@ mod tests {
 
     #[test]
     fn test_truncate_with_ellipsis_unicode() {
-        // Russian: "привет" = 6 chars, each multi-byte in UTF-8
+        // Cyrillic word "привет" has six characters, each multi-byte in UTF-8
         // max_width=4: take(4-3)=1 char + "..."
         assert_eq!(truncate_with_ellipsis("привет", 4), "п...");
     }

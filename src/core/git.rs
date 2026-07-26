@@ -478,7 +478,7 @@ mod tests {
     fn test_clone_invalid_url_fails() {
         let temp = TempDir::new().unwrap();
         let dest = temp.path().join("clone");
-        let result = clone_repo_quiet("https://github.com/nonexistent/repo.git", &dest);
+        let result = clone_repo_quiet("file:///nonexistent/tome-repository.git", &dest);
         assert!(result.is_err());
     }
 

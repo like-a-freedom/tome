@@ -1,9 +1,11 @@
 pub mod commands;
 pub mod config;
 pub mod core;
+
 pub mod fs;
 pub mod output;
 pub mod progress;
+pub mod services;
 pub mod style;
 pub mod tui;
 

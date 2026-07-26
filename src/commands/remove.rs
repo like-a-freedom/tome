@@ -1,19 +1,13 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use std::path::Path;
 
-use crate::core::manifest::Manifest;
-use crate::fs;
-
+/// Thin adapter: CLI args → SkillService call → output formatting.
 pub fn execute(name: &str, force: bool, skills_dir: &Path, manifest_path: &Path) -> Result<()> {
-    let mut manifest = Manifest::load(manifest_path)?;
-
-    let names = manifest.resolve_names(name);
-    if names.is_empty() {
-        bail!(
-            "Skill '{}' is not installed by tome. Use `rm -rf` to remove manually-placed skills.",
-            name
-        );
-    }
+    let service = crate::services::SkillService::with_manifest_path(
+        skills_dir.to_path_buf(),
+        manifest_path.to_path_buf(),
+    );
+    let names = service.resolve_removal_names(name)?;
 
     if !force {
         let label = if names.len() == 1 {
@@ -31,27 +25,26 @@ pub fn execute(name: &str, force: bool, skills_dir: &Path, manifest_path: &Path)
         io::stdout().flush()?;
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
-        if input.trim().to_lowercase() != "y" {
+        if input.trim().eq_ignore_ascii_case("y") {
+            // Continue with the service call below.
+        } else {
             println!("Aborted.");
             return Ok(());
         }
     }
 
-    for n in &names {
-        let skill_dir = skills_dir.join(n);
-        fs::remove_skill_dir(&skill_dir)?;
-        manifest.remove_skill(n);
-        println!("Removed: {}", n);
+    let removed_names = service.remove(name)?;
+    for skill_name in removed_names {
+        println!("Removed: {}", skill_name);
     }
 
-    manifest.save(manifest_path)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::manifest::SkillEntry;
+    use crate::core::manifest::{Manifest, SkillEntry};
     use crate::testutil;
     use std::fs;
     use tempfile::TempDir;

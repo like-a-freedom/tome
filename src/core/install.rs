@@ -99,6 +99,7 @@ pub fn install_skills(
     let mut skipped_existing = Vec::new();
 
     for skill in skills {
+        crate::core::spec::validate_skill_name(&skill.frontmatter.name)?;
         let dest_dir = skills_dir.join(&skill.frontmatter.name);
         if dest_dir.exists() && !force {
             if manifest.is_tracked(&skill.frontmatter.name) {
@@ -183,6 +184,27 @@ mod tests {
 
         let manifest = Manifest::load(&manifest_path).unwrap();
         assert!(manifest.is_tracked("my-skill"));
+    }
+
+    #[test]
+    fn test_install_skills_rejects_unsafe_destination_name() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        let manifest_path = skills_dir.join(".skills.json");
+        let skill = ResolvedSkill {
+            repo_path: temp.path().to_path_buf(),
+            frontmatter: make_fm("../escape"),
+            label: "owner/repo".to_string(),
+            path: String::new(),
+            commit: "abc1234".to_string(),
+            remote: "https://github.com/owner/repo.git".to_string(),
+            branch: "main".to_string(),
+        };
+
+        let result = install_skills(&[skill], false, &skills_dir, &manifest_path);
+
+        assert!(result.is_err());
+        assert!(!temp.path().join("escape").exists());
     }
 
     #[test]

@@ -5,7 +5,6 @@ use std::process::Command;
 pub struct DownloadedSkill {
     pub path: PathBuf,
     pub content: Vec<u8>,
-    pub source_url: String,
 }
 
 /// Check if curl is available on the system.
@@ -60,7 +59,6 @@ pub fn download_skill_file(url: &str) -> Result<DownloadedSkill> {
     Ok(DownloadedSkill {
         path: temp_dir.keep(),
         content,
-        source_url: url.to_string(),
     })
 }
 
