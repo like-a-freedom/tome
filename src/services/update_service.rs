@@ -266,7 +266,7 @@ impl UpdateService {
         reporter.repo_started(source_idx, source_count, name, 1);
         reporter.phase(ProgressPhase::Downloading);
 
-        let downloaded = match crate::core::download::download_skill_file(&url) {
+        let downloaded = match crate::core::install::download_skill_file(&url) {
             Ok(downloaded) => downloaded,
             Err(error) => {
                 reporter.skill_checked();
@@ -504,7 +504,6 @@ mod tests {
     use crate::core::manifest::{Manifest, SkillEntry};
 
     use crate::testutil;
-    use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
 
@@ -555,10 +554,7 @@ mod tests {
         fs::write(&source, content).unwrap();
         let source_url = format!("file://{}", source.display());
         let manifest_path = skills_dir.join(".skills.json");
-        let mut manifest = Manifest {
-            version: 1,
-            skills: HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill(
             "file-skill",
             SkillEntry::new(
@@ -600,10 +596,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut manifest = Manifest {
-            version: 1,
-            skills: HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill("changed", make_entry("changed", "0000000", &remote));
 
         let service =
@@ -637,10 +630,7 @@ mod tests {
             &temp,
             "---\nname: present\ndescription: present\n---\n",
         );
-        let mut manifest = Manifest {
-            version: 1,
-            skills: HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill("missing", make_entry("missing", "0000000", &remote));
 
         let service =
@@ -672,10 +662,7 @@ mod tests {
             "---\nname: restored\ndescription: restored\n---\nbody\n",
         );
         let current_commit = git::get_commit_hash(&temp.path().join("repo")).unwrap();
-        let mut manifest = Manifest {
-            version: 1,
-            skills: HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill("restored", make_entry("restored", &current_commit, &remote));
         let manifest_path = temp.path().join("custom-manifest.json");
         manifest.save(&manifest_path).unwrap();
@@ -716,10 +703,7 @@ mod tests {
             .output()
             .unwrap();
 
-        let mut manifest = Manifest {
-            version: 1,
-            skills: HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill("deleted", make_entry("deleted", "0000000", &remote));
         let manifest_path = skills_dir.join(".skills.json");
         manifest.save(&manifest_path).unwrap();

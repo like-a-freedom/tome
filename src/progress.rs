@@ -173,7 +173,7 @@ fn format_header(total_skills: usize, total_sources: usize) -> String {
 
 fn format_live_line(state: &ProgressState) -> String {
     let frame = SPINNER_FRAMES[state.frame_idx % SPINNER_FRAMES.len()];
-    let label = crate::tui::truncate_str(&state.label, MAX_LABEL_WIDTH);
+    let label = crate::style::truncate_with_ellipsis(&state.label, MAX_LABEL_WIDTH);
     format!(
         "{} source {}/{} - {} - {} - {}/{} skills checked",
         style::styled(CYAN, frame),

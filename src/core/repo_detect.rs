@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::skip::{SKILL_SUBDIRS, SKIP_DIRS};
+use super::dirs::{SKILL_SUBDIRS, SKIP_DIRS};
 
 #[derive(Debug, Clone)]
 pub enum RepoType {

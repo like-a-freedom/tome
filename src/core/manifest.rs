@@ -9,7 +9,7 @@ use crate::core::spec::SkillFrontmatter;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Manifest {
     pub version: u32,
-    pub(crate) skills: HashMap<String, SkillEntry>,
+    skills: HashMap<String, SkillEntry>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -66,13 +66,23 @@ impl SkillEntry {
     }
 }
 
+impl Default for Manifest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Manifest {
+    pub fn new() -> Self {
+        Self {
+            version: 1,
+            skills: HashMap::new(),
+        }
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
-            return Ok(Self {
-                version: 1,
-                skills: HashMap::new(),
-            });
+            return Ok(Self::new());
         }
         let content = fs::read_to_string(path).context("Failed to read manifest")?;
         let manifest: Manifest =
@@ -112,6 +122,10 @@ impl Manifest {
 
     pub fn get_skill(&self, name: &str) -> Option<&SkillEntry> {
         self.skills.get(name)
+    }
+
+    pub(crate) fn skills_map(&self) -> &HashMap<String, SkillEntry> {
+        &self.skills
     }
 
     /// Resolve a user-provided identifier to manifest skill names.
@@ -158,10 +172,7 @@ impl Manifest {
     }
 
     pub fn rebuild_from_directory(skills_dir: &Path) -> Result<Self> {
-        let mut manifest = Self {
-            version: 1,
-            skills: HashMap::new(),
-        };
+        let mut manifest = Self::new();
 
         if !skills_dir.exists() {
             return Ok(manifest);
@@ -241,17 +252,14 @@ mod tests {
         let path = temp.path().join(".skills.json");
         let manifest = Manifest::load(&path).unwrap();
         assert_eq!(manifest.version, 1);
-        assert!(manifest.skills.is_empty());
+        assert!(manifest.is_empty());
     }
 
     #[test]
     fn test_load_rejects_unsafe_skill_name() {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join(".skills.json");
-        let mut manifest = Manifest {
-            version: 1,
-            skills: HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill(
             "../escape",
             SkillEntry {
@@ -276,10 +284,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join(".skills.json");
 
-        let mut manifest = Manifest {
-            version: 1,
-            skills: HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         let entry = SkillEntry {
             source: "test/repo".into(),
             path: "skills/test-skill".into(),
@@ -297,18 +302,15 @@ mod tests {
         assert!(path.exists());
 
         let loaded = Manifest::load(&path).unwrap();
-        assert_eq!(loaded.skills.len(), 1);
-        let loaded_entry = loaded.skills.get("test-skill").unwrap();
+        assert_eq!(loaded.skill_names().len(), 1);
+        let loaded_entry = loaded.get_skill("test-skill").unwrap();
         assert_eq!(loaded_entry.source, "test/repo");
         assert_eq!(loaded_entry.commit, "abc1234");
     }
 
     #[test]
     fn test_is_tracked() {
-        let mut manifest = Manifest {
-            version: 1,
-            skills: HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill(
             "tracked",
             SkillEntry {
@@ -329,10 +331,7 @@ mod tests {
 
     #[test]
     fn test_remove_skill() {
-        let mut manifest = Manifest {
-            version: 1,
-            skills: HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill(
             "to-remove",
             SkillEntry {
@@ -349,7 +348,7 @@ mod tests {
         );
         let removed = manifest.remove_skill("to-remove");
         assert!(removed.is_some());
-        assert!(manifest.skills.is_empty());
+        assert!(manifest.is_empty());
     }
 
     #[test]
@@ -364,10 +363,7 @@ mod tests {
         fs::write(&real_md, "---\nname: Real Skill\ndescription: Real\n---\n").unwrap();
 
         // Manifest references two skills: "real-skill" and "ghost-skill"
-        let mut manifest = Manifest {
-            version: 1,
-            skills: HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill(
             "real-skill",
             SkillEntry {
@@ -413,10 +409,7 @@ mod tests {
         fs::create_dir_all(&skills_dir).unwrap();
 
         // Manifest references a skill whose directory doesn't exist
-        let mut manifest = Manifest {
-            version: 1,
-            skills: HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill(
             "orphan",
             SkillEntry {
@@ -464,12 +457,12 @@ mod tests {
         fs::create_dir_all(skills_dir.join("not-a-skill")).unwrap();
 
         let manifest = Manifest::rebuild_from_directory(&skills_dir).unwrap();
-        assert_eq!(manifest.skills.len(), 2);
-        assert!(manifest.skills.contains_key("skill-a"));
-        assert!(manifest.skills.contains_key("skill-b"));
-        assert!(!manifest.skills.contains_key("not-a-skill"));
+        assert_eq!(manifest.skill_names().len(), 2);
+        assert!(manifest.is_tracked("skill-a"));
+        assert!(manifest.is_tracked("skill-b"));
+        assert!(!manifest.is_tracked("not-a-skill"));
 
-        let entry = manifest.skills.get("skill-a").unwrap();
+        let entry = manifest.get_skill("skill-a").unwrap();
         assert_eq!(entry.source, "unknown");
         assert_eq!(entry.description, "Some desc");
     }
@@ -480,7 +473,7 @@ mod tests {
         let dir = temp.path().join("empty");
         fs::create_dir(&dir).unwrap();
         let manifest = Manifest::rebuild_from_directory(&dir).unwrap();
-        assert!(manifest.skills.is_empty());
+        assert!(manifest.is_empty());
     }
 
     #[test]
@@ -610,10 +603,7 @@ mod tests {
     }
 
     fn make_manifest_with_source(source: &str, name: &str) -> Manifest {
-        let mut manifest = Manifest {
-            version: 1,
-            skills: HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill(
             name,
             SkillEntry {
@@ -657,10 +647,7 @@ mod tests {
 
     #[test]
     fn test_resolve_names_by_file_url() {
-        let mut manifest = Manifest {
-            version: 1,
-            skills: HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill(
             "file-skill",
             SkillEntry {
@@ -684,10 +671,7 @@ mod tests {
 
     #[test]
     fn test_resolve_names_multi_skill_repo() {
-        let mut manifest = Manifest {
-            version: 1,
-            skills: HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         for name in &["git-commit", "code-review"] {
             manifest.add_skill(
                 name,

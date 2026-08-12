@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::core::manifest::Manifest;
+use crate::core::manifest_store::ManifestStore;
 use crate::core::parse_source;
 use crate::core::spec;
 use crate::style::{self, BOLD, CYAN, DIM};
@@ -16,13 +17,13 @@ pub fn execute(json: bool, skills_dir: &Path, manifest_path: &Path) -> Result<()
         let rebuilt = Manifest::rebuild_from_directory(skills_dir)?;
         if json {
             // Continue silently — manifest will be saved at the end if skills exist
-        } else if rebuilt.skills.is_empty() {
+        } else if rebuilt.is_empty() {
             println!("No skills installed.");
             return Ok(());
         } else {
             eprintln!(
                 "No manifest found. Rebuilt from {} skill(s) in directory.",
-                rebuilt.skills.len()
+                rebuilt.skill_names().len()
             );
         }
         (rebuilt, true)
@@ -114,19 +115,6 @@ fn scan_untracked_skills(skills_dir: &Path, manifest: &Manifest) -> Result<Vec<U
     Ok(untracked)
 }
 
-fn truncate_with_ellipsis(s: &str, max_width: usize) -> String {
-    let ellipsis_len = 3;
-    let char_count = s.chars().count();
-    if char_count <= max_width {
-        s.to_string()
-    } else if max_width <= ellipsis_len {
-        s.chars().take(max_width).collect()
-    } else {
-        let truncated: String = s.chars().take(max_width - ellipsis_len).collect();
-        format!("{}...", truncated)
-    }
-}
-
 fn display_version(v: &str) -> &str {
     if v.is_empty() || v == NO_VERSION_SENTINEL {
         "-"
@@ -154,7 +142,7 @@ impl TableWidths {
         let mut max_name = Self::MIN_NAME_WIDTH;
         let mut max_version = Self::MIN_VERSION_WIDTH;
 
-        for (name, entry) in &manifest.skills {
+        for (name, entry) in manifest.all_skills() {
             max_name = max_name.max(name.len());
             max_version = max_version.max(display_version(&entry.version).len());
         }
@@ -198,10 +186,10 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
     // Build rows and group by source
     let mut groups: BTreeMap<String, Vec<(String, String, bool)>> = BTreeMap::new();
 
-    for (name, entry) in &manifest.skills {
+    for (name, entry) in manifest.all_skills() {
         let label = parse_source::repo_label(&entry.source);
         groups.entry(label.to_string()).or_default().push((
-            name.clone(),
+            name.to_string(),
             entry.version.clone(),
             true,
         ));
@@ -248,8 +236,8 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
             let tracked_str = if *tracked { "yes" } else { "no" };
             println!(
                 "{:<name_w$} {:<version_w$} {:<tracked_w$}",
-                truncate_with_ellipsis(name, w.name),
-                truncate_with_ellipsis(display_version(version), w.version),
+                crate::style::truncate_with_ellipsis(name, w.name),
+                crate::style::truncate_with_ellipsis(display_version(version), w.version),
                 tracked_str,
                 name_w = w.name,
                 version_w = w.version,
@@ -267,8 +255,8 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
         for (name, version, _) in rows {
             println!(
                 "{:<name_w$} {:<version_w$} {:<tracked_w$}",
-                truncate_with_ellipsis(name, w.name),
-                truncate_with_ellipsis(display_version(version), w.version),
+                crate::style::truncate_with_ellipsis(name, w.name),
+                crate::style::truncate_with_ellipsis(display_version(version), w.version),
                 "no",
                 name_w = w.name,
                 version_w = w.version,
@@ -290,9 +278,9 @@ fn output_json(manifest: &Manifest, untracked: &[UntrackedSkill]) -> Result<()> 
 
     let mut skills: Vec<JsonSkill> = Vec::new();
 
-    for (name, entry) in &manifest.skills {
+    for (name, entry) in manifest.all_skills() {
         skills.push(JsonSkill {
-            name: name.clone(),
+            name: name.to_string(),
             version: entry.version.clone(),
             source: entry.source.clone(),
             tracked: true,
@@ -381,10 +369,7 @@ mod tests {
         .unwrap();
 
         let manifest_path = skills_dir.join(".skills.json");
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill(
             "Tracked",
             SkillEntry::new("test/repo", "", &testutil::make_fm("Tracked"), "abc", "url"),
@@ -414,10 +399,7 @@ mod tests {
         let manifest_path = skills_dir.join(".skills.json");
 
         // Manifest references a skill that doesn't exist on disk
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill(
             "Ghost",
             SkillEntry::new("test/repo", "", &testutil::make_fm("Ghost"), "abc", "url"),
@@ -430,7 +412,7 @@ mod tests {
         // Verify ghost is preserved (not removed) to avoid data loss
         let loaded = Manifest::load(&manifest_path).unwrap();
         assert!(
-            loaded.skills.contains_key("Ghost"),
+            loaded.is_tracked("Ghost"),
             "Stale entry preserved to avoid data loss"
         );
     }
@@ -440,10 +422,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
-        let manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let manifest = Manifest::new();
 
         let untracked = scan_untracked_skills(&skills_dir, &manifest).unwrap();
         assert!(untracked.is_empty());
@@ -459,10 +438,7 @@ mod tests {
             "---\nname: Hidden\ndescription: d\n---\n",
         )
         .unwrap();
-        let manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let manifest = Manifest::new();
 
         let untracked = scan_untracked_skills(&skills_dir, &manifest).unwrap();
         assert!(untracked.is_empty());
@@ -474,10 +450,7 @@ mod tests {
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(skills_dir.join("no-skill")).unwrap();
         fs::write(skills_dir.join("no-skill").join("README.md"), "not a skill").unwrap();
-        let manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let manifest = Manifest::new();
 
         let untracked = scan_untracked_skills(&skills_dir, &manifest).unwrap();
         assert!(untracked.is_empty());
@@ -493,10 +466,7 @@ mod tests {
             "---\nname: FmName\ndescription: d\n---\n",
         )
         .unwrap();
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         // Track by frontmatter name (not dir name)
         manifest.add_skill(
             "FmName",
@@ -514,10 +484,7 @@ mod tests {
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
 
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill(
             "Tracked",
             SkillEntry::new("test/repo", "", &testutil::make_fm("Tracked"), "abc", "url"),
@@ -557,39 +524,5 @@ mod tests {
         // Should not match partial "0.0.0" in longer strings
         assert_eq!(display_version("0.0.1"), "0.0.1");
         assert_eq!(display_version("10.0.0"), "10.0.0");
-    }
-
-    #[test]
-    fn test_truncate_with_ellipsis_ascii_no_truncation() {
-        assert_eq!(truncate_with_ellipsis("hello", 10), "hello");
-    }
-
-    #[test]
-    fn test_truncate_with_ellipsis_ascii_truncation() {
-        assert_eq!(truncate_with_ellipsis("hello world", 8), "hello...");
-    }
-
-    #[test]
-    fn test_truncate_with_ellipsis_exact_fit() {
-        assert_eq!(truncate_with_ellipsis("hello", 5), "hello");
-    }
-
-    #[test]
-    fn test_truncate_with_ellipsis_small_width() {
-        // max_width < ellipsis_len: no room for "...", just truncate
-        assert_eq!(truncate_with_ellipsis("hello", 2), "he");
-    }
-
-    #[test]
-    fn test_truncate_with_ellipsis_unicode() {
-        // Cyrillic word "привет" has six characters, each multi-byte in UTF-8
-        // max_width=4: take(4-3)=1 char + "..."
-        assert_eq!(truncate_with_ellipsis("привет", 4), "п...");
-    }
-
-    #[test]
-    fn test_truncate_with_ellipsis_unicode_small_width() {
-        // Emoji: "🚀🚀🚀" = 3 chars, max_width < ellipsis_len
-        assert_eq!(truncate_with_ellipsis("🚀🚀🚀", 2), "🚀🚀");
     }
 }
