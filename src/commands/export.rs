@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use crate::core::manifest::Manifest;
+use crate::core::manifest_store::ManifestStore;
 
 pub fn execute(_skills_dir: &Path, manifest_path: &Path) -> Result<()> {
     let output = execute_to_string(manifest_path)?;
@@ -22,8 +23,8 @@ fn execute_to_string(manifest_path: &Path) -> Result<String> {
         return Ok(String::new());
     }
 
-    let mut entries: Vec<_> = manifest.skills.iter().collect();
-    entries.sort_by_key(|(name, _)| (*name).clone());
+    let mut entries: Vec<_> = manifest.all_skills();
+    entries.sort_by_key(|(name, _)| (*name).to_string());
 
     let mut lines: Vec<String> = Vec::new();
     for (_name, entry) in entries {
@@ -60,10 +61,7 @@ mod tests {
     #[test]
     fn test_export_empty_manifest() {
         let temp = TempDir::new().unwrap();
-        let manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let manifest = Manifest::new();
         let (_skills_dir, manifest_path) = make_temp_manifest(&temp, &manifest);
         let output = execute_to_string(&manifest_path).unwrap();
         assert_eq!(output, "");
@@ -72,10 +70,7 @@ mod tests {
     #[test]
     fn test_export_single_git_skill() {
         let temp = TempDir::new().unwrap();
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         let fm = testutil::make_fm("taste-skill");
         let entry = SkillEntry::new("Leonxlnx/taste-skill", "", &fm, "abc123", "");
         manifest.add_skill("taste-skill", entry);
@@ -87,10 +82,7 @@ mod tests {
     #[test]
     fn test_export_file_url_skill() {
         let temp = TempDir::new().unwrap();
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         let fm = testutil::make_fm("file-skill");
         let entry = SkillEntry::new("", "", &fm, "abc123", "file:///Users/test/SKILL.md");
         manifest.add_skill("file-skill", entry);
@@ -110,10 +102,7 @@ mod tests {
     #[test]
     fn test_export_multiple_skills_sorted() {
         let temp = TempDir::new().unwrap();
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         let fm1 = testutil::make_fm("zebra");
         let entry1 = SkillEntry::new("user/zebra", "", &fm1, "abc123", "");
         manifest.add_skill("zebra", entry1);
@@ -128,10 +117,7 @@ mod tests {
     #[test]
     fn test_export_with_path_override() {
         let temp = TempDir::new().unwrap();
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         let fm = testutil::make_fm("nested-skill");
         let entry = SkillEntry::new("owner/repo", "skills/nested", &fm, "abc123", "");
         manifest.add_skill("nested-skill", entry);
@@ -143,10 +129,7 @@ mod tests {
     #[test]
     fn test_export_via_execute_function() {
         let temp = TempDir::new().unwrap();
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill(
             "skill-b",
             SkillEntry::new(

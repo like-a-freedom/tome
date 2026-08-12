@@ -157,14 +157,14 @@ impl SkillService {
         path_override: Option<String>,
         force: bool,
     ) -> Result<crate::core::install::InstallResult> {
-        use crate::core::{download, install};
+        use crate::core::install;
 
         let url = match parsed {
             parse_source::Source::FileUrl { url } => url.clone(),
             _ => anyhow::bail!("Expected file URL"),
         };
 
-        let downloaded = download::download_skill_file(&url)?;
+        let downloaded = install::download_skill_file(&url)?;
 
         let repo_path = if let Some(ref custom_path) = path_override {
             crate::fs::resolve_path_within(&downloaded.path, custom_path)
@@ -294,10 +294,7 @@ mod tests {
         fs::create_dir_all(skills_dir.join("first")).unwrap();
         fs::create_dir_all(skills_dir.join("second")).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         let frontmatter = crate::testutil::make_fm("skill");
         manifest.add_skill(
             "first",

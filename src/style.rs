@@ -41,6 +41,41 @@ pub fn display_width(s: &str) -> usize {
     s.chars().map(char_display_width).sum()
 }
 
+pub const ELLIPSIS_LEN: usize = 3;
+
+pub fn truncate_with_ellipsis(s: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if display_width(s) <= max_width {
+        return s.to_string();
+    }
+    if max_width < ELLIPSIS_LEN {
+        let mut width = 0;
+        let mut end = 0;
+        for (i, ch) in s.char_indices() {
+            let w = char_display_width(ch);
+            if width + w > max_width {
+                break;
+            }
+            width += w;
+            end = i + ch.len_utf8();
+        }
+        return s[..end].to_string();
+    }
+    let mut width = 0;
+    let mut end = 0;
+    for (i, ch) in s.char_indices() {
+        let w = char_display_width(ch);
+        if width + w + ELLIPSIS_LEN > max_width {
+            break;
+        }
+        width += w;
+        end = i + ch.len_utf8();
+    }
+    format!("{}...", &s[..end])
+}
+
 pub fn line(c: char, width: usize) -> String {
     std::iter::repeat_n(c, width).collect()
 }
@@ -79,5 +114,80 @@ mod tests {
         let rendered = box_line(plain, plain, 60);
 
         assert_eq!(display_width(&rendered), 60);
+    }
+
+    // === truncate_with_ellipsis ===
+
+    #[test]
+    fn test_truncate_short() {
+        assert_eq!(truncate_with_ellipsis("hello", 10), "hello");
+    }
+
+    #[test]
+    fn test_truncate_exact() {
+        assert_eq!(truncate_with_ellipsis("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_truncate_long() {
+        assert_eq!(truncate_with_ellipsis("hello world", 5), "he...");
+    }
+
+    #[test]
+    fn test_truncate_multibyte_cyrillic() {
+        let s = "Привет мир";
+        let result = truncate_with_ellipsis(s, 9);
+        assert_eq!(result, "Привет...");
+        assert!(result.is_char_boundary(0));
+    }
+
+    #[test]
+    fn test_truncate_multibyte_emoji() {
+        let s = "Hello 🌍 World 🎉 Test";
+        let result = truncate_with_ellipsis(s, 7);
+        assert_eq!(result, "Hell...");
+    }
+
+    #[test]
+    fn test_truncate_em_dash() {
+        let s =
+            "Set up Husky pre-commit hooks with lint-staged (Prettier), type checking, and tests";
+        let result = truncate_with_ellipsis(s, 47);
+        assert_eq!(display_width(&result), 47);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn test_truncate_chinese() {
+        let s = "这是一个测试描述用于验证多字节字符的截断功能是否正常工作";
+        let result = truncate_with_ellipsis(s, 10);
+        assert_eq!(result, "这是一...");
+    }
+
+    #[test]
+    fn test_truncate_empty() {
+        assert_eq!(truncate_with_ellipsis("", 10), "");
+    }
+
+    #[test]
+    fn test_truncate_zero_max() {
+        assert_eq!(truncate_with_ellipsis("hello", 0), "");
+    }
+
+    #[test]
+    fn test_truncate_mixed_ascii_multibyte() {
+        let s = "Hello Привет World";
+        let result = truncate_with_ellipsis(s, 11);
+        assert_eq!(result, "Hello Пр...");
+    }
+
+    #[test]
+    fn test_truncate_small_width() {
+        assert_eq!(truncate_with_ellipsis("hello", 2), "he");
+    }
+
+    #[test]
+    fn test_truncate_unicode_small_width() {
+        assert_eq!(truncate_with_ellipsis("🚀🚀🚀", 2), "🚀🚀");
     }
 }

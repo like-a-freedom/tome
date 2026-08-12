@@ -8,7 +8,7 @@ use crossterm::{
 };
 use std::io::{self, Write};
 
-use crate::style::{char_display_width, display_width};
+use crate::style::display_width;
 
 struct RawModeGuard;
 
@@ -25,7 +25,7 @@ impl Drop for RawModeGuard {
     }
 }
 
-const ELLIPSIS_LEN: usize = 3;
+pub use crate::style::truncate_with_ellipsis as truncate_str;
 const DEFAULT_NAME_WIDTH: usize = 20;
 const MAX_NAME_WIDTH: usize = 30;
 const NUM_COL_WIDTH: usize = 2;
@@ -39,26 +39,6 @@ pub struct SelectItem {
     pub name: String,
     pub description: String,
     pub selected: bool,
-}
-
-pub fn truncate_str(s: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    if display_width(s) <= max_width {
-        return s.to_string();
-    }
-    let mut width = 0;
-    let mut end = 0;
-    for (i, ch) in s.char_indices() {
-        let w = char_display_width(ch);
-        if width + w + ELLIPSIS_LEN > max_width {
-            break;
-        }
-        width += w;
-        end = i + ch.len_utf8();
-    }
-    format!("{}...", &s[..end])
 }
 
 pub fn calc_name_width(items: &[SelectItem]) -> usize {
@@ -222,71 +202,6 @@ pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // === truncate_str ===
-
-    #[test]
-    fn test_truncate_str_short() {
-        assert_eq!(truncate_str("hello", 10), "hello");
-    }
-
-    #[test]
-    fn test_truncate_str_exact() {
-        assert_eq!(truncate_str("hello", 5), "hello");
-    }
-
-    #[test]
-    fn test_truncate_str_long() {
-        assert_eq!(truncate_str("hello world", 5), "he...");
-    }
-
-    #[test]
-    fn test_truncate_str_multibyte_cyrillic() {
-        let s = "Привет мир";
-        let result = truncate_str(s, 9);
-        assert_eq!(result, "Привет...");
-        assert!(result.is_char_boundary(0));
-    }
-
-    #[test]
-    fn test_truncate_str_multibyte_emoji() {
-        let s = "Hello 🌍 World 🎉 Test";
-        let result = truncate_str(s, 7);
-        assert_eq!(result, "Hell...");
-    }
-
-    #[test]
-    fn test_truncate_str_em_dash() {
-        let s =
-            "Set up Husky pre-commit hooks with lint-staged (Prettier), type checking, and tests";
-        let result = truncate_str(s, 47);
-        assert_eq!(display_width(&result), 47);
-        assert!(result.ends_with("..."));
-    }
-
-    #[test]
-    fn test_truncate_str_chinese() {
-        let s = "这是一个测试描述用于验证多字节字符的截断功能是否正常工作";
-        let result = truncate_str(s, 10);
-        assert_eq!(result, "这是一...");
-    }
-
-    #[test]
-    fn test_truncate_str_empty() {
-        assert_eq!(truncate_str("", 10), "");
-    }
-
-    #[test]
-    fn test_truncate_str_zero_max() {
-        assert_eq!(truncate_str("hello", 0), "");
-    }
-
-    #[test]
-    fn test_truncate_str_mixed_ascii_multibyte() {
-        let s = "Hello Привет World";
-        let result = truncate_str(s, 11);
-        assert_eq!(result, "Hello Пр...");
-    }
 
     // === calc_name_width ===
 

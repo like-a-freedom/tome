@@ -78,10 +78,7 @@ mod tests {
         )
         .unwrap();
         let manifest_path = skills_dir.join(".skills.json");
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill(
             "ToRemove",
             SkillEntry::new(
@@ -105,10 +102,7 @@ mod tests {
         let skills_dir = temp.path().join("skills");
         fs::create_dir_all(&skills_dir).unwrap();
         let manifest_path = skills_dir.join(".skills.json");
-        let mut manifest = Manifest {
-            version: 1,
-            skills: std::collections::HashMap::new(),
-        };
+        let mut manifest = Manifest::new();
         manifest.add_skill(
             "NoDir",
             SkillEntry::new("test/repo", "", &testutil::make_fm("NoDir"), "abc", "url"),

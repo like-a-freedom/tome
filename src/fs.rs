@@ -59,7 +59,8 @@ pub fn resolve_path_within(root: &Path, relative: &str) -> Result<PathBuf> {
     }
 
     if candidate.exists() {
-        path_within(root, &candidate)
+        path_within(root, &candidate)?;
+        Ok(candidate)
     } else {
         Ok(candidate)
     }
@@ -168,6 +169,27 @@ mod tests {
         std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
 
         assert!(resolve_path_within(&root, "link").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_resolve_path_within_keeps_root_basis_when_candidate_exists() {
+        // Simulates macOS `/var` -> `/private/var`: the input root is a symlink
+        // to the real directory, so canonicalizing the result would change its
+        // basis and break callers that strip the root prefix.
+        let temp = TempDir::new().unwrap();
+        let real_root = temp.path().join("real");
+        let link_root = temp.path().join("link");
+        std::fs::create_dir_all(real_root.join("skills/custom")).unwrap();
+        std::os::unix::fs::symlink(&real_root, &link_root).unwrap();
+
+        let resolved = resolve_path_within(&link_root, "skills/custom").unwrap();
+        assert_eq!(
+            resolved,
+            link_root.join("skills/custom"),
+            "result must stay on the input root's basis, got: {:?}",
+            resolved
+        );
     }
 
     #[test]
