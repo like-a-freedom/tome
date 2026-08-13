@@ -44,6 +44,6 @@
 
 **SkillService** — Application service managing skill lifecycle: install (from git or file URL) and remove.
 
-**UpdateService** — Application service managing skill updates: stale detection, git-group updates, file-skill updates.
+**UpdateService** — Application service managing skill updates: stale detection, git-group updates, file-skill updates, and installing new skills that appear in tracked repositories (from an untargeted update).
 
 **UpdateReporter** — Trait for reporting update progress without coupling the service to a terminal implementation.

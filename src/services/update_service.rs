@@ -7,7 +7,10 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::core::{manifest::Manifest, repo_detect, spec};
+use crate::core::{
+    manifest::{Manifest, SkillEntry},
+    repo_detect, spec,
+};
 use crate::fs;
 
 /// Progress phases emitted while an update source is processed.
@@ -116,6 +119,23 @@ struct SourcePosition {
     total: usize,
 }
 
+/// Git source identity shared by all skills in one update group.
+struct GitGroupContext<'a> {
+    repo_path: &'a Path,
+    remote: &'a str,
+    commit: &'a str,
+    branch: &'a str,
+}
+
+/// A single git source group to process during an update run.
+struct GitGroupRequest<'a> {
+    remote: &'a str,
+    skill_names: &'a [String],
+    sparse: bool,
+    sync_new: bool,
+    position: SourcePosition,
+}
+
 /// Application service for updating skills from their recorded sources.
 pub struct UpdateService {
     skills_dir: PathBuf,
@@ -191,12 +211,15 @@ impl UpdateService {
         for (index, (remote, skill_names)) in group_list.iter().enumerate() {
             let group_result = self.update_git_group(
                 &mut manifest,
-                remote,
-                skill_names,
-                sparse,
-                SourcePosition {
-                    index: file_names.len() + index + 1,
-                    total: source_count,
+                GitGroupRequest {
+                    remote,
+                    skill_names,
+                    sparse,
+                    sync_new: specific_name.is_none(),
+                    position: SourcePosition {
+                        index: file_names.len() + index + 1,
+                        total: source_count,
+                    },
                 },
                 reporter,
             )?;
@@ -305,12 +328,16 @@ impl UpdateService {
     fn update_git_group(
         &self,
         manifest: &mut Manifest,
-        remote: &str,
-        skill_names: &[String],
-        sparse: bool,
-        position: SourcePosition,
+        request: GitGroupRequest<'_>,
         reporter: &mut impl UpdateReporter,
     ) -> Result<UpdateResult> {
+        let GitGroupRequest {
+            remote,
+            skill_names,
+            sparse,
+            sync_new,
+            position,
+        } = request;
         let mut result = UpdateResult::default();
         let label = crate::core::parse_source::repo_label(remote).to_string();
         reporter.repo_started(position.index, position.total, &label, skill_names.len());
@@ -427,6 +454,20 @@ impl UpdateService {
             reporter.skill_checked();
         }
 
+        if sync_new {
+            self.sync_new_repo_skills(
+                manifest,
+                GitGroupContext {
+                    repo_path,
+                    remote,
+                    commit: &new_commit,
+                    branch: &branch,
+                },
+                &mut result,
+                reporter,
+            );
+        }
+
         reporter.repo_finished(
             &label,
             RepoOutcome::new(
@@ -437,6 +478,74 @@ impl UpdateService {
             ),
         );
         Ok(result)
+    }
+
+    /// Install skills that appeared in a tracked repository since the last
+    /// update. Update only reconciles tracked entries, so a repo gaining a new
+    /// skill would otherwise stay out of sync until `tome add` runs again.
+    ///
+    /// New skills are installed with the same remote, commit, and branch as the
+    /// rest of the group. A local directory with the same name that is not
+    /// tracked is left untouched to avoid overwriting manually-placed skills.
+    fn sync_new_repo_skills(
+        &self,
+        manifest: &mut Manifest,
+        context: GitGroupContext<'_>,
+        result: &mut UpdateResult,
+        reporter: &mut impl UpdateReporter,
+    ) {
+        let Ok(detected) = repo_detect::resolve_skills(context.repo_path) else {
+            return;
+        };
+        let label = crate::core::parse_source::repo_label(context.remote);
+
+        for skill in detected {
+            if manifest.is_tracked(&skill.name) || self.skills_dir.join(&skill.name).exists() {
+                continue;
+            }
+
+            let frontmatter = match spec::validate_skill(&skill.path) {
+                Ok(frontmatter) => frontmatter,
+                Err(error) => {
+                    record_failure(result, &skill.name, format!("invalid SKILL.md: {error}"));
+                    reporter.skill_checked();
+                    continue;
+                }
+            };
+
+            let dest = self.skills_dir.join(&skill.name);
+            if let Err(error) = fs::copy_skill(&skill.path, &dest) {
+                fs::remove_skill_dir(&dest).ok();
+                record_failure(result, &skill.name, format!("copy failed: {error}"));
+                reporter.skill_checked();
+                continue;
+            }
+
+            let relative_path = skill
+                .path
+                .strip_prefix(context.repo_path)
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let version: String = frontmatter.version.to_owned().unwrap_or_default();
+            let mut entry = SkillEntry::new(
+                label,
+                &relative_path,
+                &frontmatter,
+                context.commit,
+                context.remote,
+            );
+            entry.set_branch(context.branch);
+            manifest.add_skill(&skill.name, entry);
+
+            result.updated.push(UpdateInfo {
+                name: skill.name.clone(),
+                source: UpdateSource::Git,
+                old_commit: String::new(),
+                new_commit: context.commit.to_string(),
+                version,
+            });
+            reporter.skill_checked();
+        }
     }
 
     fn manifest_path(&self) -> &Path {
@@ -575,10 +684,13 @@ mod tests {
         let result = service
             .update_git_group(
                 &mut manifest,
-                &remote,
-                &["changed".to_string()],
-                false,
-                SourcePosition { index: 1, total: 1 },
+                GitGroupRequest {
+                    remote: &remote,
+                    skill_names: &["changed".to_string()],
+                    sparse: false,
+                    sync_new: true,
+                    position: SourcePosition { index: 1, total: 1 },
+                },
                 &mut reporter,
             )
             .unwrap();
@@ -609,17 +721,135 @@ mod tests {
         let result = service
             .update_git_group(
                 &mut manifest,
-                &remote,
-                &["missing".to_string()],
-                false,
-                SourcePosition { index: 1, total: 1 },
+                GitGroupRequest {
+                    remote: &remote,
+                    skill_names: &["missing".to_string()],
+                    sparse: false,
+                    sync_new: true,
+                    position: SourcePosition { index: 1, total: 1 },
+                },
                 &mut reporter,
             )
             .unwrap();
 
-        assert_eq!(updated_names(&result), vec!["missing"]);
+        assert_eq!(updated_names(&result), vec!["missing", "present"]);
         assert!(manifest.is_tracked("missing"));
+        assert!(manifest.is_tracked("present"));
         assert!(skills_dir.join("missing/SKILL.md").exists());
+        assert!(skills_dir.join("present/SKILL.md").exists());
+    }
+
+    #[test]
+    fn sync_records_failure_for_invalid_skill_name_and_continues() {
+        let temp = TempDir::new().unwrap();
+        let repo_dir = temp.path().join("repo");
+        let good_dir = repo_dir.join("skills/good");
+        fs::create_dir_all(&good_dir).unwrap();
+        fs::write(
+            good_dir.join("SKILL.md"),
+            "---\nname: good\ndescription: new\n---\n",
+        )
+        .unwrap();
+        let bad_dir = repo_dir.join("skills/bad");
+        fs::create_dir_all(&bad_dir).unwrap();
+        fs::write(
+            bad_dir.join("SKILL.md"),
+            "---\nname: bad/name\ndescription: invalid\n---\n",
+        )
+        .unwrap();
+        testutil::init_git_repo(&repo_dir);
+        let remote = format!("file://{}", repo_dir.display());
+
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let mut manifest = Manifest::new();
+
+        let service =
+            UpdateService::with_manifest_path(skills_dir.clone(), skills_dir.join(".skills.json"));
+        let mut reporter = crate::progress::UpdateProgress::new(false);
+        let result = service
+            .update_git_group(
+                &mut manifest,
+                GitGroupRequest {
+                    remote: &remote,
+                    skill_names: &[],
+                    sparse: false,
+                    sync_new: true,
+                    position: SourcePosition { index: 1, total: 1 },
+                },
+                &mut reporter,
+            )
+            .unwrap();
+
+        assert_eq!(result.failures.len(), 1);
+        assert_eq!(result.failures[0].name, "bad/name");
+        assert!(result.failures[0].reason.contains("invalid SKILL.md"));
+        assert!(manifest.is_tracked("good"));
+        assert!(skills_dir.join("good/SKILL.md").exists());
+        assert!(!manifest.is_tracked("bad/name"));
+        assert!(!skills_dir.join("bad/name").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_records_copy_failure_and_leaves_no_partial_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new().unwrap();
+        let repo_dir = temp.path().join("repo");
+        let good_dir = repo_dir.join("skills/good");
+        fs::create_dir_all(&good_dir).unwrap();
+        fs::write(
+            good_dir.join("SKILL.md"),
+            "---\nname: good\ndescription: new\n---\n",
+        )
+        .unwrap();
+        testutil::init_git_repo(&repo_dir);
+        let remote = format!("file://{}", repo_dir.display());
+
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let mut permissions = fs::metadata(&skills_dir).unwrap().permissions();
+        permissions.set_mode(0o555);
+        fs::set_permissions(&skills_dir, permissions).unwrap();
+
+        if fs::create_dir(skills_dir.join("__probe__")).is_ok() {
+            restore_permissions(&skills_dir);
+            return;
+        }
+
+        let mut manifest = Manifest::new();
+        let service =
+            UpdateService::with_manifest_path(skills_dir.clone(), skills_dir.join(".skills.json"));
+        let mut reporter = crate::progress::UpdateProgress::new(false);
+        let result = service
+            .update_git_group(
+                &mut manifest,
+                GitGroupRequest {
+                    remote: &remote,
+                    skill_names: &[],
+                    sparse: false,
+                    sync_new: true,
+                    position: SourcePosition { index: 1, total: 1 },
+                },
+                &mut reporter,
+            )
+            .unwrap();
+
+        restore_permissions(&skills_dir);
+
+        assert_eq!(result.failures.len(), 1);
+        assert_eq!(result.failures[0].name, "good");
+        assert!(result.failures[0].reason.contains("copy failed"));
+        assert!(!manifest.is_tracked("good"));
+        assert!(!skills_dir.join("good").exists());
+    }
+
+    fn restore_permissions(dir: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(dir).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(dir, permissions).unwrap();
     }
 
     #[test]

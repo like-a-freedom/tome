@@ -85,7 +85,7 @@ SKILLS_DIR=/path/to/skills cargo run -- list
 ```ascii
 main.rs → lib.rs::run() → commands/{add,list,remove,update,export}
                            services.rs → services/{skill_service,update_service}
-                           core/{spec,manifest,git,repo_detect,skip,install,download,parse_source}
+                           core/{spec,manifest,manifest_store,git,git_sparse,repo_detect,commit,dirs,install,parse_source}
                            output.rs (shared format/print functions)
                            fs.rs (temp dirs, directory copy)
                            progress.rs (compact update status)
@@ -106,4 +106,5 @@ Key design decisions in `docs/DESIGN.md`, full architecture in `docs/ARCHITECTUR
 - Top-level skill directories: detects `skill-name/SKILL.md` at repo root
 - `tome update` uses compact crossterm progress in interactive terminals and stays line-based in non-TTY output
 - `tome export` outputs `tome add` commands for all tracked skills (sorted alphabetically)
+- `tome update` installs skills that newly appear in tracked git repositories, pinned to the source commit; targeted `tome update <name>` does not sync new repo skills
 - No telemetry, no server, no configuration beyond `.skills.json`
