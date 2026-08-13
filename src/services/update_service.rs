@@ -7,13 +7,8 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::core::{
-    manifest::Manifest,
-    repo_detect::{self, RepoType},
-    spec,
-};
+use crate::core::{manifest::Manifest, repo_detect, spec};
 use crate::fs;
-const SHORT_COMMIT_LEN: usize = 7;
 
 /// Progress phases emitted while an update source is processed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,14 +84,11 @@ pub struct UpdateFailure {
 /// Result of one update run.
 #[derive(Debug, Default)]
 pub struct UpdateResult {
-    pub updated: Vec<String>,
-    pub skipped: Vec<String>,
-    pub failed: Vec<String>,
+    pub updated: Vec<UpdateInfo>,
+    pub skipped: Vec<UpdateInfo>,
+    pub failures: Vec<UpdateFailure>,
     pub removed: Vec<String>,
     pub stale: Vec<String>,
-    pub updated_details: Vec<UpdateInfo>,
-    pub skipped_details: Vec<UpdateInfo>,
-    pub failures: Vec<UpdateFailure>,
 }
 
 impl UpdateResult {
@@ -107,7 +99,7 @@ impl UpdateResult {
 
     /// Return the number of processed skills.
     pub fn total(&self) -> usize {
-        self.updated.len() + self.skipped.len() + self.failed.len() + self.removed.len()
+        self.updated.len() + self.skipped.len() + self.failures.len() + self.removed.len()
     }
 }
 
@@ -185,16 +177,9 @@ impl UpdateService {
 
         for (index, name) in file_names.iter().enumerate() {
             match self.update_file_skill(&mut manifest, name, index + 1, source_count, reporter) {
-                FileUpdateResult::Updated(info) => {
-                    result.updated.push(name.clone());
-                    result.updated_details.push(info);
-                }
-                FileUpdateResult::Skipped(info) => {
-                    result.skipped.push(name.clone());
-                    result.skipped_details.push(info);
-                }
+                FileUpdateResult::Updated(info) => result.updated.push(info),
+                FileUpdateResult::Skipped(info) => result.skipped.push(info),
                 FileUpdateResult::Failed(reason) => {
-                    result.failed.push(name.clone());
                     result.failures.push(UpdateFailure {
                         name: name.clone(),
                         reason,
@@ -217,11 +202,8 @@ impl UpdateService {
             )?;
             result.updated.extend(group_result.updated);
             result.skipped.extend(group_result.skipped);
-            result.failed.extend(group_result.failed);
-            result.removed.extend(group_result.removed);
-            result.updated_details.extend(group_result.updated_details);
-            result.skipped_details.extend(group_result.skipped_details);
             result.failures.extend(group_result.failures);
+            result.removed.extend(group_result.removed);
         }
 
         result.stale = manifest.find_stale(&self.skills_dir);
@@ -376,7 +358,7 @@ impl UpdateService {
                     continue;
                 }
             };
-            let source_path = match skill_repo_path(repo_path, &entry.path) {
+            let source_path = match source_path(repo_path, &entry.path) {
                 Ok(path) => path,
                 Err(error) => {
                     record_failure(&mut result, name, format!("invalid skill path: {error}"));
@@ -408,9 +390,8 @@ impl UpdateService {
             };
 
             let local_skill_missing = !local_path.join("SKILL.md").exists();
-            if commits_match(&entry.commit, &new_commit) && !local_skill_missing {
-                result.skipped.push(name.clone());
-                result.skipped_details.push(UpdateInfo {
+            if crate::core::commit::matches(&entry.commit, &new_commit) && !local_skill_missing {
+                result.skipped.push(UpdateInfo {
                     name: name.clone(),
                     source: UpdateSource::Git,
                     old_commit: entry.commit.clone(),
@@ -436,8 +417,7 @@ impl UpdateService {
                 &branch,
                 frontmatter.description,
             );
-            result.updated.push(name.clone());
-            result.updated_details.push(UpdateInfo {
+            result.updated.push(UpdateInfo {
                 name: name.clone(),
                 source: UpdateSource::Git,
                 old_commit: entry.commit,
@@ -452,7 +432,7 @@ impl UpdateService {
             RepoOutcome::new(
                 result.updated.len(),
                 result.skipped.len(),
-                result.failed.len(),
+                result.failures.len(),
                 result.removed.len(),
             ),
         );
@@ -465,36 +445,18 @@ impl UpdateService {
 }
 
 fn record_failure(result: &mut UpdateResult, name: &str, reason: String) {
-    result.failed.push(name.to_string());
     result.failures.push(UpdateFailure {
         name: name.to_string(),
         reason,
     });
 }
 
-fn skill_repo_path(clone_dir: &Path, entry_path: &str) -> Result<PathBuf> {
+fn source_path(clone_dir: &Path, entry_path: &str) -> Result<PathBuf> {
     if !entry_path.is_empty() {
-        return crate::fs::resolve_path_within(clone_dir, entry_path);
+        crate::fs::resolve_path_within(clone_dir, entry_path)
+    } else {
+        repo_detect::sole_skill_dir(clone_dir)
     }
-
-    let candidate = match repo_detect::detect_repo_type(clone_dir) {
-        Ok(RepoType::SingleSkillAtRoot) => clone_dir.to_path_buf(),
-        Ok(RepoType::SingleSkillInDir { path, .. }) => path,
-        _ => clone_dir.to_path_buf(),
-    };
-    crate::fs::path_within(clone_dir, &candidate)
-}
-
-fn commits_match(left: &str, right: &str) -> bool {
-    if left == right {
-        return true;
-    }
-
-    if left.len() > SHORT_COMMIT_LEN && right.len() > SHORT_COMMIT_LEN {
-        return false;
-    }
-
-    left.starts_with(right) || right.starts_with(left)
 }
 
 #[cfg(test)]
@@ -510,6 +472,14 @@ mod tests {
     fn make_entry(name: &str, commit: &str, remote: &str) -> SkillEntry {
         let frontmatter = testutil::make_fm(name);
         SkillEntry::new(&format!("owner/{name}"), "", &frontmatter, commit, remote)
+    }
+
+    fn updated_names(result: &UpdateResult) -> Vec<&str> {
+        result
+            .updated
+            .iter()
+            .map(|info| info.name.as_str())
+            .collect()
     }
 
     #[derive(Default)]
@@ -613,7 +583,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(result.updated, vec!["changed"]);
+        assert_eq!(updated_names(&result), vec!["changed"]);
         assert_eq!(
             fs::read_to_string(local.join("SKILL.md")).unwrap(),
             "---\nname: changed\ndescription: new\n---\nnew body\n"
@@ -647,7 +617,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(result.updated, vec!["missing"]);
+        assert_eq!(updated_names(&result), vec!["missing"]);
         assert!(manifest.is_tracked("missing"));
         assert!(skills_dir.join("missing/SKILL.md").exists());
     }
@@ -671,8 +641,8 @@ mod tests {
         let mut reporter = crate::progress::UpdateProgress::new(false);
         let result = service.run(None, true, &mut reporter).unwrap();
 
-        assert_eq!(result.updated, vec!["restored"]);
-        assert_eq!(result.failed, Vec::<String>::new());
+        assert_eq!(updated_names(&result), vec!["restored"]);
+        assert!(result.failures.is_empty());
         assert!(skills_dir.join("restored/SKILL.md").exists());
     }
 
@@ -716,13 +686,5 @@ mod tests {
         assert_eq!(result.removed, vec!["deleted"]);
         assert!(!skills_dir.join("deleted").exists());
         assert!(!loaded.is_tracked("deleted"));
-    }
-
-    #[test]
-    fn commits_match_accepts_full_and_short_hashes() {
-        assert!(commits_match("abcdef1", "abcdef123456"));
-        assert!(commits_match("abcdef1", "abcdef1"));
-        assert!(!commits_match("abcdef123456", "abcdef999999"));
-        assert!(!commits_match("abcdef1", "1234567"));
     }
 }

@@ -131,9 +131,7 @@ impl ManifestStore for MemoryManifestStore {
         description: String,
     ) {
         if let Some(entry) = self.skills.get_mut(name) {
-            entry.update(commit, version);
-            entry.branch = branch.to_string();
-            entry.description = description;
+            entry.update(commit, version, branch, &description);
         }
     }
 

@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 
 use super::dirs::{SKILL_SUBDIRS, SKIP_DIRS};
 
+/// Error shown when no skill can be found anywhere in a repository.
+const NO_SKILL_FOUND_MSG: &str = "No SKILL.md found in repository root, skills/, Skills/, .claude/skills/, .agents/skills/ directory, or top-level skill directories";
+
 #[derive(Debug, Clone)]
 pub enum RepoType {
     SingleSkillAtRoot,
@@ -19,6 +22,24 @@ pub struct SkillInfo {
     pub description: Option<String>,
 }
 
+/// Read the repository-root SKILL.md, returning its skill info when present.
+fn read_root_skill(repo_path: &Path) -> Result<Option<SkillInfo>> {
+    let root_skill = repo_path.join("SKILL.md");
+    if !fs::symlink_metadata(&root_skill).is_ok_and(|metadata| metadata.file_type().is_file()) {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&root_skill)
+        .context(format!("Failed to read {}", root_skill.display()))?;
+    let frontmatter = crate::core::spec::parse_frontmatter(&content)
+        .context("Failed to parse root SKILL.md frontmatter")?;
+
+    Ok(Some(SkillInfo {
+        name: frontmatter.name,
+        path: repo_path.to_path_buf(),
+        description: Some(frontmatter.description),
+    }))
+}
+
 pub fn detect_repo_type(repo_path: &Path) -> Result<RepoType> {
     let mut subdir_skills: Option<Vec<SkillInfo>> = None;
     for subdir in SKILL_SUBDIRS {
@@ -30,19 +51,7 @@ pub fn detect_repo_type(repo_path: &Path) -> Result<RepoType> {
 
     let top_level_skills = find_top_level_skills(repo_path)?;
 
-    let root_skill = repo_path.join("SKILL.md");
-    if fs::symlink_metadata(&root_skill).is_ok_and(|metadata| metadata.file_type().is_file()) {
-        let content = fs::read_to_string(&root_skill)
-            .context(format!("Failed to read {}", root_skill.display()))?;
-        let frontmatter = crate::core::spec::parse_frontmatter(&content)
-            .context("Failed to parse root SKILL.md frontmatter")?;
-
-        let root_info = SkillInfo {
-            name: frontmatter.name,
-            path: repo_path.to_path_buf(),
-            description: Some(frontmatter.description),
-        };
-
+    if let Some(root_info) = read_root_skill(repo_path)? {
         match (&subdir_skills, &top_level_skills) {
             (Some(skills), _) => {
                 let mut all_skills = vec![root_info];
@@ -77,10 +86,49 @@ pub fn detect_repo_type(repo_path: &Path) -> Result<RepoType> {
             Ok(RepoType::MultiSkill(top_level_skills))
         }
     } else {
-        bail!(
-            "No SKILL.md found in repository root, skills/, Skills/, .claude/skills/, .agents/skills/ directory, or top-level skill directories"
-        )
+        bail!(NO_SKILL_FOUND_MSG)
     }
+}
+
+/// Return all skills in the repository, root SKILL.md first, then the first
+/// populated skills subdirectory, then top-level skill directories.
+pub fn resolve_skills(repo_path: &Path) -> Result<Vec<SkillInfo>> {
+    let root_skill = read_root_skill(repo_path)?;
+
+    let mut nested = Vec::new();
+    for subdir in SKILL_SUBDIRS {
+        if let Some(skills) = find_skills_in_subdir(repo_path, subdir)? {
+            nested = skills;
+            break;
+        }
+    }
+    if nested.is_empty() {
+        nested = find_top_level_skills(repo_path)?;
+    }
+
+    let mut skills = Vec::new();
+    if let Some(root) = root_skill {
+        skills.push(root);
+    }
+    skills.extend(nested);
+
+    if skills.is_empty() {
+        bail!(NO_SKILL_FOUND_MSG)
+    }
+
+    Ok(skills)
+}
+
+/// Return the directory of the single skill in the repository, or the
+/// repository root when no single skill can be pinned down (legacy fallback
+/// for multi-skill repositories without a recorded path).
+pub fn sole_skill_dir(repo_path: &Path) -> Result<PathBuf> {
+    let candidate = match detect_repo_type(repo_path) {
+        Ok(RepoType::SingleSkillAtRoot) => repo_path.to_path_buf(),
+        Ok(RepoType::SingleSkillInDir { path, .. }) => path,
+        Ok(_) | Err(_) => repo_path.to_path_buf(),
+    };
+    crate::fs::path_within(repo_path, &candidate)
 }
 
 fn find_top_level_skills(repo_path: &Path) -> Result<Vec<SkillInfo>> {
@@ -580,6 +628,104 @@ mod tests {
             }
             other => panic!("Expected SingleSkillInDir, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_resolve_skills_root_only() {
+        let temp = TempDir::new().unwrap();
+        make_skill_md(temp.path(), "root", "Root skill");
+        let skills = resolve_skills(temp.path()).unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "root");
+        assert_eq!(skills[0].path, temp.path());
+    }
+
+    #[test]
+    fn test_resolve_skills_single_in_dir() {
+        let temp = TempDir::new().unwrap();
+        let skill_dir = temp.path().join("skills/my-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        make_skill_md(&skill_dir, "my-skill", "A skill");
+        let skills = resolve_skills(temp.path()).unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "my-skill");
+        assert_eq!(skills[0].path, skill_dir);
+    }
+
+    #[test]
+    fn test_resolve_skills_multi_prefers_subdir() {
+        let temp = TempDir::new().unwrap();
+        for name in &["skill-a", "skill-b"] {
+            let dir = temp.path().join("skills").join(name);
+            fs::create_dir_all(&dir).unwrap();
+            make_skill_md(&dir, name, "Test");
+        }
+        for name in &["top-a", "top-b"] {
+            let dir = temp.path().join(name);
+            fs::create_dir_all(&dir).unwrap();
+            make_skill_md(&dir, name, "Top");
+        }
+        let skills = resolve_skills(temp.path()).unwrap();
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"skill-a"));
+        assert!(names.contains(&"skill-b"));
+    }
+
+    #[test]
+    fn test_resolve_skills_root_first_then_subdir() {
+        let temp = TempDir::new().unwrap();
+        make_skill_md(temp.path(), "root", "Root skill");
+        let skill_a = temp.path().join("skills/skill-a");
+        fs::create_dir_all(&skill_a).unwrap();
+        make_skill_md(&skill_a, "skill-a", "Skill A");
+        let skills = resolve_skills(temp.path()).unwrap();
+        assert_eq!(skills.len(), 2);
+        assert_eq!(skills[0].name, "root");
+        assert_eq!(skills[1].name, "skill-a");
+    }
+
+    #[test]
+    fn test_resolve_skills_none_errors() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join("skills")).unwrap();
+        assert!(resolve_skills(temp.path()).is_err());
+    }
+
+    #[test]
+    fn test_sole_skill_dir_root() {
+        let temp = TempDir::new().unwrap();
+        make_skill_md(temp.path(), "root", "Root skill");
+        assert_eq!(
+            sole_skill_dir(temp.path()).unwrap(),
+            temp.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_sole_skill_dir_in_dir() {
+        let temp = TempDir::new().unwrap();
+        let skill_dir = temp.path().join("skills/my-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        make_skill_md(&skill_dir, "my-skill", "A skill");
+        assert_eq!(
+            sole_skill_dir(temp.path()).unwrap(),
+            skill_dir.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_sole_skill_dir_multi_falls_back_to_root() {
+        let temp = TempDir::new().unwrap();
+        for name in &["skill-a", "skill-b"] {
+            let dir = temp.path().join("skills").join(name);
+            fs::create_dir_all(&dir).unwrap();
+            make_skill_md(&dir, name, "Test");
+        }
+        assert_eq!(
+            sole_skill_dir(temp.path()).unwrap(),
+            temp.path().canonicalize().unwrap()
+        );
     }
 
     #[test]
