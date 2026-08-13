@@ -47,9 +47,11 @@ impl SkillEntry {
         }
     }
 
-    pub fn update(&mut self, commit: &str, version: &str) {
+    pub fn update(&mut self, commit: &str, version: &str, branch: &str, description: &str) {
         self.commit = commit.to_string();
         self.version = version.to_string();
+        self.branch = branch.to_string();
+        self.description = description.to_string();
         self.updated = chrono::Utc::now().to_rfc3339();
     }
 
@@ -165,9 +167,7 @@ impl Manifest {
         description: String,
     ) {
         if let Some(entry) = self.skills.get_mut(name) {
-            entry.update(commit, version);
-            entry.branch = branch.to_string();
-            entry.description = description;
+            entry.update(commit, version, branch, &description);
         }
     }
 
@@ -596,9 +596,11 @@ mod tests {
         // Sleep to ensure timestamp changes
         std::thread::sleep(std::time::Duration::from_millis(10));
 
-        entry.update("newhash", "2.0.0");
+        entry.update("newhash", "2.0.0", "dev", "New description");
         assert_eq!(entry.commit, "newhash");
         assert_eq!(entry.version, "2.0.0");
+        assert_eq!(entry.branch, "dev");
+        assert_eq!(entry.description, "New description");
         assert!(entry.updated > old_updated);
     }
 

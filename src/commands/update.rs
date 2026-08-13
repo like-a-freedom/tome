@@ -30,7 +30,7 @@ pub fn execute(
     progress.finish();
 
     if verbose {
-        for info in &result.updated_details {
+        for info in &result.updated {
             match info.source {
                 crate::services::update_service::UpdateSource::File => {
                     crate::output::print_file_updated(&info.name);
@@ -45,7 +45,7 @@ pub fn execute(
                 }
             }
         }
-        for info in &result.skipped_details {
+        for info in &result.skipped {
             let marker = match info.source {
                 crate::services::update_service::UpdateSource::File => "file".to_string(),
                 crate::services::update_service::UpdateSource::Git => {
@@ -65,7 +65,7 @@ pub fn execute(
     crate::output::print_update_summary(
         result.updated.len(),
         result.skipped.len(),
-        result.failed.len(),
+        result.failures.len(),
         result.removed.len(),
         start.elapsed().as_secs_f64(),
     );

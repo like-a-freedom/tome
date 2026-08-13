@@ -79,26 +79,24 @@ impl SkillService {
             let frontmatter = spec::validate_skill(&repo_path).context("Invalid SKILL.md")?;
             vec![(repo_path, frontmatter)]
         } else {
-            let repo_type = repo_detect::detect_repo_type(temp_dir.path())
+            let skills = repo_detect::resolve_skills(temp_dir.path())
                 .context("Failed to detect repository structure")?;
 
-            match repo_type {
-                repo_detect::RepoType::SingleSkillAtRoot => {
-                    let frontmatter =
-                        spec::validate_skill(temp_dir.path()).context("Invalid SKILL.md")?;
-                    vec![(temp_dir.path().to_path_buf(), frontmatter)]
+            let is_single = matches!(skills.as_slice(), [_]);
+            let selected = match skills.as_slice() {
+                [skill] if skill.path == temp_dir.path() => {
+                    vec![skill.clone()]
                 }
-                repo_detect::RepoType::SingleSkillInDir { name, path } => {
+                [skill] => {
                     if let Some(ref requested) = skill_name
-                        && requested != &name
+                        && requested != &skill.name
                     {
-                        anyhow::bail!("Requested skill '{}' but found '{}'", requested, name);
+                        anyhow::bail!("Requested skill '{}' but found '{}'", requested, skill.name);
                     }
-                    let frontmatter = spec::validate_skill(&path).context("Invalid SKILL.md")?;
-                    vec![(path, frontmatter)]
+                    vec![skill.clone()]
                 }
-                repo_detect::RepoType::MultiSkill(skills) => {
-                    let selected = if let Some(ref requested) = skill_name {
+                _ => match &skill_name {
+                    Some(requested) => {
                         let skill =
                             skills
                                 .iter()
@@ -115,19 +113,22 @@ impl SkillService {
                                     )
                                 })?;
                         vec![skill.clone()]
-                    } else {
-                        select_skills(&skills)?
-                    };
-
-                    let mut result = Vec::new();
-                    for skill in selected {
-                        let frontmatter = spec::validate_skill(&skill.path)
-                            .context(format!("Invalid SKILL.md for '{}'", skill.name))?;
-                        result.push((skill.path, frontmatter));
                     }
-                    result
-                }
+                    None => select_skills(&skills)?,
+                },
+            };
+
+            let mut result = Vec::new();
+            for skill in selected {
+                let frontmatter = if is_single {
+                    spec::validate_skill(&skill.path).context("Invalid SKILL.md")?
+                } else {
+                    spec::validate_skill(&skill.path)
+                        .context(format!("Invalid SKILL.md for '{}'", skill.name))?
+                };
+                result.push((skill.path, frontmatter));
             }
+            result
         };
 
         // Resolve to install format and install

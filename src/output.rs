@@ -169,14 +169,9 @@ pub(crate) fn print_stale_header(count: usize, names: &[String]) {
 }
 
 const TERM_WIDTH: usize = 60;
-const SHORT_COMMIT_LEN: usize = 7;
 
 pub(crate) fn format_commit(commit: &str) -> String {
-    if commit.len() >= SHORT_COMMIT_LEN {
-        commit[..SHORT_COMMIT_LEN].to_string()
-    } else {
-        commit.to_string()
-    }
+    crate::core::commit::short(commit)
 }
 
 fn format_duration(secs: f64) -> String {

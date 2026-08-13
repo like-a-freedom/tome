@@ -1,3 +1,4 @@
+pub mod commit;
 pub(crate) mod dirs;
 pub mod git;
 pub mod install;

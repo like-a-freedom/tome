@@ -5,7 +5,9 @@
 *~
 .DS_Store
 .pi/
-docs/
+docs/*
+!docs/adr/
+!docs/ARCHITECTURE.md
 .mimocode/
 .commandcode/
 .vscode/
