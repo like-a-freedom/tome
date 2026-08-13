@@ -50,6 +50,8 @@ tome/
 │   │   ├── commit.rs           # commit short-form and comparison helpers
 │   │   ├── dirs.rs             # shared scan and sparse-checkout constants
 │   │   ├── git.rs              # Git clone, sparse checkout, and metadata
+│   │   ├── git/
+│   │   │   └── git_sparse.rs   # nested `.agents/skills/` sparse-checkout fetcher
 │   │   ├── install.rs          # resolved skills, copy, manifest updates
 │   │   ├── manifest.rs         # .skills.json persistence and lookup
 │   │   ├── manifest_store.rs   # ManifestStore trait and in-memory test double
@@ -103,10 +105,10 @@ removal, and manifest updates.
 
 `UpdateService` owns update orchestration: selecting manifest entries, grouping
 Git sources, updating file URL sources, restoring missing local skills,
-removing skills deleted from their source, reconciling stale entries, and
-saving the manifest. It emits reporter-neutral `ProgressPhase` and
-`RepoOutcome` events through `UpdateReporter`. `progress.rs` is the terminal
-adapter for that seam.
+removing skills deleted from their source, installing skills that newly
+appeared in a tracked repository, reconciling stale entries, and saving the
+manifest. It emits reporter-neutral `ProgressPhase` and `RepoOutcome` events
+through `UpdateReporter`. `progress.rs` is the terminal adapter for that seam.
 
 ### Core modules
 
@@ -142,6 +144,7 @@ tome update [name]
   → clone/download each source
   → compare commits or file bytes
   → copy changed content and reconcile source deletions
+  → install skills that newly appeared in the repository (untargeted update)
   → save manifest once
   → render reporter events and final summary
 ```
@@ -200,4 +203,4 @@ cargo test
 git diff --check
 ```
 
-The latest run passed 269 unit tests, 23 integration tests, and all doctests.
+The latest run passed 271 unit tests, 26 integration tests, and all doctests.

@@ -507,6 +507,197 @@ fn test_update_changed_git_skill_through_cli() {
 }
 
 #[test]
+fn test_update_installs_new_skill_added_to_tracked_repo() {
+    let temp = TempDir::new().unwrap();
+    let repo_dir = temp.path().join("repo");
+    let alpha_dir = repo_dir.join("skills/alpha");
+    fs::create_dir_all(&alpha_dir).unwrap();
+    fs::write(
+        alpha_dir.join("SKILL.md"),
+        "---\nname: AlphaSkill\ndescription: first skill\n---\n",
+    )
+    .unwrap();
+    common::init_git_repo(&repo_dir);
+
+    let skills_dir = temp.path().join(".agents/skills");
+    let repo_url = format!("file://{}", repo_dir.display());
+    let mut add = Command::cargo_bin("tome").unwrap();
+    add.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .arg("add")
+        .arg(&repo_url)
+        .assert()
+        .success();
+
+    let beta_dir = repo_dir.join("skills/beta");
+    fs::create_dir_all(&beta_dir).unwrap();
+    fs::write(
+        beta_dir.join("SKILL.md"),
+        "---\nname: BetaSkill\ndescription: new skill\n---\n",
+    )
+    .unwrap();
+    ProcessCommand::new("git")
+        .args(["add", "skills/beta"])
+        .current_dir(&repo_dir)
+        .status()
+        .unwrap();
+    ProcessCommand::new("git")
+        .args(["commit", "-m", "add beta skill"])
+        .current_dir(&repo_dir)
+        .status()
+        .unwrap();
+
+    let mut update = Command::cargo_bin("tome").unwrap();
+    update
+        .env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .args(["update", "--verbose"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated: BetaSkill"));
+
+    assert!(skills_dir.join("BetaSkill/SKILL.md").exists());
+    assert!(skills_dir.join("AlphaSkill/SKILL.md").exists());
+
+    let mut list = Command::cargo_bin("tome").unwrap();
+    list.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"name\":\"BetaSkill\""))
+        .stdout(predicate::str::contains("\"tracked\":true"));
+
+    let manifest: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(skills_dir.join(".skills.json")).unwrap())
+            .unwrap();
+    let beta = &manifest["skills"]["BetaSkill"];
+    assert_eq!(beta["source"], repo_url);
+    assert_eq!(beta["remote"], repo_url);
+    assert_eq!(beta["path"], "skills/beta");
+    assert_eq!(beta["branch"], "main");
+    assert!(!beta["commit"].as_str().unwrap().is_empty());
+}
+
+#[test]
+fn test_update_does_not_overwrite_untracked_skill_with_same_name() {
+    let temp = TempDir::new().unwrap();
+    let repo_dir = temp.path().join("repo");
+    let alpha_dir = repo_dir.join("skills/alpha");
+    fs::create_dir_all(&alpha_dir).unwrap();
+    fs::write(
+        alpha_dir.join("SKILL.md"),
+        "---\nname: AlphaSkill\ndescription: first skill\n---\n",
+    )
+    .unwrap();
+    common::init_git_repo(&repo_dir);
+
+    let skills_dir = temp.path().join(".agents/skills");
+    let repo_url = format!("file://{}", repo_dir.display());
+    let mut add = Command::cargo_bin("tome").unwrap();
+    add.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .arg("add")
+        .arg(&repo_url)
+        .assert()
+        .success();
+
+    let beta_dir = repo_dir.join("skills/beta");
+    fs::create_dir_all(&beta_dir).unwrap();
+    fs::write(
+        beta_dir.join("SKILL.md"),
+        "---\nname: BetaSkill\ndescription: new skill\n---\n",
+    )
+    .unwrap();
+    ProcessCommand::new("git")
+        .args(["add", "skills/beta"])
+        .current_dir(&repo_dir)
+        .status()
+        .unwrap();
+    ProcessCommand::new("git")
+        .args(["commit", "-m", "add beta skill"])
+        .current_dir(&repo_dir)
+        .status()
+        .unwrap();
+
+    fs::create_dir_all(skills_dir.join("BetaSkill")).unwrap();
+    fs::write(
+        skills_dir.join("BetaSkill/SKILL.md"),
+        "---\nname: BetaSkill\ndescription: manually placed\n---\nmanual content\n",
+    )
+    .unwrap();
+
+    let mut update = Command::cargo_bin("tome").unwrap();
+    update
+        .env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .args(["update", "--verbose"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated: BetaSkill").not());
+
+    let content = fs::read_to_string(skills_dir.join("BetaSkill/SKILL.md")).unwrap();
+    assert!(content.contains("manual content"));
+    assert!(!content.contains("new skill"));
+
+    let mut list = Command::cargo_bin("tome").unwrap();
+    list.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"name\":\"BetaSkill\""))
+        .stdout(predicate::str::contains("\"tracked\":false"));
+}
+
+#[test]
+fn test_update_specific_skill_does_not_sync_new_repo_skills() {
+    let temp = TempDir::new().unwrap();
+    let repo_dir = temp.path().join("repo");
+    let alpha_dir = repo_dir.join("skills/alpha");
+    fs::create_dir_all(&alpha_dir).unwrap();
+    fs::write(
+        alpha_dir.join("SKILL.md"),
+        "---\nname: AlphaSkill\ndescription: first skill\n---\n",
+    )
+    .unwrap();
+    common::init_git_repo(&repo_dir);
+
+    let skills_dir = temp.path().join(".agents/skills");
+    let repo_url = format!("file://{}", repo_dir.display());
+    let mut add = Command::cargo_bin("tome").unwrap();
+    add.env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .arg("add")
+        .arg(&repo_url)
+        .assert()
+        .success();
+
+    let beta_dir = repo_dir.join("skills/beta");
+    fs::create_dir_all(&beta_dir).unwrap();
+    fs::write(
+        beta_dir.join("SKILL.md"),
+        "---\nname: BetaSkill\ndescription: new skill\n---\n",
+    )
+    .unwrap();
+    ProcessCommand::new("git")
+        .args(["add", "skills/beta"])
+        .current_dir(&repo_dir)
+        .status()
+        .unwrap();
+    ProcessCommand::new("git")
+        .args(["commit", "-m", "add beta skill"])
+        .current_dir(&repo_dir)
+        .status()
+        .unwrap();
+
+    let mut update = Command::cargo_bin("tome").unwrap();
+    update
+        .env("SKILLS_DIR", skills_dir.to_str().unwrap())
+        .args(["update", "AlphaSkill", "--verbose"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated: AlphaSkill"))
+        .stdout(predicate::str::contains("Updated: BetaSkill").not());
+
+    assert!(skills_dir.join("AlphaSkill/SKILL.md").exists());
+    assert!(!skills_dir.join("BetaSkill").exists());
+}
+
+#[test]
 fn test_update_removes_skill_deleted_from_custom_source_path() {
     let temp = TempDir::new().unwrap();
     let repo_dir = temp.path().join("repo");
