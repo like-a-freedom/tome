@@ -31,3 +31,8 @@ scale (0→100 on completion).
   one-line constant edit.
 - During a slow sparse checkout the bar sits in 35-60 instead of reporting the
   source done.
+- When all tracked skills are processed before `sync_new_repo_skills` runs, the
+  bar reaches 100 before the sync; newly-synced skills then move only the
+  checked/total count and the `Copying` phase label, not the bar. This is the
+  monotonicity trade-off: reserving bar headroom for sync would require knowing
+  the sync count up front, which is impossible until the repository scan runs.
