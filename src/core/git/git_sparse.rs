@@ -331,6 +331,21 @@ mod tests {
     }
 
     #[test]
+    fn test_clone_repo_sparse_tracked_succeeds() {
+        let src = create_temp_git_repo_with_skills_dir();
+        let dest = TempDir::new().unwrap();
+        let dest_path = dest.path().join("clone");
+
+        let path_str = src.path().to_string_lossy().to_string();
+        let mut seen: Vec<u8> = Vec::new();
+        clone_repo_sparse_tracked(&path_str, &dest_path, &mut |pct| seen.push(pct)).unwrap();
+
+        assert!(dest_path.join(".git").exists());
+        assert!(dest_path.join("skills").exists());
+        assert!(dest_path.join("skills/my-skill/SKILL.md").exists());
+    }
+
+    #[test]
     fn test_clone_sparse_falls_back_on_no_skills() {
         let temp = TempDir::new().unwrap();
         Command::new("git")

@@ -226,11 +226,11 @@ fn format_progress_bar(current: usize, total: usize) -> String {
 }
 
 fn format_elapsed(elapsed: std::time::Duration) -> String {
-    let secs = elapsed.as_secs_f32();
-    if secs < 60.0 {
-        format!("{secs:.1}s")
+    let total = elapsed.as_secs();
+    if total < 60 {
+        let tenths = elapsed.subsec_millis() / 100;
+        format!("{}.{}s", total, tenths)
     } else {
-        let total = elapsed.as_secs();
         format!("{}m {}s", total / 60, total % 60)
     }
 }
@@ -430,6 +430,15 @@ mod tests {
     #[test]
     fn test_format_elapsed_minutes() {
         assert_eq!(format_elapsed(std::time::Duration::from_secs(95)), "1m 35s");
+    }
+
+    #[test]
+    fn test_format_elapsed_boundary_does_not_round_to_60s() {
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_millis(59_960)),
+            "59.9s"
+        );
+        assert_eq!(format_elapsed(std::time::Duration::from_secs(60)), "1m 0s");
     }
 
     #[test]
