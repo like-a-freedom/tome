@@ -529,12 +529,22 @@ impl UpdateService {
         };
         let label = crate::core::parse_source::repo_label(context.remote);
 
+        let mut new_skills: Vec<_> = Vec::new();
         for skill in detected {
             if manifest.is_tracked(&skill.name) || self.config.skills_dir.join(&skill.name).exists()
             {
                 continue;
             }
+            new_skills.push(skill);
+        }
+        if new_skills.is_empty() {
+            return;
+        }
 
+        reporter.phase(ProgressPhase::Copying);
+        reporter.sync_found(new_skills.len());
+
+        for skill in new_skills {
             let frontmatter = match spec::validate_skill(&skill.path) {
                 Ok(frontmatter) => frontmatter,
                 Err(error) => {
@@ -621,6 +631,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingReporter {
         phases: Vec<ProgressPhase>,
+        sync_counts: Vec<usize>,
     }
 
     impl UpdateReporter for RecordingReporter {
@@ -645,7 +656,9 @@ mod tests {
 
         fn checkout_progress(&mut self, _percent: u8) {}
 
-        fn sync_found(&mut self, _count: usize) {}
+        fn sync_found(&mut self, count: usize) {
+            self.sync_counts.push(count);
+        }
 
         fn repo_finished(&mut self, _label: &str, _outcome: RepoOutcome) {}
     }
@@ -767,6 +780,41 @@ mod tests {
         assert!(manifest.is_tracked("missing"));
         assert!(manifest.is_tracked("present"));
         assert!(skills_dir.join("missing/SKILL.md").exists());
+        assert!(skills_dir.join("present/SKILL.md").exists());
+    }
+
+    #[test]
+    fn sync_new_reports_copying_phase_and_found_count() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let remote = testutil::create_git_repo_with_skill(
+            &temp,
+            "---\nname: present\ndescription: new\n---\n",
+        );
+
+        let mut manifest = Manifest::new();
+        let service =
+            UpdateService::with_manifest_path(skills_dir.clone(), skills_dir.join(".skills.json"));
+        let mut reporter = RecordingReporter::default();
+        service
+            .update_git_group(
+                &mut manifest,
+                GitGroupRequest {
+                    remote: &remote,
+                    skill_names: &[],
+                    sparse: false,
+                    live: false,
+                    sync_new: true,
+                    position: SourcePosition { index: 1, total: 1 },
+                },
+                &mut reporter,
+            )
+            .unwrap();
+
+        assert!(reporter.phases.contains(&ProgressPhase::Copying));
+        assert_eq!(reporter.sync_counts, vec![1]);
+        assert!(manifest.is_tracked("present"));
         assert!(skills_dir.join("present/SKILL.md").exists());
     }
 
