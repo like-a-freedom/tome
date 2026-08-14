@@ -19,6 +19,7 @@ const MAX_LABEL_WIDTH: usize = 25;
 const CLONE_SEGMENT_END: u8 = 35;
 const CHECKOUT_SEGMENT_END: u8 = 60;
 const OVERALL_SCALE_END: u8 = 100;
+const PERCENT_SCALE_END: u8 = 100;
 
 fn overall_for_clone(percent: u8) -> u8 {
     map_percent_into(percent, 0, CLONE_SEGMENT_END)
@@ -32,7 +33,9 @@ fn overall_for_checkout(percent: u8) -> u8 {
 /// Map a 0-100 percent into the `start..=start+span` segment of the overall
 /// scale, clamping the input so it can never overshoot the segment.
 fn map_percent_into(percent: u8, start: u8, span: u8) -> u8 {
-    start + (u16::from(percent.min(100)) * u16::from(span) / 100) as u8
+    start
+        + (u16::from(percent.min(PERCENT_SCALE_END)) * u16::from(span)
+            / u16::from(PERCENT_SCALE_END)) as u8
 }
 
 fn overall_for_skills(checked: usize, total: usize) -> u8 {
@@ -412,6 +415,29 @@ mod tests {
         assert!(
             rendered.contains("[⣿⣿⣿"),
             "35% of 10 cells = 3 filled, got: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn test_format_live_line_checkout_overall() {
+        let state = ProgressState {
+            source_idx: 1,
+            source_count: 1,
+            label: "owner/repo".to_string(),
+            phase: ProgressPhase::Checkout,
+            checked_skills: 0,
+            total_skills: 7,
+            frame_idx: 0,
+            started: std::time::Instant::now(),
+            overall: 47,
+        };
+
+        let rendered = strip_ansi(&format_live_line(&state));
+
+        assert!(rendered.contains("checkout 47%"));
+        assert!(
+            rendered.contains("[⣿⣿⣿⣿"),
+            "47% of 10 cells = 4 filled, got: {rendered:?}"
         );
     }
 

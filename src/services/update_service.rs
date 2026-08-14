@@ -362,7 +362,13 @@ impl UpdateService {
                 temp_dir.path(),
                 sparse,
                 &mut |phase, percent| match phase {
-                    crate::core::git::TransferPhase::Clone => reporter.clone_progress(percent),
+                    crate::core::git::TransferPhase::Clone => {
+                        if checkout_started {
+                            reporter.phase(ProgressPhase::Cloning);
+                            checkout_started = false;
+                        }
+                        reporter.clone_progress(percent);
+                    }
                     crate::core::git::TransferPhase::Checkout => {
                         if !checkout_started {
                             reporter.phase(ProgressPhase::Checkout);
