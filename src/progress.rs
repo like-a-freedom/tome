@@ -7,7 +7,7 @@ use crossterm::{
 };
 use std::io::{self, IsTerminal};
 
-const SPINNER_FRAMES: &[&str] = &["-", "\\", "|", "/"];
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Maximum display width for repo labels in the live progress line.
 /// Prevents line wrapping on 80-col terminals when labels are long
@@ -44,6 +44,8 @@ struct ProgressState {
     checked_skills: usize,
     total_skills: usize,
     frame_idx: usize,
+    started: std::time::Instant,
+    clone_percent: Option<u8>,
 }
 
 pub struct UpdateProgress {
@@ -87,6 +89,8 @@ impl UpdateProgress {
             checked_skills: 0,
             total_skills: skill_count,
             frame_idx: 0,
+            started: std::time::Instant::now(),
+            clone_percent: None,
         });
         self.draw();
     }
@@ -104,6 +108,14 @@ impl UpdateProgress {
     pub fn skill_checked(&mut self) {
         if let Some(state) = &mut self.state {
             state.checked_skills = state.checked_skills.saturating_add(1);
+            state.frame_idx = state.frame_idx.wrapping_add(1);
+        }
+        self.draw();
+    }
+
+    pub fn clone_progress(&mut self, percent: u8) {
+        if let Some(state) = &mut self.state {
+            state.clone_percent = Some(percent.min(100));
             state.frame_idx = state.frame_idx.wrapping_add(1);
         }
         self.draw();
@@ -174,16 +186,53 @@ fn format_header(total_skills: usize, total_sources: usize) -> String {
 fn format_live_line(state: &ProgressState) -> String {
     let frame = SPINNER_FRAMES[state.frame_idx % SPINNER_FRAMES.len()];
     let label = crate::style::truncate_with_ellipsis(&state.label, MAX_LABEL_WIDTH);
+    let (bar, detail) = if state.phase == ProgressPhase::Cloning {
+        let percent = state.clone_percent.unwrap_or(0);
+        (
+            format_progress_bar(percent as usize, 100),
+            format!("{percent}%"),
+        )
+    } else {
+        (
+            format_progress_bar(state.checked_skills, state.total_skills),
+            format!("{}/{}", state.checked_skills, state.total_skills),
+        )
+    };
     format!(
-        "{} source {}/{} - {} - {} - {}/{} skills checked",
+        "{} {}/{} {} {} {} {} {}",
         style::styled(CYAN, frame),
         state.source_idx,
         state.source_count,
         label,
+        bar,
         state.phase.label(),
-        state.checked_skills,
-        state.total_skills,
+        detail,
+        format_elapsed(state.started.elapsed()),
     )
+}
+
+const BAR_CELLS: usize = 10;
+const BAR_FILLED: char = '⣿';
+const BAR_EMPTY: char = '⠀';
+
+fn format_progress_bar(current: usize, total: usize) -> String {
+    let filled = (BAR_CELLS * current.min(total))
+        .checked_div(total)
+        .unwrap_or(0);
+    let mut bar = String::with_capacity(BAR_CELLS);
+    bar.extend(std::iter::repeat_n(BAR_FILLED, filled));
+    bar.extend(std::iter::repeat_n(BAR_EMPTY, BAR_CELLS - filled));
+    format!("[{bar}]")
+}
+
+fn format_elapsed(elapsed: std::time::Duration) -> String {
+    let secs = elapsed.as_secs_f32();
+    if secs < 60.0 {
+        format!("{secs:.1}s")
+    } else {
+        let total = elapsed.as_secs();
+        format!("{}m {}s", total / 60, total % 60)
+    }
 }
 
 fn format_repo_line(label: &str, outcome: RepoOutcome) -> String {
@@ -286,14 +335,18 @@ mod tests {
             checked_skills: 3,
             total_skills: 7,
             frame_idx: 0,
+            started: std::time::Instant::now(),
+            clone_percent: None,
         };
 
         let rendered = strip_ansi(&format_live_line(&state));
 
-        assert_eq!(
-            rendered,
-            "- source 2/5 - owner/repo - checking - 3/7 skills checked"
+        assert!(
+            rendered.starts_with("⠋ 2/5 owner/repo [⣿⣿⣿⣿"),
+            "spinner+position+label+bar prefix, got: {rendered:?}"
         );
+        assert!(rendered.contains("checking 3/7"));
+        assert!(rendered.ends_with('s'), "elapsed suffix, got: {rendered:?}");
     }
 
     #[test]
@@ -306,6 +359,8 @@ mod tests {
             checked_skills: 3,
             total_skills: 7,
             frame_idx: 0,
+            started: std::time::Instant::now(),
+            clone_percent: None,
         };
 
         let rendered = strip_ansi(&format_live_line(&state));
@@ -315,10 +370,84 @@ mod tests {
             rendered
         );
         assert!(
-            rendered.len() <= 80,
-            "live line should fit in 80 cols: {}",
-            rendered.len()
+            style::display_width(&rendered) <= 80,
+            "live line should fit in 80 display columns, got width {}: {:?}",
+            style::display_width(&rendered),
+            rendered
         );
+    }
+
+    #[test]
+    fn test_format_live_line_clone_percent() {
+        let state = ProgressState {
+            source_idx: 1,
+            source_count: 1,
+            label: "owner/repo".to_string(),
+            phase: ProgressPhase::Cloning,
+            checked_skills: 0,
+            total_skills: 7,
+            frame_idx: 0,
+            started: std::time::Instant::now(),
+            clone_percent: Some(45),
+        };
+
+        let rendered = strip_ansi(&format_live_line(&state));
+
+        assert!(rendered.contains("cloning 45%"));
+        assert!(
+            rendered.contains("[⣿⣿⣿⣿"),
+            "45% of 10 cells = 4 filled, got: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn test_format_progress_bar_full() {
+        assert_eq!(format_progress_bar(7, 7), "[⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿]");
+    }
+
+    #[test]
+    fn test_format_progress_bar_zero_total_does_not_panic() {
+        assert_eq!(format_progress_bar(0, 0), "[⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀]");
+    }
+
+    #[test]
+    fn test_format_progress_bar_half() {
+        assert_eq!(format_progress_bar(5, 10), "[⣿⣿⣿⣿⣿⠀⠀⠀⠀⠀]");
+    }
+
+    #[test]
+    fn test_format_elapsed_seconds() {
+        assert_eq!(
+            format_elapsed(std::time::Duration::from_millis(46_300)),
+            "46.3s"
+        );
+    }
+
+    #[test]
+    fn test_format_elapsed_minutes() {
+        assert_eq!(format_elapsed(std::time::Duration::from_secs(95)), "1m 35s");
+    }
+
+    #[test]
+    fn test_clone_progress_updates_state() {
+        let mut progress = UpdateProgress {
+            live: false,
+            state: Some(ProgressState {
+                source_idx: 1,
+                source_count: 1,
+                label: "owner/repo".to_string(),
+                phase: ProgressPhase::Cloning,
+                checked_skills: 0,
+                total_skills: 7,
+                frame_idx: 0,
+                started: std::time::Instant::now(),
+                clone_percent: None,
+            }),
+        };
+
+        progress.clone_progress(45);
+
+        assert_eq!(progress.state.as_ref().unwrap().clone_percent, Some(45));
     }
 
     #[test]
