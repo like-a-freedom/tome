@@ -237,9 +237,9 @@ fn format_elapsed(elapsed: std::time::Duration) -> String {
 
 fn format_repo_line(label: &str, outcome: RepoOutcome) -> String {
     let marker = if outcome.is_clean() {
-        style::styled(GREEN, "ok")
+        style::styled(GREEN, "✔")
     } else {
-        style::styled(YELLOW, "!!")
+        style::styled(YELLOW, "✖")
     };
     let mut parts = Vec::new();
     if outcome.updated > 0 {
@@ -457,7 +457,7 @@ mod tests {
             RepoOutcome::new(2, 3, 0, 0),
         ));
 
-        assert!(rendered.contains("ok owner/repo"));
+        assert!(rendered.contains("✔ owner/repo"));
         assert!(rendered.contains("2 updated"));
         assert!(rendered.contains("3 current"));
         assert!(!rendered.contains("failed"));
@@ -470,7 +470,7 @@ mod tests {
             RepoOutcome::new(0, 1, 2, 1),
         ));
 
-        assert!(rendered.contains("!! owner/repo"));
+        assert!(rendered.contains("✖ owner/repo"));
         assert!(rendered.contains("1 current"));
         assert!(rendered.contains("1 removed"));
         assert!(rendered.contains("2 failed"));
