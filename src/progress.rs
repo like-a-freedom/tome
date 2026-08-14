@@ -18,22 +18,29 @@ const MAX_LABEL_WIDTH: usize = 25;
 /// CLONE_SEGMENT_END..CHECKOUT_SEGMENT_END, skills checked/total to the rest.
 const CLONE_SEGMENT_END: u8 = 35;
 const CHECKOUT_SEGMENT_END: u8 = 60;
+const OVERALL_SCALE_END: u8 = 100;
 
 fn overall_for_clone(percent: u8) -> u8 {
-    (u16::from(percent.min(100)) * u16::from(CLONE_SEGMENT_END) / 100) as u8
+    map_percent_into(percent, 0, CLONE_SEGMENT_END)
 }
 
 fn overall_for_checkout(percent: u8) -> u8 {
     let span = CHECKOUT_SEGMENT_END - CLONE_SEGMENT_END;
-    CLONE_SEGMENT_END + (u16::from(percent.min(100)) * u16::from(span) / 100) as u8
+    map_percent_into(percent, CLONE_SEGMENT_END, span)
 }
 
-fn overall_for_apply(checked: usize, total: usize) -> u8 {
+/// Map a 0-100 percent into the `start..=start+span` segment of the overall
+/// scale, clamping the input so it can never overshoot the segment.
+fn map_percent_into(percent: u8, start: u8, span: u8) -> u8 {
+    start + (u16::from(percent.min(100)) * u16::from(span) / 100) as u8
+}
+
+fn overall_for_skills(checked: usize, total: usize) -> u8 {
     if total == 0 {
         return CHECKOUT_SEGMENT_END;
     }
-    let span = 100 - CHECKOUT_SEGMENT_END;
-    CHECKOUT_SEGMENT_END + ((span as usize * checked.min(total)) / total) as u8
+    let span = (OVERALL_SCALE_END - CHECKOUT_SEGMENT_END) as usize;
+    CHECKOUT_SEGMENT_END + ((span * checked.min(total)) / total) as u8
 }
 
 pub use crate::services::update_service::{ProgressPhase, RepoOutcome};
@@ -162,7 +169,7 @@ impl UpdateReporter for UpdateProgress {
             state.checked_skills = state.checked_skills.saturating_add(1);
             state.overall = state
                 .overall
-                .max(overall_for_apply(state.checked_skills, state.total_skills));
+                .max(overall_for_skills(state.checked_skills, state.total_skills));
             state.frame_idx = state.frame_idx.wrapping_add(1);
         }
         self.draw();
@@ -189,7 +196,7 @@ impl UpdateReporter for UpdateProgress {
             state.total_skills = state.total_skills.saturating_add(count);
             state.overall = state
                 .overall
-                .max(overall_for_apply(state.checked_skills, state.total_skills));
+                .max(overall_for_skills(state.checked_skills, state.total_skills));
             state.frame_idx = state.frame_idx.wrapping_add(1);
         }
         self.draw();
@@ -233,7 +240,7 @@ fn format_header(total_skills: usize, total_sources: usize) -> String {
 fn format_live_line(state: &ProgressState) -> String {
     let frame = SPINNER_FRAMES[state.frame_idx % SPINNER_FRAMES.len()];
     let label = crate::style::truncate_with_ellipsis(&state.label, MAX_LABEL_WIDTH);
-    let bar = format_progress_bar(state.overall as usize, 100);
+    let bar = format_progress_bar(state.overall as usize, OVERALL_SCALE_END as usize);
     let detail = match state.phase {
         ProgressPhase::Cloning | ProgressPhase::Checkout => format!("{}%", state.overall),
         _ => format!("{}/{}", state.checked_skills, state.total_skills),
@@ -483,11 +490,11 @@ mod tests {
     }
 
     #[test]
-    fn test_overall_for_apply_segment() {
-        assert_eq!(overall_for_apply(0, 7), 60);
-        assert_eq!(overall_for_apply(3, 7), 77);
-        assert_eq!(overall_for_apply(7, 7), 100);
-        assert_eq!(overall_for_apply(0, 0), 60);
+    fn test_overall_for_skills_segment() {
+        assert_eq!(overall_for_skills(0, 7), 60);
+        assert_eq!(overall_for_skills(3, 7), 77);
+        assert_eq!(overall_for_skills(7, 7), 100);
+        assert_eq!(overall_for_skills(0, 0), 60);
     }
 
     #[test]
