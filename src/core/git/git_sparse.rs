@@ -345,7 +345,8 @@ mod tests {
 
         let path_str = src.path().to_string_lossy().to_string();
         let mut seen: Vec<u8> = Vec::new();
-        clone_repo_sparse_tracked(&path_str, &dest_path, &mut |_phase, pct| seen.push(pct)).unwrap();
+        clone_repo_sparse_tracked(&path_str, &dest_path, &mut |_phase, pct| seen.push(pct))
+            .unwrap();
 
         assert!(dest_path.join(".git").exists());
         assert!(dest_path.join("skills").exists());
