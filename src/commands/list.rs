@@ -2,13 +2,10 @@ use anyhow::{Context, Result};
 use crossterm::terminal;
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
 use crate::core::manifest::Manifest;
-use crate::core::manifest_store::ManifestStore;
 use crate::core::parse_source;
-use crate::core::spec;
 use crate::style::{self, BOLD, CYAN, DIM};
 
 pub fn execute(json: bool, skills_dir: &Path, manifest_path: &Path) -> Result<()> {
@@ -63,53 +60,24 @@ pub fn execute(json: bool, skills_dir: &Path, manifest_path: &Path) -> Result<()
 fn scan_untracked_skills(skills_dir: &Path, manifest: &Manifest) -> Result<Vec<UntrackedSkill>> {
     let mut untracked = Vec::new();
 
-    if !skills_dir.exists() {
-        return Ok(untracked);
-    }
-
-    for entry in fs::read_dir(skills_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if !path.is_dir() {
-            continue;
-        }
-
-        if let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && name.starts_with('.')
-        {
-            continue;
-        }
-
-        let skill_md = path.join("SKILL.md");
-        if !skill_md.exists() {
-            continue;
-        }
-
-        let dir_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
-
+    for skill in crate::core::scan::scan_skills_dir(skills_dir)? {
         // Skip if already in manifest
-        if manifest.is_tracked(dir_name) {
+        if manifest.is_tracked(&skill.dir_name) {
             continue;
         }
 
-        // Try to parse frontmatter for display
-        if let Ok(content) = fs::read_to_string(&skill_md)
-            && let Ok(fm) = spec::parse_frontmatter(&content)
-        {
-            // Check if tracked by frontmatter name too
-            if manifest.is_tracked(&fm.name) {
-                continue;
-            }
-            untracked.push(UntrackedSkill {
-                name: fm.name,
-                description: fm.description,
-                version: fm.version.unwrap_or(NO_VERSION_SENTINEL.into()),
-            });
+        // Check if tracked by frontmatter name too
+        if manifest.is_tracked(&skill.frontmatter.name) {
+            continue;
         }
+        untracked.push(UntrackedSkill {
+            name: skill.frontmatter.name,
+            description: skill.frontmatter.description,
+            version: skill
+                .frontmatter
+                .version
+                .unwrap_or(NO_VERSION_SENTINEL.into()),
+        });
     }
 
     Ok(untracked)
@@ -180,7 +148,7 @@ fn output_table(manifest: &Manifest, untracked: &[UntrackedSkill]) {
         return;
     }
 
-    let (cols, _) = terminal::size().unwrap_or((DEFAULT_COLS, DEFAULT_ROWS));
+    let (cols, _) = terminal::size().unwrap_or((TABLE_FALLBACK_COLS, DEFAULT_ROWS));
     let w = TableWidths::calculate(manifest, untracked, cols as usize);
 
     // Build rows and group by source
@@ -304,7 +272,7 @@ fn output_json(manifest: &Manifest, untracked: &[UntrackedSkill]) -> Result<()> 
 }
 
 const NO_VERSION_SENTINEL: &str = "0.0.0";
-const DEFAULT_COLS: u16 = 100;
+const TABLE_FALLBACK_COLS: u16 = 100;
 const DEFAULT_ROWS: u16 = 24;
 
 struct UntrackedSkill {

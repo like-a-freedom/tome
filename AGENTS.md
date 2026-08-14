@@ -85,7 +85,8 @@ SKILLS_DIR=/path/to/skills cargo run -- list
 ```ascii
 main.rs → lib.rs::run() → commands/{add,list,remove,update,export}
                            services.rs → services/{skill_service,update_service}
-                           core/{spec,manifest,manifest_store,git,git_sparse,repo_detect,commit,dirs,install,parse_source}
+                                         ServiceConfig (shared paths)
+                           core/{spec,manifest,git,git_sparse,repo_detect,commit,dirs,install,parse_source,scan}
                            output.rs (shared format/print functions)
                            fs.rs (temp dirs, directory copy)
                            progress.rs (compact update status)

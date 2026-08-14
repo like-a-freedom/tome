@@ -48,15 +48,15 @@ tome/
 │   ├── core.rs                 # core module declarations
 │   ├── core/
 │   │   ├── commit.rs           # commit short-form and comparison helpers
-│   │   ├── dirs.rs             # shared scan and sparse-checkout constants
+│   │   ├── dirs.rs             # shared scan constants and no-skill message
 │   │   ├── git.rs              # Git clone, sparse checkout, and metadata
 │   │   ├── git/
 │   │   │   └── git_sparse.rs   # nested `.agents/skills/` sparse-checkout fetcher
 │   │   ├── install.rs          # resolved skills, copy, manifest updates
 │   │   ├── manifest.rs         # .skills.json persistence and lookup
-│   │   ├── manifest_store.rs   # ManifestStore trait and in-memory test double
 │   │   ├── parse_source.rs     # source parsing and labels
 │   │   ├── repo_detect.rs      # repository skill discovery and geometry
+│   │   ├── scan.rs             # shared SKILL.md directory scanning
 │   │   └── spec.rs             # SKILL.md frontmatter parsing and validation
 │   ├── config.rs               # CLI shape and path resolution
 │   ├── fs.rs                   # filesystem helpers
@@ -101,7 +101,10 @@ this is explicitly deferred in ADR-0001 and the refactoring plan.
 
 `SkillService` owns install and remove orchestration: source parsing, Git/file
 source handling, repository detection, frontmatter validation, installation,
-removal, and manifest updates.
+removal, and manifest updates. Both services receive their paths through
+`services::ServiceConfig`. `SkillService::install` accepts an optional picker
+closure that replaces the interactive TUI multi-select for multi-skill
+repositories; commands pass `None` and tests inject a pure function.
 
 `UpdateService` owns update orchestration: selecting manifest entries, grouping
 Git sources, updating file URL sources, restoring missing local skills,
@@ -126,6 +129,7 @@ tome add source
   → parse Source
   → clone Git repository or download file URL
   → detect one or more skills
+  → picker closure or TUI multi-select for multi-skill repositories
   → validate SKILL.md frontmatter
   → copy the selected skill directory
   → update .skills.json
@@ -184,13 +188,18 @@ them, scans for manually placed skills, and renders table or JSON output.
 The audit identified three possible future seams. They are intentionally not
 implemented yet:
 
-- **ADR-0003 — `ManifestStore`:** revisit when a second manifest backend or a
-  mock-driven manifest seam is needed. (Partially realized by ADR-0006.)
+- **ADR-0003 — `ManifestStore`:** the trait and in-memory test double were
+  removed; `Manifest` gained the inherent `all_skills` accessor that the trait
+  used to provide. Revisit if a second manifest backend or a mock-driven
+  manifest seam is needed. (Superseded by ADR-0006 and the C1/C2 refactors.)
 - **ADR-0004 — `GitRepository`:** revisit when a second Git backend or a
   mock-driven Git seam is needed; Git CLI remains the selected backend.
 - **ADR-0005 — domain model:** revisit when `Skill`, repository references,
   and manifest relationships gain behavior that is not well represented by the
-  current validated structs. (Repo geometry partially realized by ADR-0007.)
+  current validated structs. (Repo geometry partially realized by ADR-0007;
+  ADR-0008 removes the ManifestStore trait, ADR-0009 centralizes read-side
+  skill scanning, ADR-0010 passes presentation state as arguments. The
+  file-URL commit marker used by `is_file_url` is defined in CONTEXT.md.)
 
 Adding these interfaces now would increase indirection without a concrete
 second adapter. They remain roadmap decisions, not unwired public APIs.
@@ -211,4 +220,4 @@ cargo test
 git diff --check
 ```
 
-The latest run passed 271 unit tests, 26 integration tests, and all doctests.
+The latest run passed 286 unit tests, 26 integration tests, and all doctests.

@@ -65,70 +65,6 @@ impl UpdateProgress {
         self.live
     }
 
-    pub fn start(&mut self, total_skills: usize, total_sources: usize) {
-        let header = format_header(total_skills, total_sources);
-        if self.live {
-            eprintln!("{}", header);
-        } else {
-            println!("{}", header);
-        }
-    }
-
-    pub fn repo_started(
-        &mut self,
-        source_idx: usize,
-        source_count: usize,
-        label: &str,
-        skill_count: usize,
-    ) {
-        self.state = Some(ProgressState {
-            source_idx,
-            source_count,
-            label: label.to_string(),
-            phase: ProgressPhase::Cloning,
-            checked_skills: 0,
-            total_skills: skill_count,
-            frame_idx: 0,
-            started: std::time::Instant::now(),
-            clone_percent: None,
-        });
-        self.draw();
-    }
-
-    pub fn phase(&mut self, phase: ProgressPhase) {
-        if let Some(state) = &mut self.state {
-            state.phase = phase;
-            state.frame_idx = state.frame_idx.wrapping_add(1);
-            self.draw();
-        } else if matches!(phase, ProgressPhase::Saving) {
-            println!("Saving manifest...");
-        }
-    }
-
-    pub fn skill_checked(&mut self) {
-        if let Some(state) = &mut self.state {
-            state.checked_skills = state.checked_skills.saturating_add(1);
-            state.frame_idx = state.frame_idx.wrapping_add(1);
-        }
-        self.draw();
-    }
-
-    pub fn clone_progress(&mut self, percent: u8) {
-        if let Some(state) = &mut self.state {
-            state.clone_percent = Some(percent.min(100));
-            state.frame_idx = state.frame_idx.wrapping_add(1);
-        }
-        self.draw();
-    }
-
-    pub fn repo_finished(&mut self, label: &str, outcome: RepoOutcome) {
-        if self.live {
-            clear_live_line();
-            eprintln!("{}", format_repo_line(label, outcome));
-        }
-        self.state = None;
-    }
-
     pub fn finish(&mut self) {
         if self.live {
             clear_live_line();
@@ -154,6 +90,72 @@ impl UpdateProgress {
                 Print(format_live_line(state))
             );
         }
+    }
+}
+
+impl UpdateReporter for UpdateProgress {
+    fn start(&mut self, total_skills: usize, total_sources: usize) {
+        let header = format_header(total_skills, total_sources);
+        if self.live {
+            eprintln!("{}", header);
+        } else {
+            println!("{}", header);
+        }
+    }
+
+    fn repo_started(
+        &mut self,
+        source_idx: usize,
+        source_count: usize,
+        label: &str,
+        skill_count: usize,
+    ) {
+        self.state = Some(ProgressState {
+            source_idx,
+            source_count,
+            label: label.to_string(),
+            phase: ProgressPhase::Cloning,
+            checked_skills: 0,
+            total_skills: skill_count,
+            frame_idx: 0,
+            started: std::time::Instant::now(),
+            clone_percent: None,
+        });
+        self.draw();
+    }
+
+    fn phase(&mut self, phase: ProgressPhase) {
+        if let Some(state) = &mut self.state {
+            state.phase = phase;
+            state.frame_idx = state.frame_idx.wrapping_add(1);
+            self.draw();
+        } else if matches!(phase, ProgressPhase::Saving) {
+            println!("Saving manifest...");
+        }
+    }
+
+    fn skill_checked(&mut self) {
+        if let Some(state) = &mut self.state {
+            state.checked_skills = state.checked_skills.saturating_add(1);
+            state.frame_idx = state.frame_idx.wrapping_add(1);
+        }
+        self.draw();
+    }
+
+    fn clone_progress(&mut self, percent: u8) {
+        if let Some(state) = &mut self.state {
+            state.clone_percent = Some(percent.min(100));
+            state.frame_idx = state.frame_idx.wrapping_add(1);
+        }
+        self.draw();
+    }
+
+    fn repo_finished(&mut self, label: &str, outcome: RepoOutcome) {
+        if self.live {
+            clear_live_line();
+            eprintln!("{}", format_repo_line(label, outcome));
+        }
+        self.state = None;
     }
 }
 
@@ -265,42 +267,6 @@ fn format_repo_line(label: &str, outcome: RepoOutcome) -> String {
     }
 
     format!("{} {:<24} {}", marker, label, parts.join(" - "))
-}
-
-impl UpdateReporter for UpdateProgress {
-    fn start(&mut self, total_skills: usize, total_sources: usize) {
-        UpdateProgress::start(self, total_skills, total_sources);
-    }
-
-    fn repo_started(
-        &mut self,
-        source_idx: usize,
-        source_count: usize,
-        label: &str,
-        skill_count: usize,
-    ) {
-        UpdateProgress::repo_started(self, source_idx, source_count, label, skill_count);
-    }
-
-    fn phase(&mut self, phase: ProgressPhase) {
-        UpdateProgress::phase(self, phase);
-    }
-
-    fn skill_checked(&mut self) {
-        UpdateProgress::skill_checked(self);
-    }
-
-    fn clone_progress(&mut self, percent: u8) {
-        UpdateProgress::clone_progress(self, percent);
-    }
-
-    fn repo_finished(&mut self, label: &str, outcome: RepoOutcome) {
-        UpdateProgress::repo_finished(self, label, outcome);
-    }
-
-    fn is_live(&self) -> bool {
-        self.enabled()
-    }
 }
 
 #[cfg(test)]

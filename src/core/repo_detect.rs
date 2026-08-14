@@ -3,16 +3,17 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::dirs::{SKILL_SUBDIRS, SKIP_DIRS};
+use super::dirs::{NO_SKILL_FOUND_MSG, SKILL_SUBDIRS, SKIP_DIRS};
 
-/// Error shown when no skill can be found anywhere in a repository.
-const NO_SKILL_FOUND_MSG: &str = "No SKILL.md found in repository root, skills/, Skills/, .claude/skills/, .agents/skills/ directory, or top-level skill directories";
-
+/// Classification of a cloned repository's skill layout.
+/// The rich per-skill data (names, paths, descriptions) lives in
+/// `resolve_skills`; this classifier only distinguishes the shapes the
+/// fallback (`sole_skill_dir`) needs.
 #[derive(Debug, Clone)]
-pub enum RepoType {
+pub(crate) enum RepoType {
     SingleSkillAtRoot,
-    SingleSkillInDir { name: String, path: PathBuf },
-    MultiSkill(Vec<SkillInfo>),
+    SingleSkillInDir { path: PathBuf },
+    MultiSkill,
 }
 
 #[derive(Debug, Clone)]
@@ -40,50 +41,29 @@ fn read_root_skill(repo_path: &Path) -> Result<Option<SkillInfo>> {
     }))
 }
 
-pub fn detect_repo_type(repo_path: &Path) -> Result<RepoType> {
-    let mut subdir_skills: Option<Vec<SkillInfo>> = None;
-    for subdir in SKILL_SUBDIRS {
-        if let Some(skills) = find_skills_in_subdir(repo_path, subdir)? {
-            subdir_skills = Some(skills);
-            break;
-        }
-    }
-
+pub(crate) fn detect_repo_type(repo_path: &Path) -> Result<RepoType> {
+    let subdir_skills = find_skills_subdir(repo_path)?;
     let top_level_skills = find_top_level_skills(repo_path)?;
 
-    if let Some(root_info) = read_root_skill(repo_path)? {
-        match (&subdir_skills, &top_level_skills) {
-            (Some(skills), _) => {
-                let mut all_skills = vec![root_info];
-                all_skills.extend(skills.iter().cloned());
-                Ok(RepoType::MultiSkill(all_skills))
-            }
-            (None, top_levels) if !top_levels.is_empty() => {
-                let mut all_skills = vec![root_info];
-                all_skills.extend(top_levels.iter().cloned());
-                Ok(RepoType::MultiSkill(all_skills))
-            }
-            _ => Ok(RepoType::SingleSkillAtRoot),
+    if read_root_skill(repo_path)?.is_some() {
+        if subdir_skills.is_some() || !top_level_skills.is_empty() {
+            Ok(RepoType::MultiSkill)
+        } else {
+            Ok(RepoType::SingleSkillAtRoot)
         }
     } else if let Some(skills) = subdir_skills {
         if skills.len() == 1 {
             let skill = skills.into_iter().next().unwrap();
-            Ok(RepoType::SingleSkillInDir {
-                name: skill.name,
-                path: skill.path,
-            })
+            Ok(RepoType::SingleSkillInDir { path: skill.path })
         } else {
-            Ok(RepoType::MultiSkill(skills))
+            Ok(RepoType::MultiSkill)
         }
     } else if !top_level_skills.is_empty() {
         if top_level_skills.len() == 1 {
             let skill = top_level_skills.into_iter().next().unwrap();
-            Ok(RepoType::SingleSkillInDir {
-                name: skill.name,
-                path: skill.path,
-            })
+            Ok(RepoType::SingleSkillInDir { path: skill.path })
         } else {
-            Ok(RepoType::MultiSkill(top_level_skills))
+            Ok(RepoType::MultiSkill)
         }
     } else {
         bail!(NO_SKILL_FOUND_MSG)
@@ -95,16 +75,11 @@ pub fn detect_repo_type(repo_path: &Path) -> Result<RepoType> {
 pub fn resolve_skills(repo_path: &Path) -> Result<Vec<SkillInfo>> {
     let root_skill = read_root_skill(repo_path)?;
 
-    let mut nested = Vec::new();
-    for subdir in SKILL_SUBDIRS {
-        if let Some(skills) = find_skills_in_subdir(repo_path, subdir)? {
-            nested = skills;
-            break;
-        }
-    }
-    if nested.is_empty() {
-        nested = find_top_level_skills(repo_path)?;
-    }
+    let nested = if let Some(skills) = find_skills_subdir(repo_path)? {
+        skills
+    } else {
+        find_top_level_skills(repo_path)?
+    };
 
     let mut skills = Vec::new();
     if let Some(root) = root_skill {
@@ -179,6 +154,16 @@ fn find_skills_in_subdir(repo_path: &Path, subdir: &str) -> Result<Option<Vec<Sk
     } else {
         Ok(Some(skills))
     }
+}
+
+/// The first populated SKILL_SUBDIRS entry, preserving priority order.
+fn find_skills_subdir(repo_path: &Path) -> Result<Option<Vec<SkillInfo>>> {
+    for subdir in SKILL_SUBDIRS {
+        if let Some(skills) = find_skills_in_subdir(repo_path, subdir)? {
+            return Ok(Some(skills));
+        }
+    }
+    Ok(None)
 }
 
 fn find_skills_in_dir(dir: &Path, seen: &mut HashSet<String>) -> Result<Vec<SkillInfo>> {
@@ -263,10 +248,7 @@ mod tests {
             make_skill_md(&dir, name, "Test");
         }
         let repo_type = detect_repo_type(temp.path()).unwrap();
-        match repo_type {
-            RepoType::MultiSkill(skills) => assert_eq!(skills.len(), 2),
-            _ => panic!("Expected MultiSkill"),
-        }
+        assert!(matches!(repo_type, RepoType::MultiSkill));
     }
 
     #[test]
@@ -367,15 +349,7 @@ mod tests {
         fs::create_dir_all(&skill_b).unwrap();
         make_skill_md(&skill_b, "skill-b", "Skill B");
         let repo_type = detect_repo_type(temp.path()).unwrap();
-        match repo_type {
-            RepoType::MultiSkill(skills) => {
-                assert_eq!(skills.len(), 2);
-                let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-                assert!(names.contains(&"skill-a"));
-                assert!(names.contains(&"skill-b"));
-            }
-            _ => panic!("Expected MultiSkill"),
-        }
+        assert!(matches!(repo_type, RepoType::MultiSkill));
     }
 
     #[test]
@@ -398,10 +372,7 @@ mod tests {
             make_skill_md(&dir, name, "Test");
         }
         let repo_type = detect_repo_type(temp.path()).unwrap();
-        match repo_type {
-            RepoType::MultiSkill(skills) => assert_eq!(skills.len(), 2),
-            _ => panic!("Expected MultiSkill"),
-        }
+        assert!(matches!(repo_type, RepoType::MultiSkill));
     }
 
     #[test]
@@ -416,8 +387,8 @@ mod tests {
         make_skill_md(&skill_dir, "impeccable", "Design frontend interfaces");
         let repo_type = detect_repo_type(temp.path()).unwrap();
         match repo_type {
-            RepoType::SingleSkillInDir { name, .. } => {
-                assert_eq!(name, "impeccable");
+            RepoType::SingleSkillInDir { path } => {
+                assert!(path.join("SKILL.md").exists());
             }
             _ => panic!("Expected SingleSkillInDir, got {:?}", repo_type),
         }
@@ -433,10 +404,7 @@ mod tests {
             make_skill_md(&dir, name, "Test");
         }
         let repo_type = detect_repo_type(temp.path()).unwrap();
-        match repo_type {
-            RepoType::MultiSkill(skills) => assert_eq!(skills.len(), 2),
-            _ => panic!("Expected MultiSkill, got {:?}", repo_type),
-        }
+        assert!(matches!(repo_type, RepoType::MultiSkill));
     }
 
     #[test]
@@ -448,11 +416,9 @@ mod tests {
         let claude_dir = temp.path().join(".claude/skills/other");
         fs::create_dir_all(&claude_dir).unwrap();
         make_skill_md(&claude_dir, "other", "Should not be picked");
-        let repo_type = detect_repo_type(temp.path()).unwrap();
-        match repo_type {
-            RepoType::SingleSkillInDir { name, .. } => assert_eq!(name, "preferred"),
-            _ => panic!("Expected SingleSkillInDir"),
-        }
+        let skills = resolve_skills(temp.path()).unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "preferred");
     }
 
     #[test]
@@ -464,11 +430,9 @@ mod tests {
         let agents_dir = temp.path().join(".agents/skills/other-skill");
         fs::create_dir_all(&agents_dir).unwrap();
         make_skill_md(&agents_dir, "agents-skill", "Should not be picked");
-        let repo_type = detect_repo_type(temp.path()).unwrap();
-        match repo_type {
-            RepoType::SingleSkillInDir { name, .. } => assert_eq!(name, "claude-skill"),
-            _ => panic!("Expected SingleSkillInDir"),
-        }
+        let skills = resolve_skills(temp.path()).unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name, "claude-skill");
     }
 
     #[test]
@@ -480,8 +444,7 @@ mod tests {
         make_skill_md(&skill, "my-skill", "A nested skill");
         let repo_type = detect_repo_type(temp.path()).unwrap();
         match repo_type {
-            RepoType::SingleSkillInDir { name, path } => {
-                assert_eq!(name, "my-skill");
+            RepoType::SingleSkillInDir { path } => {
                 assert!(path.join("SKILL.md").exists());
             }
             _ => panic!("Expected SingleSkillInDir"),
@@ -499,16 +462,7 @@ mod tests {
         fs::create_dir_all(&skill_b).unwrap();
         make_skill_md(&skill_b, "skill-b", "Skill B");
         let repo_type = detect_repo_type(temp.path()).unwrap();
-        match repo_type {
-            RepoType::MultiSkill(skills) => {
-                assert_eq!(skills.len(), 3);
-                let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-                assert!(names.contains(&"root-skill"));
-                assert!(names.contains(&"skill-a"));
-                assert!(names.contains(&"skill-b"));
-            }
-            other => panic!("Expected MultiSkill, got {:?}", other),
-        }
+        assert!(matches!(repo_type, RepoType::MultiSkill));
     }
 
     #[test]
@@ -524,16 +478,7 @@ mod tests {
             make_skill_md(&dir, name, &format!("Skill {name}"));
         }
         let repo_type = detect_repo_type(temp.path()).unwrap();
-        match repo_type {
-            RepoType::MultiSkill(skills) => {
-                assert_eq!(skills.len(), 3);
-                let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-                assert!(names.contains(&"routeros-firewall"));
-                assert!(names.contains(&"routeros-fundamentals"));
-                assert!(names.contains(&"routeros-scripting"));
-            }
-            other => panic!("Expected MultiSkill, got {:?}", other),
-        }
+        assert!(matches!(repo_type, RepoType::MultiSkill));
     }
 
     #[test]
@@ -544,8 +489,7 @@ mod tests {
         make_skill_md(&dir, "my-skill", "A skill");
         let repo_type = detect_repo_type(temp.path()).unwrap();
         match repo_type {
-            RepoType::SingleSkillInDir { name, path } => {
-                assert_eq!(name, "my-skill");
+            RepoType::SingleSkillInDir { path } => {
                 assert!(path.join("SKILL.md").exists());
             }
             other => panic!("Expected SingleSkillInDir, got {:?}", other),
@@ -562,16 +506,7 @@ mod tests {
             make_skill_md(&dir, name, "Test");
         }
         let repo_type = detect_repo_type(temp.path()).unwrap();
-        match repo_type {
-            RepoType::MultiSkill(skills) => {
-                assert_eq!(skills.len(), 3);
-                let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-                assert!(names.contains(&"root-skill"));
-                assert!(names.contains(&"skill-a"));
-                assert!(names.contains(&"skill-b"));
-            }
-            other => panic!("Expected MultiSkill, got {:?}", other),
-        }
+        assert!(matches!(repo_type, RepoType::MultiSkill));
     }
 
     #[test]
@@ -582,15 +517,7 @@ mod tests {
         fs::create_dir_all(&skill_a).unwrap();
         make_skill_md(&skill_a, "skill-a", "Skill A");
         let repo_type = detect_repo_type(temp.path()).unwrap();
-        match repo_type {
-            RepoType::MultiSkill(skills) => {
-                assert_eq!(skills.len(), 2);
-                let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-                assert!(names.contains(&"root-skill"));
-                assert!(names.contains(&"skill-a"));
-            }
-            other => panic!("Expected MultiSkill, got {:?}", other),
-        }
+        assert!(matches!(repo_type, RepoType::MultiSkill));
     }
 
     #[test]
@@ -603,15 +530,7 @@ mod tests {
         fs::create_dir_all(&codex_skill).unwrap();
         make_skill_md(&codex_skill, "nmt-diagnose", "Diagnose skill");
         let repo_type = detect_repo_type(temp.path()).unwrap();
-        match repo_type {
-            RepoType::MultiSkill(skills) => {
-                assert_eq!(skills.len(), 2);
-                let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-                assert!(names.contains(&"nmt-chat"));
-                assert!(names.contains(&"nmt-diagnose"));
-            }
-            other => panic!("Expected MultiSkill, got {:?}", other),
-        }
+        assert!(matches!(repo_type, RepoType::MultiSkill));
     }
 
     #[test]
@@ -622,8 +541,7 @@ mod tests {
         make_skill_md(&skill_dir, "nmt-chat", "Chat skill");
         let repo_type = detect_repo_type(temp.path()).unwrap();
         match repo_type {
-            RepoType::SingleSkillInDir { name, path } => {
-                assert_eq!(name, "nmt-chat");
+            RepoType::SingleSkillInDir { path } => {
                 assert!(path.join("SKILL.md").exists());
             }
             other => panic!("Expected SingleSkillInDir, got {:?}", other),
@@ -743,17 +661,10 @@ mod tests {
         fs::create_dir_all(&codex_diag).unwrap();
         make_skill_md(&codex_diag, "nmt-diagnose", "Diagnose skill");
 
-        let repo_type = detect_repo_type(temp.path()).unwrap();
-        match repo_type {
-            RepoType::MultiSkill(skills) => {
-                // nmt-chat appears once (from claude/, first alphabetically),
-                // nmt-diagnose appears once (from codex/)
-                assert_eq!(skills.len(), 2);
-                let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-                assert!(names.contains(&"nmt-chat"));
-                assert!(names.contains(&"nmt-diagnose"));
-            }
-            other => panic!("Expected MultiSkill, got {:?}", other),
-        }
+        let skills = resolve_skills(temp.path()).unwrap();
+        assert_eq!(skills.len(), 2);
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"nmt-chat"));
+        assert!(names.contains(&"nmt-diagnose"));
     }
 }

@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 
 const GITHUB_URL_PREFIX: &str = "https://github.com/";
 
-fn is_url(source: &str) -> bool {
+pub(crate) fn is_url(source: &str) -> bool {
     source.starts_with("http://")
         || source.starts_with("https://")
         || source.starts_with("file://")

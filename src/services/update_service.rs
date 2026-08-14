@@ -58,7 +58,6 @@ pub trait UpdateReporter {
     fn skill_checked(&mut self);
     fn clone_progress(&mut self, percent: u8);
     fn repo_finished(&mut self, label: &str, outcome: RepoOutcome);
-    fn is_live(&self) -> bool;
 }
 
 /// Source kind used for verbose update output.
@@ -134,21 +133,20 @@ struct GitGroupRequest<'a> {
     skill_names: &'a [String],
     sparse: bool,
     sync_new: bool,
+    live: bool,
     position: SourcePosition,
 }
 
 /// Application service for updating skills from their recorded sources.
 pub struct UpdateService {
-    skills_dir: PathBuf,
-    manifest_path: PathBuf,
+    config: crate::services::ServiceConfig,
 }
 
 impl UpdateService {
     /// Create a service with an explicit manifest path.
     pub fn with_manifest_path(skills_dir: PathBuf, manifest_path: PathBuf) -> Self {
         Self {
-            skills_dir,
-            manifest_path,
+            config: crate::services::ServiceConfig::new(skills_dir, manifest_path),
         }
     }
 
@@ -162,13 +160,14 @@ impl UpdateService {
         &self,
         specific_name: Option<&str>,
         sparse: bool,
+        live: bool,
         reporter: &mut impl UpdateReporter,
     ) -> Result<UpdateResult> {
-        let manifest_path = self.manifest_path();
+        let manifest_path = &self.config.manifest_path;
         let mut manifest = Manifest::load(manifest_path)?;
         let names = self.selected_names(&manifest, specific_name)?;
         let mut result = UpdateResult {
-            stale: manifest.find_stale(&self.skills_dir),
+            stale: manifest.find_stale(&self.config.skills_dir),
             ..UpdateResult::default()
         };
 
@@ -181,7 +180,7 @@ impl UpdateService {
             names.into_iter().partition(|name| {
                 manifest
                     .get_skill(name)
-                    .is_some_and(|entry| entry.commit.starts_with("file:"))
+                    .is_some_and(|entry| entry.is_file_url())
             });
 
         let mut groups: HashMap<String, Vec<String>> = HashMap::new();
@@ -217,6 +216,7 @@ impl UpdateService {
                     skill_names,
                     sparse,
                     sync_new: specific_name.is_none(),
+                    live,
                     position: SourcePosition {
                         index: file_names.len() + index + 1,
                         total: source_count,
@@ -230,7 +230,7 @@ impl UpdateService {
             result.removed.extend(group_result.removed);
         }
 
-        result.stale = manifest.find_stale(&self.skills_dir);
+        result.stale = manifest.find_stale(&self.config.skills_dir);
         reporter.phase(ProgressPhase::Saving);
         manifest.save(manifest_path)?;
         Ok(result)
@@ -281,7 +281,7 @@ impl UpdateService {
             }
         };
 
-        let skill_dir = self.skills_dir.join(name);
+        let skill_dir = self.config.skills_dir.join(name);
         let existing_path = skill_dir.join("SKILL.md");
         if existing_path.exists()
             && std::fs::read(&existing_path).is_ok_and(|existing| existing == downloaded.content)
@@ -313,7 +313,13 @@ impl UpdateService {
             return FileUpdateResult::Failed(format!("copy failed: {error}"));
         }
         let version = frontmatter.version.unwrap_or_default();
-        manifest.update_skill(name, "file:", &version, "", frontmatter.description);
+        manifest.update_skill(
+            name,
+            crate::core::manifest::FILE_URL_COMMIT,
+            &version,
+            "",
+            frontmatter.description,
+        );
         reporter.skill_checked();
         reporter.repo_finished(name, RepoOutcome::new(1, 0, 0, 0));
 
@@ -321,7 +327,7 @@ impl UpdateService {
             name: name.to_string(),
             source: UpdateSource::File,
             old_commit,
-            new_commit: "file:".to_string(),
+            new_commit: crate::core::manifest::FILE_URL_COMMIT.to_string(),
             version,
         })
     }
@@ -337,6 +343,7 @@ impl UpdateService {
             skill_names,
             sparse,
             sync_new,
+            live,
             position,
         } = request;
         let mut result = UpdateResult::default();
@@ -345,7 +352,7 @@ impl UpdateService {
         reporter.phase(ProgressPhase::Cloning);
         let temp_dir = fs::create_temp_dir()?;
 
-        let clone_result = if reporter.is_live() {
+        let clone_result = if live {
             crate::core::git::clone_repo_or_sparse_tracked(
                 remote,
                 temp_dir.path(),
@@ -403,7 +410,7 @@ impl UpdateService {
                     continue;
                 }
             };
-            let local_path = self.skills_dir.join(name);
+            let local_path = self.config.skills_dir.join(name);
 
             if !source_path.join("SKILL.md").exists() {
                 if let Err(error) = fs::remove_skill_dir(&local_path) {
@@ -510,7 +517,8 @@ impl UpdateService {
         let label = crate::core::parse_source::repo_label(context.remote);
 
         for skill in detected {
-            if manifest.is_tracked(&skill.name) || self.skills_dir.join(&skill.name).exists() {
+            if manifest.is_tracked(&skill.name) || self.config.skills_dir.join(&skill.name).exists()
+            {
                 continue;
             }
 
@@ -523,7 +531,7 @@ impl UpdateService {
                 }
             };
 
-            let dest = self.skills_dir.join(&skill.name);
+            let dest = self.config.skills_dir.join(&skill.name);
             if let Err(error) = fs::copy_skill(&skill.path, &dest) {
                 fs::remove_skill_dir(&dest).ok();
                 record_failure(result, &skill.name, format!("copy failed: {error}"));
@@ -556,10 +564,6 @@ impl UpdateService {
             });
             reporter.skill_checked();
         }
-    }
-
-    fn manifest_path(&self) -> &Path {
-        &self.manifest_path
     }
 }
 
@@ -627,10 +631,6 @@ mod tests {
         fn clone_progress(&mut self, _percent: u8) {}
 
         fn repo_finished(&mut self, _label: &str, _outcome: RepoOutcome) {}
-
-        fn is_live(&self) -> bool {
-            false
-        }
     }
 
     #[test]
@@ -652,7 +652,7 @@ mod tests {
                 "source",
                 "",
                 &testutil::make_fm("file-skill"),
-                "file:",
+                crate::core::manifest::FILE_URL_COMMIT,
                 &source_url,
             ),
         );
@@ -660,7 +660,7 @@ mod tests {
 
         let service = UpdateService::with_manifest_path(skills_dir, manifest_path);
         let mut reporter = RecordingReporter::default();
-        service.run(None, false, &mut reporter).unwrap();
+        service.run(None, false, false, &mut reporter).unwrap();
 
         assert!(reporter.phases.contains(&ProgressPhase::Downloading));
         assert_eq!(reporter.phases.last(), Some(&ProgressPhase::Saving));
@@ -700,6 +700,7 @@ mod tests {
                     remote: &remote,
                     skill_names: &["changed".to_string()],
                     sparse: false,
+                    live: false,
                     sync_new: true,
                     position: SourcePosition { index: 1, total: 1 },
                 },
@@ -737,6 +738,7 @@ mod tests {
                     remote: &remote,
                     skill_names: &["missing".to_string()],
                     sparse: false,
+                    live: false,
                     sync_new: true,
                     position: SourcePosition { index: 1, total: 1 },
                 },
@@ -786,6 +788,7 @@ mod tests {
                     remote: &remote,
                     skill_names: &[],
                     sparse: false,
+                    live: false,
                     sync_new: true,
                     position: SourcePosition { index: 1, total: 1 },
                 },
@@ -841,6 +844,7 @@ mod tests {
                     remote: &remote,
                     skill_names: &[],
                     sparse: false,
+                    live: false,
                     sync_new: true,
                     position: SourcePosition { index: 1, total: 1 },
                 },
@@ -881,7 +885,7 @@ mod tests {
 
         let service = UpdateService::with_manifest_path(skills_dir.clone(), manifest_path);
         let mut reporter = crate::progress::UpdateProgress::new(false);
-        let result = service.run(None, true, &mut reporter).unwrap();
+        let result = service.run(None, true, false, &mut reporter).unwrap();
 
         assert_eq!(updated_names(&result), vec!["restored"]);
         assert!(result.failures.is_empty());
@@ -922,7 +926,7 @@ mod tests {
 
         let service = UpdateService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
         let mut reporter = crate::progress::UpdateProgress::new(false);
-        let result = service.run(None, true, &mut reporter).unwrap();
+        let result = service.run(None, true, false, &mut reporter).unwrap();
         let loaded = Manifest::load(&manifest_path).unwrap();
 
         assert_eq!(result.removed, vec!["deleted"]);
