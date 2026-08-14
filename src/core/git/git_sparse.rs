@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 use super::super::dirs::{SKILL_SUBDIRS, SKIP_DIRS};
-use super::{GitOutput, run_git_command, run_git_command_tracked};
+use super::{GitOutput, TransferPhase, run_git_command, run_git_command_tracked};
 
 /// Sparse-clone a repo: fetch tree objects only, then checkout just `skills/` and root SKILL.md.
 /// Falls back silently if sparse-checkout is not supported (git < 2.25).
@@ -136,7 +136,7 @@ fn verify_working_tree(dest: &Path) -> Result<()> {
 pub fn clone_repo_sparse_tracked(
     url: &str,
     dest: &Path,
-    on_progress: &mut dyn FnMut(u8),
+    on_progress: &mut dyn FnMut(TransferPhase, u8),
 ) -> Result<()> {
     let mut clone_command = Command::new("git");
     clone_command.args([
@@ -148,14 +148,18 @@ pub fn clone_repo_sparse_tracked(
         "--progress",
     ]);
     clone_command.arg(url).arg(dest);
-    run_git_command_tracked(clone_command, on_progress)?;
+    run_git_command_tracked(clone_command, &mut |percent| {
+        on_progress(TransferPhase::Clone, percent)
+    })?;
 
     configure_sparse_checkout(dest)?;
 
     let mut checkout_command = Command::new("git");
     checkout_command.args(["checkout", "--progress"]);
     checkout_command.current_dir(dest);
-    run_git_command_tracked(checkout_command, on_progress)?;
+    run_git_command_tracked(checkout_command, &mut |percent| {
+        on_progress(TransferPhase::Checkout, percent)
+    })?;
 
     verify_working_tree(dest)
 }
@@ -341,7 +345,7 @@ mod tests {
 
         let path_str = src.path().to_string_lossy().to_string();
         let mut seen: Vec<u8> = Vec::new();
-        clone_repo_sparse_tracked(&path_str, &dest_path, &mut |pct| seen.push(pct)).unwrap();
+        clone_repo_sparse_tracked(&path_str, &dest_path, &mut |_phase, pct| seen.push(pct)).unwrap();
 
         assert!(dest_path.join(".git").exists());
         assert!(dest_path.join("skills").exists());
