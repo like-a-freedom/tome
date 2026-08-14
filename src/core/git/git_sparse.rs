@@ -56,13 +56,7 @@ pub fn clone_repo_sparse(url: &str, dest: &Path, output: GitOutput) -> Result<()
 
 fn configure_sparse_checkout(dest: &Path) -> Result<()> {
     // Phase 2: Inspect tree to decide what to fetch
-    let mut skills_subdir: Option<String> = None;
-    for subdir in SKILL_SUBDIRS {
-        if let Some(path) = find_case_insensitive_path(dest, subdir)? {
-            skills_subdir = Some(path);
-            break;
-        }
-    }
+    let skills_subdir = find_skills_subdir(dest)?;
     let has_root_skill = has_path_in_tree(dest, "SKILL.md")?;
 
     // Phase 3: Set sparse-checkout paths
@@ -80,9 +74,7 @@ fn configure_sparse_checkout(dest: &Path) -> Result<()> {
     }
 
     if paths.is_empty() {
-        bail!(
-            "No SKILL.md found in repository root, skills/, Skills/, .claude/skills/, or .agents/skills/ directory"
-        );
+        bail!(super::super::dirs::NO_SKILL_FOUND_MSG);
     }
 
     // Cone mode only supports top-level directories; nested paths like
@@ -200,6 +192,17 @@ fn find_case_insensitive_path(repo_path: &Path, name: &str) -> Result<Option<Str
     } else {
         Ok(None)
     }
+}
+
+/// The first SKILL_SUBDIRS entry present in the git tree (case-insensitive),
+/// preserving priority order.
+fn find_skills_subdir(repo_path: &Path) -> Result<Option<String>> {
+    for subdir in SKILL_SUBDIRS {
+        if let Some(path) = find_case_insensitive_path(repo_path, subdir)? {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
 }
 
 /// Find non-hidden sibling directories at repo root for sparse checkout.

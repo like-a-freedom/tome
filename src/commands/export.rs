@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use crate::core::manifest::Manifest;
-use crate::core::manifest_store::ManifestStore;
 
 pub fn execute(_skills_dir: &Path, manifest_path: &Path) -> Result<()> {
     let output = execute_to_string(manifest_path)?;

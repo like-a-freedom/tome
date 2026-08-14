@@ -126,7 +126,7 @@ impl ResolvedSkill {
             frontmatter,
             label,
             path,
-            commit: "file:".to_string(),
+            commit: crate::core::manifest::FILE_URL_COMMIT.to_string(),
             remote: url,
             branch: String::new(),
         }
@@ -367,12 +367,6 @@ mod tests {
             name: "test".to_string(),
             description: "d".to_string(),
             version: Some("1.2.3".to_string()),
-            authors: None,
-            tags: None,
-            platforms: None,
-            license: None,
-            repository: None,
-            docs: None,
         };
         assert_eq!(format_version_tag(&fm), " v1.2.3");
 
@@ -465,7 +459,11 @@ mod tests {
             String::new(),
             "https://example.com/SKILL.md".to_string(),
         );
-        assert_eq!(skill.commit, "file:", "file URL commit should be 'file:'");
+        assert_eq!(
+            skill.commit,
+            crate::core::manifest::FILE_URL_COMMIT,
+            "file URL commit should be 'file:'"
+        );
         assert_eq!(skill.branch, "", "file URL should have empty branch");
         assert_eq!(skill.remote, "https://example.com/SKILL.md");
         assert_eq!(skill.path, "");
@@ -483,7 +481,7 @@ mod tests {
             "https://example.com/SKILL.md".to_string(),
         );
         assert_eq!(skill.path, "sub/dir", "should preserve custom path");
-        assert_eq!(skill.commit, "file:");
+        assert_eq!(skill.commit, crate::core::manifest::FILE_URL_COMMIT);
     }
 
     #[test]

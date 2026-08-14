@@ -8,12 +8,6 @@ pub fn make_fm(name: &str) -> SkillFrontmatter {
         name: name.to_string(),
         description: format!("{} desc", name),
         version: Some("1.0.0".into()),
-        authors: None,
-        tags: None,
-        platforms: None,
-        license: None,
-        repository: None,
-        docs: None,
     }
 }
 

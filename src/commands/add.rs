@@ -33,7 +33,7 @@ pub fn execute(
         manifest_path.to_path_buf(),
     );
 
-    let result = service.install(source, path_override, force, sparse)?;
+    let result = service.install(source, path_override, force, sparse, None)?;
 
     // Output formatting (only output, no business logic)
     print_install_result(&result);

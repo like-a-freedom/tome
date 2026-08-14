@@ -4,24 +4,25 @@
 //! Commands call service methods, and services use core modules for actual operations.
 
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::core::{parse_source, repo_detect, spec};
+
+/// Injection point replacing the interactive TUI multi-select.
+pub type SkillPicker = dyn FnMut(&[repo_detect::SkillInfo]) -> Result<Vec<repo_detect::SkillInfo>>;
 
 // ── SkillService — main service ────────────────────────────
 
 /// Service for managing skill lifecycle (install, remove).
 pub struct SkillService {
-    skills_dir: PathBuf,
-    manifest_path: PathBuf,
+    config: crate::services::ServiceConfig,
 }
 
 impl SkillService {
     /// Create a service with an explicit manifest path.
     pub fn with_manifest_path(skills_dir: PathBuf, manifest_path: PathBuf) -> Self {
         Self {
-            skills_dir,
-            manifest_path,
+            config: crate::services::ServiceConfig::new(skills_dir, manifest_path),
         }
     }
 
@@ -29,12 +30,15 @@ impl SkillService {
     ///
     /// Encapsulates business logic: parsing source, cloning,
     /// detecting repository type, validating SKILL.md, installing.
+    /// `picker` replaces the interactive multi-select for multi-skill
+    /// repositories; `None` falls back to the TUI.
     pub fn install(
         &self,
         source: &str,
         path_override: Option<String>,
         force: bool,
         sparse: bool,
+        picker: Option<&mut SkillPicker>,
     ) -> Result<crate::core::install::InstallResult> {
         use crate::core::{git, install, repo_detect};
 
@@ -114,7 +118,10 @@ impl SkillService {
                                 })?;
                         vec![skill.clone()]
                     }
-                    None => select_skills(&skills)?,
+                    None => match picker {
+                        Some(pick) => pick(&skills)?,
+                        None => select_skills(&skills)?,
+                    },
                 },
             };
 
@@ -147,8 +154,13 @@ impl SkillService {
             })
             .collect();
 
-        crate::fs::ensure_skills_dir(&self.skills_dir)?;
-        install::install_skills(&resolved, force, &self.skills_dir, self.manifest_path())
+        crate::fs::ensure_skills_dir(&self.config.skills_dir)?;
+        install::install_skills(
+            &resolved,
+            force,
+            &self.config.skills_dir,
+            &self.config.manifest_path,
+        )
     }
 
     /// Install skill from file:// URL.
@@ -186,13 +198,18 @@ impl SkillService {
             url,
         )];
 
-        crate::fs::ensure_skills_dir(&self.skills_dir)?;
-        install::install_skills(&resolved, force, &self.skills_dir, self.manifest_path())
+        crate::fs::ensure_skills_dir(&self.config.skills_dir)?;
+        install::install_skills(
+            &resolved,
+            force,
+            &self.config.skills_dir,
+            &self.config.manifest_path,
+        )
     }
 
     /// Resolve a removal target before prompting the user.
     pub(crate) fn resolve_removal_names(&self, name: &str) -> Result<Vec<String>> {
-        let manifest = crate::core::manifest::Manifest::load(self.manifest_path())?;
+        let manifest = crate::core::manifest::Manifest::load(&self.config.manifest_path)?;
         let names = manifest.resolve_names(name);
         if names.is_empty() {
             anyhow::bail!(
@@ -211,18 +228,14 @@ impl SkillService {
     }
 
     fn remove_names(&self, names: &[String]) -> Result<()> {
-        let manifest_path = self.manifest_path();
+        let manifest_path = &self.config.manifest_path;
         let mut manifest = crate::core::manifest::Manifest::load(manifest_path)?;
         for name in names {
-            let skill_dir = self.skills_dir.join(name);
+            let skill_dir = self.config.skills_dir.join(name);
             crate::fs::remove_skill_dir(&skill_dir)?;
             manifest.remove_skill(name);
         }
         manifest.save(manifest_path)
-    }
-
-    fn manifest_path(&self) -> &Path {
-        &self.manifest_path
     }
 }
 
@@ -260,6 +273,7 @@ fn select_skills(skills: &[repo_detect::SkillInfo]) -> Result<Vec<repo_detect::S
 mod tests {
     use super::*;
     use crate::core::manifest::{Manifest, SkillEntry};
+    use crate::testutil;
     use std::fs;
     use tempfile::TempDir;
 
@@ -277,7 +291,9 @@ mod tests {
         let service = SkillService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
 
         let source_url = format!("file://{}", source.display());
-        let result = service.install(&source_url, None, false, true).unwrap();
+        let result = service
+            .install(&source_url, None, false, true, None)
+            .unwrap();
 
         assert_eq!(result.installed, vec!["service-skill"]);
         assert!(skills_dir.join("service-skill/SKILL.md").exists());
@@ -324,11 +340,49 @@ mod tests {
         let manifest_path = skills_dir.join(".skills.json");
         let service = SkillService::with_manifest_path(skills_dir, manifest_path);
 
-        let error = match service.install("not-a-source", None, false, true) {
+        let error = match service.install("not-a-source", None, false, true, None) {
             Ok(_) => panic!("invalid source should fail"),
             Err(error) => error,
         };
 
         assert!(error.to_string().contains("owner/repo"));
+    }
+
+    #[test]
+    fn install_with_picker_selects_skills_without_tui() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(repo.join("skills/first")).unwrap();
+        fs::create_dir_all(repo.join("skills/second")).unwrap();
+        fs::write(
+            repo.join("skills/first/SKILL.md"),
+            "---\nname: first\ndescription: one\nversion: 1.0.0\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join("skills/second/SKILL.md"),
+            "---\nname: second\ndescription: two\nversion: 1.0.0\n---\n",
+        )
+        .unwrap();
+        testutil::init_git_repo(&repo);
+
+        let skills_dir = temp.path().join("skills");
+        let manifest_path = skills_dir.join(".skills.json");
+        let service = SkillService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
+
+        let mut picker = |skills: &[repo_detect::SkillInfo]| {
+            Ok(skills
+                .iter()
+                .filter(|s| s.name == "first")
+                .cloned()
+                .collect())
+        };
+        let source_url = format!("file://{}", repo.display());
+        let result = service
+            .install(&source_url, None, false, true, Some(&mut picker))
+            .unwrap();
+
+        assert_eq!(result.installed, vec!["first v1.0.0"]);
+        assert!(!skills_dir.join("second").exists());
     }
 }

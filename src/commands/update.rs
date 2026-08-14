@@ -14,8 +14,9 @@ pub fn execute(
         manifest_path.to_path_buf(),
     );
     let mut progress = crate::progress::UpdateProgress::new(verbose);
+    let live = progress.enabled();
     let start = std::time::Instant::now();
-    let result = service.run(name, sparse, &mut progress)?;
+    let result = service.run(name, sparse, live, &mut progress)?;
 
     if !result.stale.is_empty() {
         crate::output::print_stale_header(result.stale.len(), &result.stale);
@@ -39,8 +40,8 @@ pub fn execute(
                     crate::output::print_updated(
                         &info.name,
                         &info.version,
-                        &crate::output::format_commit(&info.old_commit),
-                        &crate::output::format_commit(&info.new_commit),
+                        &crate::core::commit::short(&info.old_commit),
+                        &crate::core::commit::short(&info.new_commit),
                     );
                 }
             }
@@ -49,7 +50,7 @@ pub fn execute(
             let marker = match info.source {
                 crate::services::update_service::UpdateSource::File => "file".to_string(),
                 crate::services::update_service::UpdateSource::Git => {
-                    crate::output::format_commit(&info.new_commit)
+                    crate::core::commit::short(&info.new_commit)
                 }
             };
             crate::output::print_up_to_date(&info.name, &marker);
@@ -169,7 +170,13 @@ mod tests {
 
         let mut manifest = Manifest::new();
         let fm = testutil::make_fm("detected");
-        let mut entry = SkillEntry::new("url", "", &fm, "file:", "https://example.com/SKILL.md");
+        let mut entry = SkillEntry::new(
+            "url",
+            "",
+            &fm,
+            crate::core::manifest::FILE_URL_COMMIT,
+            "https://example.com/SKILL.md",
+        );
         entry.set_branch("");
         manifest.add_skill("detected", entry);
         let manifest_path = skills_dir.join(".skills.json");
@@ -177,6 +184,6 @@ mod tests {
 
         let loaded = Manifest::load(&manifest_path).unwrap();
         let e = loaded.get_skill("detected").unwrap();
-        assert!(e.commit.starts_with("file:"));
+        assert!(e.is_file_url());
     }
 }

@@ -114,11 +114,6 @@ fn run_git_command_tracked(mut command: Command, on_progress: &mut dyn FnMut(u8)
     Ok(())
 }
 
-/// Clone a repo, streaming git's progress to the terminal.
-pub fn clone_repo(url: &str, dest: &Path) -> Result<()> {
-    clone_repo_with_output(url, dest, GitOutput::Progress)
-}
-
 fn clone_repo_with_output(url: &str, dest: &Path, output: GitOutput) -> Result<()> {
     let mut command = Command::new("git");
     command.args(["clone", "--depth", "1"]);

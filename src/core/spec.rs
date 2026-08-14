@@ -10,12 +10,6 @@ pub struct SkillFrontmatter {
     pub name: String,
     pub description: String,
     pub version: Option<String>,
-    pub authors: Option<Vec<String>>,
-    pub tags: Option<Vec<String>>,
-    pub platforms: Option<Vec<String>>,
-    pub license: Option<String>,
-    pub repository: Option<String>,
-    pub docs: Option<String>,
 }
 
 fn preprocess_frontmatter(yaml: &str) -> String {
@@ -122,8 +116,6 @@ This is the body.
         assert_eq!(fm.name, "Test Skill");
         assert_eq!(fm.description, "A test skill for validation");
         assert_eq!(fm.version.as_deref(), Some("1.0.0"));
-        assert_eq!(fm.authors, Some(vec!["test-author".to_string()]));
-        assert!(fm.tags.unwrap().contains(&"testing".to_string()));
     }
 
     #[test]
@@ -133,7 +125,6 @@ This is the body.
         assert_eq!(fm.name, "Minimal");
         assert_eq!(fm.description, "Just enough");
         assert!(fm.version.is_none());
-        assert!(fm.authors.is_none());
     }
 
     #[test]
@@ -225,16 +216,11 @@ version: 1.0.0
 "#;
         let fm = parse_frontmatter(content).unwrap();
         assert_eq!(fm.name, "test");
-        assert_eq!(
-            fm.tags,
-            Some(vec!["rust".into(), "cli".into(), "yaml".into()])
-        );
-        assert_eq!(fm.authors, Some(vec!["Alice".into(), "Bob".into()]));
         assert_eq!(fm.version.as_deref(), Some("1.0.0"));
     }
 
     #[test]
-    fn test_parse_multi_line_authors() {
+    fn test_parse_ignores_unknown_metadata_fields() {
         let content = r#"---
 name: test
 description: desc
@@ -245,7 +231,7 @@ authors:
 "#;
         let fm = parse_frontmatter(content).unwrap();
         assert_eq!(fm.name, "test");
-        assert_eq!(fm.authors, Some(vec!["Alice".into(), "Bob".into()]));
+        assert_eq!(fm.description, "desc");
     }
 
     #[test]

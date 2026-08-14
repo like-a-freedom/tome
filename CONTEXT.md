@@ -6,7 +6,9 @@
 
 **Manifest** — The `.skills.json` file that records all installed skills, their source repos, commit hashes, and installation metadata. Single source of truth for what's installed.
 
-**SkillEntry** — A single record in the manifest: tracks one installed skill's source, commit, remote URL, branch, path, version, and timestamps.
+**SkillEntry** — A single record in the manifest: tracks one installed skill's source, commit, remote URL, branch, path, version, and timestamps. A file-URL skill is identified by its `commit` value being the `FILE_URL_COMMIT` sentinel (`"file:"`).
+
+**ScannedSkill** — A skill directory discovered in the Skills Directory by the read-side scan: the directory name plus its parsed frontmatter. The single definition of "what counts as a skill on disk" (see ADR-0009).
 
 **ResolvedSkill** — A skill that has been located in a repository and validated, ready for installation. Contains repo path, frontmatter, label, commit hash, remote URL, and branch.
 
@@ -46,4 +48,4 @@
 
 **UpdateService** — Application service managing skill updates: stale detection, git-group updates, file-skill updates, and installing new skills that appear in tracked repositories (from an untargeted update).
 
-**UpdateReporter** — Trait for reporting update progress without coupling the service to a terminal implementation.
+**UpdateReporter** — Pure observer trait for update progress events (start, repo_started, phase, skill_checked, clone_progress, repo_finished); the service never queries the reporter for policy. Terminal liveness is passed into `UpdateService::run` as an argument by the caller (see ADR-0010).

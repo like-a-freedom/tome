@@ -170,10 +170,6 @@ pub(crate) fn print_stale_header(count: usize, names: &[String]) {
 
 const TERM_WIDTH: usize = 60;
 
-pub(crate) fn format_commit(commit: &str) -> String {
-    crate::core::commit::short(commit)
-}
-
 fn format_duration(secs: f64) -> String {
     let time = if secs < 60.0 {
         format!("{:.1} s", secs)
@@ -400,12 +396,6 @@ mod tests {
         let out = format_stale_header(2, &names);
         assert!(out.contains("Skipping 2 stale entries"));
         assert!(out.contains("a, b"));
-    }
-
-    #[test]
-    fn test_format_commit() {
-        assert_eq!(format_commit("abc1234567890abcdef"), "abc1234");
-        assert_eq!(format_commit("abc"), "abc");
     }
 
     #[test]

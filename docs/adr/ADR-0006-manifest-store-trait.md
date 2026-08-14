@@ -1,7 +1,9 @@
 # ADR-0006: ManifestStore Trait Extraction
 
 ## Status
-Accepted
+Superseded by ADR-0008 (trait removed: production callers used only the
+concrete `Manifest`, the test double was never adopted, and 11 of 12 methods
+were one-line forwards).
 
 ## Context
 `core::manifest.rs` (717 lines) is a god object owning five responsibilities:

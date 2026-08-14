@@ -6,9 +6,11 @@ use std::path::Path;
 
 use crate::core::spec::SkillFrontmatter;
 
+/// Commit value recorded for file:// sources, which have no git history.
+pub(crate) const FILE_URL_COMMIT: &str = "file:";
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Manifest {
-    pub version: u32,
     skills: HashMap<String, SkillEntry>,
 }
 
@@ -16,7 +18,6 @@ pub struct Manifest {
 pub struct SkillEntry {
     pub(crate) source: String,
     pub(crate) path: String,
-    pub(crate) installed: String,
     pub(crate) updated: String,
     pub(crate) version: String,
     pub(crate) description: String,
@@ -37,7 +38,6 @@ impl SkillEntry {
         Self {
             source: source.to_string(),
             path: path.to_string(),
-            installed: now.clone(),
             updated: now,
             version: frontmatter.version.clone().unwrap_or_default(),
             description: frontmatter.description.clone(),
@@ -59,12 +59,23 @@ impl SkillEntry {
         self.branch = branch.to_string();
     }
 
+    /// The source used to (re)install this skill: the remote URL when the
+    /// remote starts with the FILE_URL_COMMIT marker (a `file://` install),
+    /// the tracked source otherwise.
     pub fn install_source(&self) -> String {
-        if self.remote.starts_with("file:") {
+        if self.remote.starts_with(FILE_URL_COMMIT) {
             self.remote.clone()
         } else {
             self.source.clone()
         }
+    }
+
+    /// True when this skill was installed from a file:// SKILL.md URL,
+    /// identified by the FILE_URL_COMMIT marker in the commit field.
+    /// (file:// URLs may also host plain git repos; their entries carry a
+    /// real commit hash and are not file skills.)
+    pub fn is_file_url(&self) -> bool {
+        self.commit.starts_with(FILE_URL_COMMIT)
     }
 }
 
@@ -77,7 +88,6 @@ impl Default for Manifest {
 impl Manifest {
     pub fn new() -> Self {
         Self {
-            version: 1,
             skills: HashMap::new(),
         }
     }
@@ -126,8 +136,8 @@ impl Manifest {
         self.skills.get(name)
     }
 
-    pub(crate) fn skills_map(&self) -> &HashMap<String, SkillEntry> {
-        &self.skills
+    pub fn all_skills(&self) -> Vec<(&str, &SkillEntry)> {
+        self.skills.iter().map(|(k, v)| (k.as_str(), v)).collect()
     }
 
     /// Resolve a user-provided identifier to manifest skill names.
@@ -139,11 +149,7 @@ impl Manifest {
             return vec![input.to_string()];
         }
 
-        let label = if input.starts_with("http://")
-            || input.starts_with("https://")
-            || input.starts_with("git@")
-            || input.starts_with("ssh://")
-        {
+        let label = if crate::core::parse_source::is_url(input) {
             crate::core::parse_source::repo_label(input).to_string()
         } else {
             input.to_string()
@@ -174,53 +180,14 @@ impl Manifest {
     pub fn rebuild_from_directory(skills_dir: &Path) -> Result<Self> {
         let mut manifest = Self::new();
 
-        if !skills_dir.exists() {
-            return Ok(manifest);
-        }
+        for skill in crate::core::scan::scan_skills_dir(skills_dir)? {
+            crate::core::spec::validate_skill_name(&skill.frontmatter.name)?;
+            crate::core::spec::validate_skill_name(&skill.dir_name)?;
 
-        for entry in fs::read_dir(skills_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if !path.is_dir() {
-                continue;
-            }
-
-            if let Some(name) = path.file_name().and_then(|n| n.to_str())
-                && name.starts_with('.')
-            {
-                continue;
-            }
-
-            let skill_md = path.join("SKILL.md");
-            if skill_md.exists() {
-                let content = fs::read_to_string(&skill_md)
-                    .context(format!("Failed to read {}", skill_md.display()))?;
-
-                match crate::core::spec::parse_frontmatter(&content) {
-                    Ok(frontmatter) => {
-                        let skill_name = path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        crate::core::spec::validate_skill_name(&frontmatter.name)?;
-                        crate::core::spec::validate_skill_name(&skill_name)?;
-
-                        manifest.add_skill(
-                            &skill_name,
-                            SkillEntry::new("unknown", "", &frontmatter, "unknown", "unknown"),
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "Warning: Skipping {} — invalid frontmatter: {}",
-                            skill_md.display(),
-                            e
-                        );
-                    }
-                }
-            }
+            manifest.add_skill(
+                &skill.dir_name,
+                SkillEntry::new("unknown", "", &skill.frontmatter, "unknown", "unknown"),
+            );
         }
 
         Ok(manifest)
@@ -251,7 +218,6 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let path = temp.path().join(".skills.json");
         let manifest = Manifest::load(&path).unwrap();
-        assert_eq!(manifest.version, 1);
         assert!(manifest.is_empty());
     }
 
@@ -265,7 +231,6 @@ mod tests {
             SkillEntry {
                 source: "owner/repo".into(),
                 path: "".into(),
-                installed: "i".into(),
                 updated: "u".into(),
                 version: "v".into(),
                 description: "d".into(),
@@ -288,7 +253,6 @@ mod tests {
         let entry = SkillEntry {
             source: "test/repo".into(),
             path: "skills/test-skill".into(),
-            installed: "2026-01-01T00:00:00Z".into(),
             updated: "2026-01-01T00:00:00Z".into(),
             version: "1.0.0".into(),
             description: "Test skill".into(),
@@ -316,7 +280,6 @@ mod tests {
             SkillEntry {
                 source: "s".into(),
                 path: "p".into(),
-                installed: "i".into(),
                 updated: "u".into(),
                 version: "v".into(),
                 description: "d".into(),
@@ -337,7 +300,6 @@ mod tests {
             SkillEntry {
                 source: "s".into(),
                 path: "p".into(),
-                installed: "i".into(),
                 updated: "u".into(),
                 version: "v".into(),
                 description: "d".into(),
@@ -369,7 +331,6 @@ mod tests {
             SkillEntry {
                 source: "s".into(),
                 path: "p".into(),
-                installed: "i".into(),
                 updated: "u".into(),
                 version: "v".into(),
                 description: "d".into(),
@@ -383,7 +344,6 @@ mod tests {
             SkillEntry {
                 source: "s".into(),
                 path: "p".into(),
-                installed: "i".into(),
                 updated: "u".into(),
                 version: "v".into(),
                 description: "d".into(),
@@ -415,7 +375,6 @@ mod tests {
             SkillEntry {
                 source: "owner/repo".into(),
                 path: "skills/orphan".into(),
-                installed: "i".into(),
                 updated: "u".into(),
                 version: "1.0.0".into(),
                 description: "Important skill".into(),
@@ -482,12 +441,6 @@ mod tests {
             name: "Test".into(),
             description: "Desc".into(),
             version: Some("2.0.0".into()),
-            authors: None,
-            tags: None,
-            platforms: None,
-            license: None,
-            repository: None,
-            docs: None,
         };
         let entry = SkillEntry::new(
             "test/repo",
@@ -502,9 +455,8 @@ mod tests {
         assert_eq!(entry.commit, "abcdef7");
         assert_eq!(entry.branch, "main");
         assert_eq!(entry.remote, "https://github.com/test/repo.git");
-        // installed and updated should be recent timestamps
-        assert!(!entry.installed.is_empty());
-        assert_eq!(entry.installed, entry.updated);
+        // updated should be a recent timestamp
+        assert!(!entry.updated.is_empty());
     }
 
     #[test]
@@ -512,7 +464,6 @@ mod tests {
         let entry = SkillEntry {
             source: "owner/repo".into(),
             path: "skills/test".into(),
-            installed: "i".into(),
             updated: "u".into(),
             version: "v".into(),
             description: "d".into(),
@@ -528,7 +479,6 @@ mod tests {
         let entry = SkillEntry {
             source: "".into(),
             path: "skills/test".into(),
-            installed: "i".into(),
             updated: "u".into(),
             version: "v".into(),
             description: "d".into(),
@@ -544,7 +494,6 @@ mod tests {
         let entry = SkillEntry {
             source: "".into(),
             path: "skills/test".into(),
-            installed: "i".into(),
             updated: "u".into(),
             version: "v".into(),
             description: "d".into(),
@@ -561,12 +510,6 @@ mod tests {
             name: "NoVersion".into(),
             description: "Skill without version field".into(),
             version: None,
-            authors: None,
-            tags: None,
-            platforms: None,
-            license: None,
-            repository: None,
-            docs: None,
         };
         let entry = SkillEntry::new("test/repo", "skills/test", &fm, "abcdef7", "url");
         assert!(
@@ -583,12 +526,6 @@ mod tests {
             name: "Test".into(),
             description: "Desc".into(),
             version: Some("1.0.0".into()),
-            authors: None,
-            tags: None,
-            platforms: None,
-            license: None,
-            repository: None,
-            docs: None,
         };
         let mut entry = SkillEntry::new("r", "p", &fm, "oldhash", "url");
         let old_updated = entry.updated.clone();
@@ -611,7 +548,6 @@ mod tests {
             SkillEntry {
                 source: source.into(),
                 path: "p".into(),
-                installed: "i".into(),
                 updated: "u".into(),
                 version: "v".into(),
                 description: "d".into(),
@@ -655,11 +591,10 @@ mod tests {
             SkillEntry {
                 source: "example.com".into(),
                 path: "".into(),
-                installed: "i".into(),
                 updated: "u".into(),
                 version: "v".into(),
                 description: "d".into(),
-                commit: "file:".into(),
+                commit: FILE_URL_COMMIT.into(),
                 branch: "".into(),
                 remote: "file:///tmp/SKILL.md".into(),
             },
@@ -680,7 +615,6 @@ mod tests {
                 SkillEntry {
                     source: "leonardomso/rust-skills".into(),
                     path: "".into(),
-                    installed: "i".into(),
                     updated: "u".into(),
                     version: "v".into(),
                     description: "d".into(),

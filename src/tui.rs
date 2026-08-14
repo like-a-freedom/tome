@@ -25,11 +25,10 @@ impl Drop for RawModeGuard {
     }
 }
 
-pub use crate::style::truncate_with_ellipsis as truncate_str;
 const DEFAULT_NAME_WIDTH: usize = 20;
 const MAX_NAME_WIDTH: usize = 30;
 const NUM_COL_WIDTH: usize = 2;
-const DEFAULT_COLS: u16 = 80;
+const MENU_FALLBACK_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
 const MENU_PREFIX_WIDTH: usize = 13;
 const MIN_DESC_WIDTH: usize = 15;
@@ -59,8 +58,8 @@ pub fn format_item(
 ) -> String {
     let checkbox = if item.selected { "[x]" } else { "[ ]" };
     let num = format!("{:>width$}.", i + 1, width = NUM_COL_WIDTH);
-    let name = truncate_str(&item.name, name_width);
-    let desc = truncate_str(&item.description, desc_width);
+    let name = crate::style::truncate_with_ellipsis(&item.name, name_width);
+    let desc = crate::style::truncate_with_ellipsis(&item.description, desc_width);
     let marker = if focused { ">" } else { " " };
     let pad = name_width.saturating_sub(display_width(&name));
     format!(
@@ -147,7 +146,7 @@ pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
     let mut stdout = io::stdout();
     let mut cursor = 0usize;
 
-    let (cols, _) = size().unwrap_or((DEFAULT_COLS, DEFAULT_ROWS));
+    let (cols, _) = size().unwrap_or((MENU_FALLBACK_COLS, DEFAULT_ROWS));
     let name_width = calc_name_width(items);
     let desc_width = (cols as usize)
         .saturating_sub(MENU_PREFIX_WIDTH)
@@ -162,41 +161,49 @@ pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
                 if key.kind == KeyEventKind::Release {
                     continue;
                 }
-
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => {
-                        bail!("Selection cancelled");
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        cursor = cursor.saturating_sub(1);
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if cursor < items.len() - 1 {
-                            cursor += 1;
-                        }
-                    }
-                    KeyCode::Char(' ') => {
-                        items[cursor].selected = !items[cursor].selected;
-                    }
-                    KeyCode::Char('a') | KeyCode::Char('A') => {
-                        let all_selected = items.iter().all(|i| i.selected);
-                        for item in items.iter_mut() {
-                            item.selected = !all_selected;
-                        }
-                    }
-                    KeyCode::Char('n') | KeyCode::Char('N') => {
-                        for item in items.iter_mut() {
-                            item.selected = false;
-                        }
-                    }
-                    KeyCode::Enter if items.iter().any(|i| i.selected) => {
-                        return Ok(());
-                    }
-                    _ => {}
+                if let Some(result) = handle_key(key.code, items, &mut cursor) {
+                    return result;
                 }
             }
         }
     })()
+}
+
+/// Pure key-policy for the selection loop. Returns `Some(Ok(()))` on confirm,
+/// `Some(Err(..))` on cancel, and `None` to keep looping.
+fn handle_key(code: KeyCode, items: &mut [SelectItem], cursor: &mut usize) -> Option<Result<()>> {
+    match code {
+        KeyCode::Char('q') | KeyCode::Esc => Some(Err(anyhow::anyhow!("Selection cancelled"))),
+        KeyCode::Up | KeyCode::Char('k') => {
+            *cursor = cursor.saturating_sub(1);
+            None
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if *cursor < items.len() - 1 {
+                *cursor += 1;
+            }
+            None
+        }
+        KeyCode::Char(' ') => {
+            items[*cursor].selected = !items[*cursor].selected;
+            None
+        }
+        KeyCode::Char('a') | KeyCode::Char('A') => {
+            let all_selected = items.iter().all(|i| i.selected);
+            for item in items.iter_mut() {
+                item.selected = !all_selected;
+            }
+            None
+        }
+        KeyCode::Char('n') | KeyCode::Char('N') => {
+            for item in items.iter_mut() {
+                item.selected = false;
+            }
+            None
+        }
+        KeyCode::Enter if items.iter().any(|i| i.selected) => Some(Ok(())),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -758,49 +765,10 @@ mod tests {
         assert!(!items2.iter().any(|i| i.selected));
     }
 
-    // === key event kind filtering ===
+    // === handle_key ===
 
-    fn simulate_key_handler(
-        kind: KeyEventKind,
-        code: KeyCode,
-        items: &mut [SelectItem],
-        cursor: &mut usize,
-    ) -> Option<Result<()>> {
-        if kind == KeyEventKind::Release {
-            return Some(Ok(()));
-        }
-        match code {
-            KeyCode::Char('q') | KeyCode::Esc => Some(Err(anyhow::anyhow!("Selection cancelled"))),
-            KeyCode::Up | KeyCode::Char('k') => {
-                if *cursor > 0 {
-                    *cursor -= 1;
-                }
-                None
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if *cursor < items.len() - 1 {
-                    *cursor += 1;
-                }
-                None
-            }
-            KeyCode::Char(' ') => {
-                items[*cursor].selected = !items[*cursor].selected;
-                None
-            }
-            KeyCode::Enter => {
-                if items.iter().any(|i| i.selected) {
-                    Some(Ok(()))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-
-    #[test]
-    fn test_repeat_event_moves_cursor_down() {
-        let mut items = vec![
+    fn two_items() -> [SelectItem; 2] {
+        [
             SelectItem {
                 name: "a".into(),
                 description: "".into(),
@@ -809,165 +777,97 @@ mod tests {
             SelectItem {
                 name: "b".into(),
                 description: "".into(),
-                selected: false,
+                selected: true,
             },
-            SelectItem {
-                name: "c".into(),
-                description: "".into(),
-                selected: false,
-            },
-        ];
+        ]
+    }
+
+    #[test]
+    fn test_handle_key_cancel() {
+        let mut items = two_items();
         let mut cursor = 0usize;
-
-        // Press then Repeat should both move cursor
-        simulate_key_handler(KeyEventKind::Press, KeyCode::Down, &mut items, &mut cursor);
-        simulate_key_handler(KeyEventKind::Repeat, KeyCode::Down, &mut items, &mut cursor);
-        simulate_key_handler(KeyEventKind::Repeat, KeyCode::Down, &mut items, &mut cursor);
-        assert_eq!(cursor, 2);
+        assert!(handle_key(KeyCode::Char('q'), &mut items, &mut cursor).is_some());
+        assert!(handle_key(KeyCode::Esc, &mut items, &mut cursor).is_some());
     }
 
     #[test]
-    fn test_repeat_event_moves_cursor_up() {
-        let mut items = vec![
-            SelectItem {
-                name: "a".into(),
-                description: "".into(),
-                selected: false,
-            },
-            SelectItem {
-                name: "b".into(),
-                description: "".into(),
-                selected: false,
-            },
-            SelectItem {
-                name: "c".into(),
-                description: "".into(),
-                selected: false,
-            },
-        ];
-        let mut cursor = 2usize;
-
-        simulate_key_handler(KeyEventKind::Press, KeyCode::Up, &mut items, &mut cursor);
-        simulate_key_handler(KeyEventKind::Repeat, KeyCode::Up, &mut items, &mut cursor);
+    fn test_handle_key_up_boundary() {
+        let mut items = two_items();
+        let mut cursor = 0usize;
+        handle_key(KeyCode::Up, &mut items, &mut cursor);
         assert_eq!(cursor, 0);
     }
 
     #[test]
-    fn test_repeat_event_toggles_space() {
-        let mut items = vec![SelectItem {
-            name: "a".into(),
-            description: "".into(),
-            selected: false,
-        }];
-        let mut cursor = 0usize;
-
-        // Press toggles on, Repeat toggles off, Repeat toggles on again
-        simulate_key_handler(
-            KeyEventKind::Press,
-            KeyCode::Char(' '),
-            &mut items,
-            &mut cursor,
-        );
-        assert!(items[0].selected);
-        simulate_key_handler(
-            KeyEventKind::Repeat,
-            KeyCode::Char(' '),
-            &mut items,
-            &mut cursor,
-        );
-        assert!(!items[0].selected);
-        simulate_key_handler(
-            KeyEventKind::Repeat,
-            KeyCode::Char(' '),
-            &mut items,
-            &mut cursor,
-        );
-        assert!(items[0].selected);
-    }
-
-    #[test]
-    fn test_release_event_ignored() {
-        let mut items = vec![SelectItem {
-            name: "a".into(),
-            description: "".into(),
-            selected: false,
-        }];
-        let mut cursor = 0usize;
-
-        // Release events should be ignored
-        let result = simulate_key_handler(
-            KeyEventKind::Release,
-            KeyCode::Down,
-            &mut items,
-            &mut cursor,
-        );
-        assert!(result.is_some());
+    fn test_handle_key_up_middle() {
+        let mut items = two_items();
+        let mut cursor = 1usize;
+        handle_key(KeyCode::Char('k'), &mut items, &mut cursor);
         assert_eq!(cursor, 0);
-        assert!(!items[0].selected);
     }
 
     #[test]
-    fn test_j_k_navigation_with_repeat() {
-        let mut items = vec![
-            SelectItem {
-                name: "a".into(),
-                description: "".into(),
-                selected: false,
-            },
-            SelectItem {
-                name: "b".into(),
-                description: "".into(),
-                selected: false,
-            },
-            SelectItem {
-                name: "c".into(),
-                description: "".into(),
-                selected: false,
-            },
-        ];
-        let mut cursor = 0usize;
-
-        // j and k should work with both Press and Repeat
-        simulate_key_handler(
-            KeyEventKind::Repeat,
-            KeyCode::Char('j'),
-            &mut items,
-            &mut cursor,
-        );
-        assert_eq!(cursor, 1);
-        simulate_key_handler(
-            KeyEventKind::Repeat,
-            KeyCode::Char('j'),
-            &mut items,
-            &mut cursor,
-        );
-        assert_eq!(cursor, 2);
-        simulate_key_handler(
-            KeyEventKind::Repeat,
-            KeyCode::Char('k'),
-            &mut items,
-            &mut cursor,
-        );
+    fn test_handle_key_down_boundary() {
+        let mut items = two_items();
+        let mut cursor = 1usize;
+        handle_key(KeyCode::Down, &mut items, &mut cursor);
         assert_eq!(cursor, 1);
     }
 
     #[test]
-    fn test_enter_with_repeat() {
-        let mut items = vec![SelectItem {
-            name: "a".into(),
-            description: "".into(),
-            selected: true,
-        }];
+    fn test_handle_key_down_middle() {
+        let mut items = two_items();
         let mut cursor = 0usize;
+        handle_key(KeyCode::Char('j'), &mut items, &mut cursor);
+        assert_eq!(cursor, 1);
+    }
 
-        // Enter with Repeat kind should also confirm
-        let result = simulate_key_handler(
-            KeyEventKind::Repeat,
-            KeyCode::Enter,
-            &mut items,
-            &mut cursor,
-        );
-        assert!(result.is_some());
-        assert!(result.unwrap().is_ok());
+    #[test]
+    fn test_handle_key_space_toggles() {
+        let mut items = two_items();
+        let mut cursor = 0usize;
+        handle_key(KeyCode::Char(' '), &mut items, &mut cursor);
+        assert!(items[0].selected);
+    }
+
+    #[test]
+    fn test_handle_key_a_toggles_all() {
+        let mut items = two_items();
+        let mut cursor = 0usize;
+        handle_key(KeyCode::Char('a'), &mut items, &mut cursor);
+        assert!(items.iter().all(|i| i.selected));
+        handle_key(KeyCode::Char('A'), &mut items, &mut cursor);
+        assert!(items.iter().all(|i| !i.selected));
+    }
+
+    #[test]
+    fn test_handle_key_n_clears_all() {
+        let mut items = two_items();
+        let mut cursor = 0usize;
+        handle_key(KeyCode::Char('n'), &mut items, &mut cursor);
+        assert!(items.iter().all(|i| !i.selected));
+    }
+
+    #[test]
+    fn test_handle_key_enter_confirms_when_selected() {
+        let mut items = two_items();
+        let mut cursor = 0usize;
+        let result = handle_key(KeyCode::Enter, &mut items, &mut cursor);
+        assert!(matches!(result, Some(Ok(()))));
+    }
+
+    #[test]
+    fn test_handle_key_enter_noop_when_none_selected() {
+        let mut items = two_items();
+        let mut cursor = 0usize;
+        handle_key(KeyCode::Char('n'), &mut items, &mut cursor);
+        assert!(handle_key(KeyCode::Enter, &mut items, &mut cursor).is_none());
+    }
+
+    #[test]
+    fn test_handle_key_unknown_noop() {
+        let mut items = two_items();
+        let mut cursor = 0usize;
+        assert!(handle_key(KeyCode::Char('x'), &mut items, &mut cursor).is_none());
     }
 }
