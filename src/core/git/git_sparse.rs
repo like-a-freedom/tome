@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 use super::super::dirs::{SKILL_SUBDIRS, SKIP_DIRS};
-use super::{GitOutput, run_git_command};
+use super::{GitOutput, run_git_command, run_git_command_tracked};
 
 /// Sparse-clone a repo: fetch tree objects only, then checkout just `skills/` and root SKILL.md.
 /// Falls back silently if sparse-checkout is not supported (git < 2.25).
@@ -31,6 +31,30 @@ pub fn clone_repo_sparse(url: &str, dest: &Path, output: GitOutput) -> Result<()
         output,
     )?;
 
+    configure_sparse_checkout(dest)?;
+
+    // Phase 5: Checkout the filtered files (triggers on-demand blob fetch)
+    if !output.is_quiet() {
+        eprintln!("  \u{2022} Fetching skill files...");
+    }
+    let mut checkout_command = Command::new("git");
+    checkout_command.args(["checkout"]);
+    if output.is_quiet() {
+        checkout_command.arg("--quiet");
+    }
+    checkout_command.current_dir(dest);
+
+    run_git_command(
+        checkout_command,
+        "Failed to checkout files",
+        "Failed to checkout files after sparse-checkout",
+        output,
+    )?;
+
+    verify_working_tree(dest)
+}
+
+fn configure_sparse_checkout(dest: &Path) -> Result<()> {
     // Phase 2: Inspect tree to decide what to fetch
     let mut skills_subdir: Option<String> = None;
     for subdir in SKILL_SUBDIRS {
@@ -101,25 +125,10 @@ pub fn clone_repo_sparse(url: &str, dest: &Path, output: GitOutput) -> Result<()
         let stderr = String::from_utf8_lossy(&set_output.stderr);
         bail!("Failed to configure sparse-checkout: {}", stderr.trim());
     }
+    Ok(())
+}
 
-    // Phase 5: Checkout the filtered files (triggers on-demand blob fetch)
-    if !output.is_quiet() {
-        eprintln!("  \u{2022} Fetching skill files...");
-    }
-    let mut checkout_command = Command::new("git");
-    checkout_command.args(["checkout"]);
-    if output.is_quiet() {
-        checkout_command.arg("--quiet");
-    }
-    checkout_command.current_dir(dest);
-
-    run_git_command(
-        checkout_command,
-        "Failed to checkout files",
-        "Failed to checkout files after sparse-checkout",
-        output,
-    )?;
-
+fn verify_working_tree(dest: &Path) -> Result<()> {
     // Phase 6: Verify working tree is not empty
     let has_files = std::fs::read_dir(dest)
         .context("Failed to read cloned directory")?
@@ -128,8 +137,35 @@ pub fn clone_repo_sparse(url: &str, dest: &Path, output: GitOutput) -> Result<()
     if !has_files {
         bail!("Sparse checkout produced empty working tree");
     }
-
     Ok(())
+}
+
+/// Sparse-clone a repo while reporting clone/checkout progress percentages.
+pub fn clone_repo_sparse_tracked(
+    url: &str,
+    dest: &Path,
+    on_progress: &mut dyn FnMut(u8),
+) -> Result<()> {
+    let mut clone_command = Command::new("git");
+    clone_command.args([
+        "clone",
+        "--filter=blob:none",
+        "--no-checkout",
+        "--depth",
+        "1",
+        "--progress",
+    ]);
+    clone_command.arg(url).arg(dest);
+    run_git_command_tracked(clone_command, on_progress)?;
+
+    configure_sparse_checkout(dest)?;
+
+    let mut checkout_command = Command::new("git");
+    checkout_command.args(["checkout", "--progress"]);
+    checkout_command.current_dir(dest);
+    run_git_command_tracked(checkout_command, on_progress)?;
+
+    verify_working_tree(dest)
 }
 
 /// Check if a path exists in the git tree (without checking out files).

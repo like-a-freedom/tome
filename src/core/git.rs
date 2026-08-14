@@ -2,6 +2,25 @@ use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 
+fn parse_latest_percent(s: &str) -> Option<u8> {
+    let bytes = s.as_bytes();
+    let mut last: Option<u8> = None;
+    let mut i = 1usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && bytes[i - 1].is_ascii_digit() {
+            let mut start = i - 1;
+            while start > 0 && bytes[start - 1].is_ascii_digit() {
+                start -= 1;
+            }
+            if let Ok(pct) = s[start..i].parse::<u8>() {
+                last = Some(pct);
+            }
+        }
+        i += 1;
+    }
+    last
+}
+
 pub mod git_sparse;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +74,46 @@ pub(crate) fn run_git_command(
     Ok(())
 }
 
+fn run_git_command_tracked(mut command: Command, on_progress: &mut dyn FnMut(u8)) -> Result<()> {
+    use std::io::Read;
+    use std::process::Stdio;
+
+    command.stdout(Stdio::null()).stderr(Stdio::piped());
+    let mut child = command.spawn().context("Failed to execute git")?;
+    let mut stderr = child.stderr.take().context("Failed to open git stderr")?;
+
+    let mut chunk = [0u8; 1024];
+    let mut acc = String::new();
+    let mut last_percent: Option<u8> = None;
+    loop {
+        let read = stderr
+            .read(&mut chunk)
+            .context("Failed to read git progress")?;
+        if read == 0 {
+            break;
+        }
+        acc.push_str(&String::from_utf8_lossy(&chunk[..read]));
+        if let Some(percent) = parse_latest_percent(&acc) {
+            if last_percent != Some(percent) {
+                last_percent = Some(percent);
+                on_progress(percent);
+            }
+            acc.clear();
+        }
+    }
+
+    let status = child.wait().context("Failed to wait for git")?;
+    if !status.success() {
+        let tail = if acc.is_empty() {
+            "git command failed".to_string()
+        } else {
+            acc.trim().to_string()
+        };
+        bail!("{}", tail);
+    }
+    Ok(())
+}
+
 /// Clone a repo, streaming git's progress to the terminal.
 pub fn clone_repo(url: &str, dest: &Path) -> Result<()> {
     clone_repo_with_output(url, dest, GitOutput::Progress)
@@ -76,6 +135,34 @@ fn clone_repo_with_output(url: &str, dest: &Path, output: GitOutput) -> Result<(
         "git clone failed - is the repository public and the URL correct?",
         output,
     )
+}
+
+fn clone_repo_tracked(url: &str, dest: &Path, on_progress: &mut dyn FnMut(u8)) -> Result<()> {
+    let mut command = Command::new("git");
+    command.args(["clone", "--depth", "1", "--progress"]);
+    command.arg(url).arg(dest);
+    run_git_command_tracked(command, on_progress)
+}
+
+pub fn clone_repo_or_sparse_tracked(
+    url: &str,
+    dest: &Path,
+    sparse: bool,
+    on_progress: &mut dyn FnMut(u8),
+) -> Result<()> {
+    if !sparse {
+        return clone_repo_tracked(url, dest, on_progress);
+    }
+
+    match git_sparse::clone_repo_sparse_tracked(url, dest, on_progress) {
+        Ok(()) => Ok(()),
+        Err(sparse_err) => {
+            let _ = std::fs::remove_dir_all(dest.join(".git"));
+            clone_repo_tracked(url, dest, on_progress).with_context(|| {
+                format!("sparse clone failed ({sparse_err}); full clone also failed")
+            })
+        }
+    }
 }
 
 /// Clone a repo, preferring sparse clone with fallback to full clone when:
@@ -280,6 +367,62 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let result = get_branch(temp.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_latest_percent() {
+        assert_eq!(
+            parse_latest_percent("Receiving objects:  45% (1234/2741), 1.2 MiB | 1.5 MiB/s"),
+            Some(45)
+        );
+        assert_eq!(
+            parse_latest_percent("Receiving objects: 100% (2714/2714), done."),
+            Some(100)
+        );
+        assert_eq!(
+            parse_latest_percent("Resolving deltas: 100% (138/138), done."),
+            Some(100)
+        );
+        assert_eq!(parse_latest_percent("Cloning into 'x'..."), None);
+    }
+
+    #[test]
+    fn test_clone_repo_or_sparse_tracked_succeeds() {
+        use std::fs;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let src = temp.path().join("src");
+        fs::create_dir_all(src.join("skills/my-skill")).unwrap();
+        fs::write(
+            src.join("skills/my-skill/SKILL.md"),
+            "---\nname: test\ndescription: test\n---\n",
+        )
+        .unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(&src)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&src)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&src)
+            .output()
+            .unwrap();
+
+        let dest = temp.path().join("out");
+        let mut seen: Vec<u8> = Vec::new();
+        let result =
+            clone_repo_or_sparse_tracked(src.to_str().unwrap(), &dest, false, &mut |pct| {
+                seen.push(pct)
+            });
+
+        assert!(result.is_ok(), "tracked clone should succeed: {:?}", result);
+        assert!(dest.join("skills/my-skill/SKILL.md").exists());
     }
 
     #[test]
