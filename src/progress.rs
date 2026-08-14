@@ -14,6 +14,28 @@ const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 /// (e.g. "deanpeters/Product-Manager-Skills" at 33 chars).
 const MAX_LABEL_WIDTH: usize = 25;
 
+/// Overall bar scale: clone maps to 0..CLONE_SEGMENT_END, sparse checkout to
+/// CLONE_SEGMENT_END..CHECKOUT_SEGMENT_END, skills checked/total to the rest.
+const CLONE_SEGMENT_END: u8 = 35;
+const CHECKOUT_SEGMENT_END: u8 = 60;
+
+fn overall_for_clone(percent: u8) -> u8 {
+    (u16::from(percent.min(100)) * u16::from(CLONE_SEGMENT_END) / 100) as u8
+}
+
+fn overall_for_checkout(percent: u8) -> u8 {
+    let span = CHECKOUT_SEGMENT_END - CLONE_SEGMENT_END;
+    CLONE_SEGMENT_END + (u16::from(percent.min(100)) * u16::from(span) / 100) as u8
+}
+
+fn overall_for_apply(checked: usize, total: usize) -> u8 {
+    if total == 0 {
+        return CHECKOUT_SEGMENT_END;
+    }
+    let span = 100 - CHECKOUT_SEGMENT_END;
+    CHECKOUT_SEGMENT_END + ((span as usize * checked.min(total)) / total) as u8
+}
+
 pub use crate::services::update_service::{ProgressPhase, RepoOutcome};
 
 impl ProgressPhase {
@@ -46,7 +68,7 @@ struct ProgressState {
     total_skills: usize,
     frame_idx: usize,
     started: std::time::Instant,
-    clone_percent: Option<u8>,
+    overall: u8,
 }
 
 pub struct UpdateProgress {
@@ -120,7 +142,7 @@ impl UpdateReporter for UpdateProgress {
             total_skills: skill_count,
             frame_idx: 0,
             started: std::time::Instant::now(),
-            clone_percent: None,
+            overall: 0,
         });
         self.draw();
     }
@@ -138,6 +160,9 @@ impl UpdateReporter for UpdateProgress {
     fn skill_checked(&mut self) {
         if let Some(state) = &mut self.state {
             state.checked_skills = state.checked_skills.saturating_add(1);
+            state.overall = state
+                .overall
+                .max(overall_for_apply(state.checked_skills, state.total_skills));
             state.frame_idx = state.frame_idx.wrapping_add(1);
         }
         self.draw();
@@ -145,17 +170,28 @@ impl UpdateReporter for UpdateProgress {
 
     fn clone_progress(&mut self, percent: u8) {
         if let Some(state) = &mut self.state {
-            state.clone_percent = Some(percent.min(100));
+            state.overall = state.overall.max(overall_for_clone(percent));
             state.frame_idx = state.frame_idx.wrapping_add(1);
         }
         self.draw();
     }
 
-    fn checkout_progress(&mut self, _percent: u8) {
+    fn checkout_progress(&mut self, percent: u8) {
+        if let Some(state) = &mut self.state {
+            state.overall = state.overall.max(overall_for_checkout(percent));
+            state.frame_idx = state.frame_idx.wrapping_add(1);
+        }
         self.draw();
     }
 
-    fn sync_found(&mut self, _count: usize) {
+    fn sync_found(&mut self, count: usize) {
+        if let Some(state) = &mut self.state {
+            state.total_skills = state.total_skills.saturating_add(count);
+            state.overall = state
+                .overall
+                .max(overall_for_apply(state.checked_skills, state.total_skills));
+            state.frame_idx = state.frame_idx.wrapping_add(1);
+        }
         self.draw();
     }
 
@@ -197,17 +233,10 @@ fn format_header(total_skills: usize, total_sources: usize) -> String {
 fn format_live_line(state: &ProgressState) -> String {
     let frame = SPINNER_FRAMES[state.frame_idx % SPINNER_FRAMES.len()];
     let label = crate::style::truncate_with_ellipsis(&state.label, MAX_LABEL_WIDTH);
-    let (bar, detail) = if state.phase == ProgressPhase::Cloning {
-        let percent = state.clone_percent.unwrap_or(0);
-        (
-            format_progress_bar(percent as usize, 100),
-            format!("{percent}%"),
-        )
-    } else {
-        (
-            format_progress_bar(state.checked_skills, state.total_skills),
-            format!("{}/{}", state.checked_skills, state.total_skills),
-        )
+    let bar = format_progress_bar(state.overall as usize, 100);
+    let detail = match state.phase {
+        ProgressPhase::Cloning | ProgressPhase::Checkout => format!("{}%", state.overall),
+        _ => format!("{}/{}", state.checked_skills, state.total_skills),
     };
     format!(
         "{} {}/{} {} {} {} {} {}",
@@ -315,7 +344,7 @@ mod tests {
             total_skills: 7,
             frame_idx: 0,
             started: std::time::Instant::now(),
-            clone_percent: None,
+            overall: 77,
         };
 
         let rendered = strip_ansi(&format_live_line(&state));
@@ -339,7 +368,7 @@ mod tests {
             total_skills: 7,
             frame_idx: 0,
             started: std::time::Instant::now(),
-            clone_percent: None,
+            overall: 77,
         };
 
         let rendered = strip_ansi(&format_live_line(&state));
@@ -357,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn test_format_live_line_clone_percent() {
+    fn test_format_live_line_clone_overall() {
         let state = ProgressState {
             source_idx: 1,
             source_count: 1,
@@ -367,15 +396,15 @@ mod tests {
             total_skills: 7,
             frame_idx: 0,
             started: std::time::Instant::now(),
-            clone_percent: Some(45),
+            overall: 35,
         };
 
         let rendered = strip_ansi(&format_live_line(&state));
 
-        assert!(rendered.contains("cloning 45%"));
+        assert!(rendered.contains("cloning 35%"));
         assert!(
-            rendered.contains("[⣿⣿⣿⣿"),
-            "45% of 10 cells = 4 filled, got: {rendered:?}"
+            rendered.contains("[⣿⣿⣿"),
+            "35% of 10 cells = 3 filled, got: {rendered:?}"
         );
     }
 
@@ -429,13 +458,70 @@ mod tests {
                 total_skills: 7,
                 frame_idx: 0,
                 started: std::time::Instant::now(),
-                clone_percent: None,
+                overall: 0,
             }),
         };
 
         progress.clone_progress(45);
 
-        assert_eq!(progress.state.as_ref().unwrap().clone_percent, Some(45));
+        assert_eq!(progress.state.as_ref().unwrap().overall, 15);
+    }
+
+    #[test]
+    fn test_overall_for_clone_segment() {
+        assert_eq!(overall_for_clone(0), 0);
+        assert_eq!(overall_for_clone(45), 15);
+        assert_eq!(overall_for_clone(100), 35);
+        assert_eq!(overall_for_clone(200), 35);
+    }
+
+    #[test]
+    fn test_overall_for_checkout_segment() {
+        assert_eq!(overall_for_checkout(0), 35);
+        assert_eq!(overall_for_checkout(50), 47);
+        assert_eq!(overall_for_checkout(100), 60);
+    }
+
+    #[test]
+    fn test_overall_for_apply_segment() {
+        assert_eq!(overall_for_apply(0, 7), 60);
+        assert_eq!(overall_for_apply(3, 7), 77);
+        assert_eq!(overall_for_apply(7, 7), 100);
+        assert_eq!(overall_for_apply(0, 0), 60);
+    }
+
+    #[test]
+    fn test_overall_never_moves_backward() {
+        let mut progress = UpdateProgress {
+            live: false,
+            state: Some(ProgressState {
+                source_idx: 1,
+                source_count: 1,
+                label: "owner/repo".to_string(),
+                phase: ProgressPhase::Cloning,
+                checked_skills: 0,
+                total_skills: 2,
+                frame_idx: 0,
+                started: std::time::Instant::now(),
+                overall: 0,
+            }),
+        };
+
+        progress.clone_progress(100);
+        assert_eq!(progress.state.as_ref().unwrap().overall, 35);
+        progress.checkout_progress(20);
+        assert_eq!(progress.state.as_ref().unwrap().overall, 40);
+        progress.checkout_progress(100);
+        assert_eq!(progress.state.as_ref().unwrap().overall, 60);
+        progress.skill_checked();
+        progress.skill_checked();
+        assert_eq!(progress.state.as_ref().unwrap().overall, 100);
+        progress.sync_found(2);
+        assert_eq!(
+            progress.state.as_ref().unwrap().overall,
+            100,
+            "extending the total must not move the bar backward"
+        );
     }
 
     #[test]
