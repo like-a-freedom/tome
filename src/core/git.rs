@@ -146,7 +146,9 @@ fn clone_repo_tracked(
     let mut command = Command::new("git");
     command.args(["clone", "--depth", "1", "--progress"]);
     command.arg(url).arg(dest);
-    run_git_command_tracked(command, &mut |percent| on_progress(TransferPhase::Clone, percent))
+    run_git_command_tracked(command, &mut |percent| {
+        on_progress(TransferPhase::Clone, percent)
+    })
 }
 
 pub fn clone_repo_or_sparse_tracked(
@@ -421,10 +423,12 @@ mod tests {
 
         let dest = temp.path().join("out");
         let mut seen: Vec<u8> = Vec::new();
-        let result =
-            clone_repo_or_sparse_tracked(src.to_str().unwrap(), &dest, false, &mut |_phase, pct| {
-                seen.push(pct)
-            });
+        let result = clone_repo_or_sparse_tracked(
+            src.to_str().unwrap(),
+            &dest,
+            false,
+            &mut |_phase, pct| seen.push(pct),
+        );
 
         assert!(result.is_ok(), "tracked clone should succeed: {:?}", result);
         assert!(dest.join("skills/my-skill/SKILL.md").exists());
