@@ -29,6 +29,12 @@ pub enum GitOutput {
     Quiet,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferPhase {
+    Clone,
+    Checkout,
+}
+
 impl GitOutput {
     fn is_quiet(self) -> bool {
         matches!(self, GitOutput::Quiet)
@@ -132,18 +138,22 @@ fn clone_repo_with_output(url: &str, dest: &Path, output: GitOutput) -> Result<(
     )
 }
 
-fn clone_repo_tracked(url: &str, dest: &Path, on_progress: &mut dyn FnMut(u8)) -> Result<()> {
+fn clone_repo_tracked(
+    url: &str,
+    dest: &Path,
+    on_progress: &mut dyn FnMut(TransferPhase, u8),
+) -> Result<()> {
     let mut command = Command::new("git");
     command.args(["clone", "--depth", "1", "--progress"]);
     command.arg(url).arg(dest);
-    run_git_command_tracked(command, on_progress)
+    run_git_command_tracked(command, &mut |percent| on_progress(TransferPhase::Clone, percent))
 }
 
 pub fn clone_repo_or_sparse_tracked(
     url: &str,
     dest: &Path,
     sparse: bool,
-    on_progress: &mut dyn FnMut(u8),
+    on_progress: &mut dyn FnMut(TransferPhase, u8),
 ) -> Result<()> {
     if !sparse {
         return clone_repo_tracked(url, dest, on_progress);
@@ -412,7 +422,7 @@ mod tests {
         let dest = temp.path().join("out");
         let mut seen: Vec<u8> = Vec::new();
         let result =
-            clone_repo_or_sparse_tracked(src.to_str().unwrap(), &dest, false, &mut |pct| {
+            clone_repo_or_sparse_tracked(src.to_str().unwrap(), &dest, false, &mut |_phase, pct| {
                 seen.push(pct)
             });
 

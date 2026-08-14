@@ -18,6 +18,7 @@ use crate::fs;
 pub enum ProgressPhase {
     Downloading,
     Cloning,
+    Checkout,
     Inspecting,
     Checking,
     Copying,
@@ -57,6 +58,8 @@ pub trait UpdateReporter {
     fn phase(&mut self, phase: ProgressPhase);
     fn skill_checked(&mut self);
     fn clone_progress(&mut self, percent: u8);
+    fn checkout_progress(&mut self, percent: u8);
+    fn sync_found(&mut self, count: usize);
     fn repo_finished(&mut self, label: &str, outcome: RepoOutcome);
 }
 
@@ -353,11 +356,21 @@ impl UpdateService {
         let temp_dir = fs::create_temp_dir()?;
 
         let clone_result = if live {
+            let mut checkout_started = false;
             crate::core::git::clone_repo_or_sparse_tracked(
                 remote,
                 temp_dir.path(),
                 sparse,
-                &mut |percent| reporter.clone_progress(percent),
+                &mut |phase, percent| match phase {
+                    crate::core::git::TransferPhase::Clone => reporter.clone_progress(percent),
+                    crate::core::git::TransferPhase::Checkout => {
+                        if !checkout_started {
+                            reporter.phase(ProgressPhase::Checkout);
+                            checkout_started = true;
+                        }
+                        reporter.checkout_progress(percent);
+                    }
+                },
             )
         } else {
             crate::core::git::clone_repo_or_sparse(
@@ -629,6 +642,10 @@ mod tests {
         fn skill_checked(&mut self) {}
 
         fn clone_progress(&mut self, _percent: u8) {}
+
+        fn checkout_progress(&mut self, _percent: u8) {}
+
+        fn sync_found(&mut self, _count: usize) {}
 
         fn repo_finished(&mut self, _label: &str, _outcome: RepoOutcome) {}
     }

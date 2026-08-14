@@ -21,6 +21,7 @@ impl ProgressPhase {
         match self {
             ProgressPhase::Downloading => "downloading",
             ProgressPhase::Cloning => "cloning",
+            ProgressPhase::Checkout => "checkout",
             ProgressPhase::Inspecting => "inspecting",
             ProgressPhase::Checking => "checking",
             ProgressPhase::Copying => "copying",
@@ -147,6 +148,14 @@ impl UpdateReporter for UpdateProgress {
             state.clone_percent = Some(percent.min(100));
             state.frame_idx = state.frame_idx.wrapping_add(1);
         }
+        self.draw();
+    }
+
+    fn checkout_progress(&mut self, _percent: u8) {
+        self.draw();
+    }
+
+    fn sync_found(&mut self, _count: usize) {
         self.draw();
     }
 
