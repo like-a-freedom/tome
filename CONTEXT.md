@@ -48,4 +48,6 @@
 
 **UpdateService** — Application service managing skill updates: stale detection, git-group updates, file-skill updates, and installing new skills that appear in tracked repositories (from an untargeted update).
 
-**UpdateReporter** — Pure observer trait for update progress events (start, repo_started, phase, skill_checked, clone_progress, repo_finished); the service never queries the reporter for policy. Terminal liveness is passed into `UpdateService::run` as an argument by the caller (see ADR-0010).
+**UpdateReporter** — Pure observer trait for update progress events (start, repo_started, phase, skill_checked, clone_progress, checkout_progress, sync_found, repo_finished); the service never queries the reporter for policy. Terminal liveness is passed into `UpdateService::run` as an argument by the caller (see ADR-0010).
+
+**Overall Progress** — A monotonic 0-100 value per update source shown as the live bar. It never moves backward: clone percent maps to 0-35, sparse checkout percent to 35-60, and checked/total skills to 60-100 (see ADR-0011).

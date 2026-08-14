@@ -153,17 +153,19 @@ tome update [name]
   → render reporter events and final summary
 ```
 
-The six reporter phases are `Downloading`, `Cloning`, `Inspecting`, `Checking`,
-`Copying`, and `Saving`. Verbose output is rendered by the command adapter.
+The seven reporter phases are `Downloading`, `Cloning`, `Checkout`, `Inspecting`,
+`Checking`, `Copying`, and `Saving`. Verbose output is rendered by the command adapter.
 
 Interactive terminals render a single crossterm live line in the style of `docker pull`:
 a Braille spinner, a 10-cell block progress bar, the current phase, `source i/n`, and a
-per-source elapsed timer (`46.3s`, or `1m 35s` beyond a minute). During `git clone` the
-bar reflects git's own transfer progress, parsed from `git clone --progress` stderr;
-otherwise it reflects skills checked vs. total. Completed sources print a permanent
-`✔` (clean) or `✖` (had failures/removals) line with their summary. `--verbose` keeps
-detailed per-skill output and lets git show its own progress. Non-TTY output is
-line-based and does not emit live progress cursor controls.
+per-source elapsed timer (`46.3s`, or `1m 35s` beyond a minute). The bar shows one
+monotonic 0-100 overall scale per source that never moves backward: git clone percent
+maps to 0-35, sparse checkout percent to 35-60, and skills checked vs. total to 60-100
+(see ADR-0011). `sync_found` extends the skill total when new skills are discovered in
+a tracked repository, keeping the count from overflowing. Completed sources print a
+permanent `✔` (clean) or `✖` (had failures/removals) line with their summary.
+`--verbose` keeps detailed per-skill output and lets git show its own progress. Non-TTY
+output is line-based and does not emit live progress cursor controls.
 
 ### Remove
 
