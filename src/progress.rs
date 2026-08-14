@@ -290,6 +290,10 @@ impl UpdateReporter for UpdateProgress {
         UpdateProgress::skill_checked(self);
     }
 
+    fn clone_progress(&mut self, percent: u8) {
+        UpdateProgress::clone_progress(self, percent);
+    }
+
     fn repo_finished(&mut self, label: &str, outcome: RepoOutcome) {
         UpdateProgress::repo_finished(self, label, outcome);
     }

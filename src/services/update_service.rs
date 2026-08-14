@@ -56,6 +56,7 @@ pub trait UpdateReporter {
     );
     fn phase(&mut self, phase: ProgressPhase);
     fn skill_checked(&mut self);
+    fn clone_progress(&mut self, percent: u8);
     fn repo_finished(&mut self, label: &str, outcome: RepoOutcome);
     fn is_live(&self) -> bool;
 }
@@ -343,15 +344,24 @@ impl UpdateService {
         reporter.repo_started(position.index, position.total, &label, skill_names.len());
         reporter.phase(ProgressPhase::Cloning);
         let temp_dir = fs::create_temp_dir()?;
-        let git_output = if reporter.is_live() {
-            crate::core::git::GitOutput::Quiet
+
+        let clone_result = if reporter.is_live() {
+            crate::core::git::clone_repo_or_sparse_tracked(
+                remote,
+                temp_dir.path(),
+                sparse,
+                &mut |percent| reporter.clone_progress(percent),
+            )
         } else {
-            crate::core::git::GitOutput::Progress
+            crate::core::git::clone_repo_or_sparse(
+                remote,
+                temp_dir.path(),
+                sparse,
+                crate::core::git::GitOutput::Progress,
+            )
         };
 
-        if let Err(error) =
-            crate::core::git::clone_repo_or_sparse(remote, temp_dir.path(), sparse, git_output)
-        {
+        if let Err(error) = clone_result {
             for name in skill_names {
                 record_failure(&mut result, name, format!("clone failed: {error}"));
                 reporter.skill_checked();
@@ -613,6 +623,8 @@ mod tests {
         }
 
         fn skill_checked(&mut self) {}
+
+        fn clone_progress(&mut self, _percent: u8) {}
 
         fn repo_finished(&mut self, _label: &str, _outcome: RepoOutcome) {}
 
