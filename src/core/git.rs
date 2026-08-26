@@ -232,17 +232,35 @@ pub fn is_installed() -> bool {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
     use std::process::Command;
     use tempfile::TempDir;
+
+    /// Configure a local user.email/user.name so commits succeed in CI,
+    /// where $HOME points to a per-job temp dir with no global git config.
+    fn configure_git_identity(repo_path: &Path) {
+        for (key, value) in [
+            ("user.email", "test@example.com"),
+            ("user.name", "Test"),
+            ("init.defaultBranch", "main"),
+        ] {
+            Command::new("git")
+                .args(["config", key, value])
+                .current_dir(repo_path)
+                .output()
+                .unwrap();
+        }
+    }
 
     /// Helper: create a temp git repo with one commit
     fn create_temp_git_repo() -> TempDir {
         let temp = TempDir::new().unwrap();
         Command::new("git")
-            .args(["init"])
+            .args(["init", "--initial-branch=main"])
             .current_dir(temp.path())
             .output()
             .unwrap();
+        configure_git_identity(temp.path());
 
         let file = temp.path().join("test.txt");
         fs::write(&file, "hello").unwrap();
@@ -265,10 +283,11 @@ mod tests {
     fn create_temp_git_repo_with_skills_dir() -> TempDir {
         let temp = TempDir::new().unwrap();
         Command::new("git")
-            .args(["init"])
+            .args(["init", "--initial-branch=main"])
             .current_dir(temp.path())
             .output()
             .unwrap();
+        configure_git_identity(temp.path());
 
         let skills_dir = temp.path().join("skills").join("my-skill");
         fs::create_dir_all(&skills_dir).unwrap();
