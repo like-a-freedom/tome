@@ -5,12 +5,12 @@
 *~
 .DS_Store
 .pi/
-docs/*
-!docs/adr/
-!docs/ARCHITECTURE.md
+docs/audit-*.html
+docs/superpowers/
 .mimocode/
 .commandcode/
 .vscode/
 .zed/
 .superpowers/
 .agents/prompts
+.git.bak.*

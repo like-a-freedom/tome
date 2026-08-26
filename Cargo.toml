@@ -2,6 +2,7 @@
 name = "tome"
 version = "0.7.0"
 edition = "2024"
+rust-version = "1.85"
 resolver = "3"
 description = "Minimal CLI for managing AI agent skills"
 license = "MIT"
