@@ -95,7 +95,8 @@ CLI arguments → application service → output formatting
 
 `list` and `export` are read-side commands. Their orchestration remains local
 because no second read backend or separate read model is currently required;
-this is explicitly deferred in ADR-0001 and the refactoring plan.
+this is explicitly deferred in ADR-0001. The shared primitive for "what counts
+as a skill on disk" lives in `core/scan.rs` (ADR-0009).
 
 ### Application services
 
@@ -187,24 +188,39 @@ them, scans for manually placed skills, and renders table or JSON output.
 
 ## Deferred Architecture Decisions
 
-The audit identified three possible future seams. They are intentionally not
-implemented yet:
+The following ADRs are intentionally not realized. They were considered during
+the application-service-layer refactor (ADR-0001) and remain roadmap decisions
+because the codebase still has only one concrete adapter for each concern:
 
-- **ADR-0003 — `ManifestStore`:** the trait and in-memory test double were
-  removed; `Manifest` gained the inherent `all_skills` accessor that the trait
-  used to provide. Revisit if a second manifest backend or a mock-driven
-  manifest seam is needed. (Superseded by ADR-0006 and the C1/C2 refactors.)
-- **ADR-0004 — `GitRepository`:** revisit when a second Git backend or a
-  mock-driven Git seam is needed; Git CLI remains the selected backend.
-- **ADR-0005 — domain model:** revisit when `Skill`, repository references,
-  and manifest relationships gain behavior that is not well represented by the
-  current validated structs. (Repo geometry partially realized by ADR-0007;
-  ADR-0008 removes the ManifestStore trait, ADR-0009 centralizes read-side
-  skill scanning, ADR-0010 passes presentation state as arguments. The
-  file-URL commit marker used by `is_file_url` is defined in CONTEXT.md.)
+- **ADR-0003 — `ManifestStore`:** the original `ManifestStore` repository
+  pattern (in-memory `MemoryManifestStore` test double) was deferred and then
+  superseded: ADR-0006 briefly extracted a trait, which ADR-0008 removed when
+  the in-memory double proved unused and the trait became pure forwarding.
+  `Manifest` now exposes `all_skills()` as an inherent method. Revisit if a
+  second manifest backend or a mock-driven manifest seam is ever required.
+- **ADR-0004 — `GitRepository`:** partially realized — sparse-clone logic
+  lives in `core/git/git_sparse.rs`, but the `GitRepository` trait and
+  `MockGitRepository` remain deferred. Revisit when a second Git backend
+  (e.g. SSH auth, libgit2) or a mock-driven service seam is needed; Git CLI
+  remains the selected backend.
+- **ADR-0005 — domain model:** deferred. `SkillFrontmatter`, `ResolvedSkill`,
+  and `InstallResult` are still plain data structs. Repo-geometry queries
+  (`resolve_skills`, `sole_skill_dir`) are realized in `core/repo_detect` per
+  ADR-0007, but the broader domain model (Skill with behavior, RepositoryRef,
+  InstalledSkill) is not. Revisit when skills, repositories, or manifest
+  relationships gain behavior that does not fit the current structs.
+- **ADR-0009 — read-side scan** is *accepted*, not deferred: `core/scan.rs`
+  centralizes the "what counts as a skill on disk" primitive.
+- **ADR-0010 — presentation state as arguments** is *accepted*: `UpdateService::run`
+  receives a `live: bool` computed by the caller; the `is_live` query was
+  removed from the `UpdateReporter` trait.
+- **ADR-0011 — monotonic overall progress scale** is *accepted*: `0-35` clone,
+  `35-60` checkout, `60-100` skills checked, with `sync_found` extending the
+  total.
 
-Adding these interfaces now would increase indirection without a concrete
-second adapter. They remain roadmap decisions, not unwired public APIs.
+Adding the deferred interfaces now would increase indirection without a
+concrete second adapter. They remain roadmap decisions, not unwired public
+APIs.
 
 ## Testing
 
@@ -222,4 +238,4 @@ cargo test
 git diff --check
 ```
 
-The latest run passed 286 unit tests, 26 integration tests, and all doctests.
+The latest run passed 292 unit tests, 26 integration tests, and all doctests.
