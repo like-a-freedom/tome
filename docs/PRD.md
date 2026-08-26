@@ -425,14 +425,14 @@ As a developer, I want `tome` to detect when the manifest is missing or incomple
 
 ```bash
 # macOS / Linux
-curl -sSfL https://github.com/solovey/tome/releases/latest/download/tome-$(uname -s)-$(uname -m).tar.gz | tar xz -C /usr/local/bin
+curl -sSfL https://github.com/like-a-freedom/tome/releases/latest/download/tome-$(uname -s)-$(uname -m).tar.gz | tar xz -C /usr/local/bin
 
 # Windows (PowerShell)
-Invoke-WebRequest -Uri https://github.com/solovey/tome/releases/latest/download/tome-x86_64-pc-windows-msvc.zip -OutFile tome.zip
+Invoke-WebRequest -Uri https://github.com/like-a-freedom/tome/releases/latest/download/tome-x86_64-pc-windows-msvc.zip -OutFile tome.zip
 Expand-Archive tome.zip -DestinationPath $env:LOCALAPPDATA\Microsoft\WinGet\Links
 
 # From source
-git clone https://github.com/solovey/tome
+git clone https://github.com/like-a-freedom/tome
 cd tome
 cargo install --path .
 ```
