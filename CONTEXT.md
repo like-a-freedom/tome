@@ -18,7 +18,7 @@
 
 **Source** — A parsed input to `tome add`: can be `owner/repo`, `owner/repo@skill-name`, or a `file:///` URL pointing to a SKILL.md file.
 
-**File URL** — A `file:///path/to/SKILL.md` source that downloads a single SKILL.md file via curl rather than cloning a repository.
+**File URL** — An `http(s)://` or `file://` URL whose path ends with `.md` or contains `skill.md` (lowercase). The CLI downloads the single SKILL.md file via `curl` rather than cloning a repository. Identified in the manifest by the `FILE_URL_COMMIT` sentinel (`"file:"`) in the `commit` field.
 
 ## Repositories
 
@@ -40,7 +40,7 @@
 
 **SKILL_SUBDIRS** — The set of directory names within a repository that may contain skills: `["skills", "Skills", ".claude/skills", ".agents/skills"]`.
 
-**SKIP_DIRS** — Directories to skip when scanning for skills: `.git`, `node_modules`, `.github`, etc.
+**SKIP_DIRS** — Directories to skip when scanning for skills and collecting sparse-checkout paths (defined in `src/core/dirs.rs`): `.git`, `.github`, `.claude-plugin`, `.cursor`, `.agents`, `node_modules`, `target`, `dist`, `build`, `__pycache__`, `.claude`, `.gemini`, `.opencode`, `.codex`, `.windsurf`.
 
 ## Services
 
