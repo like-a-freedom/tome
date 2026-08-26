@@ -252,35 +252,14 @@ fn find_sibling_dirs(repo_path: &Path) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::init_repo_with_identity;
     use std::fs;
-    use std::path::Path;
     use std::process::Command;
     use tempfile::TempDir;
 
-    /// Configure a local user.email/user.name so commits succeed in CI,
-    /// where $HOME points to a per-job temp dir with no global git config.
-    fn configure_git_identity(repo_path: &Path) {
-        for (key, value) in [
-            ("user.email", "test@example.com"),
-            ("user.name", "Test"),
-            ("init.defaultBranch", "main"),
-        ] {
-            Command::new("git")
-                .args(["config", key, value])
-                .current_dir(repo_path)
-                .output()
-                .unwrap();
-        }
-    }
-
     fn create_temp_git_repo_with_skills_dir() -> TempDir {
         let temp = TempDir::new().unwrap();
-        Command::new("git")
-            .args(["init", "--initial-branch=main"])
-            .current_dir(temp.path())
-            .output()
-            .unwrap();
-        configure_git_identity(temp.path());
+        init_repo_with_identity(temp.path());
 
         let skills_dir = temp.path().join("skills").join("my-skill");
         fs::create_dir_all(&skills_dir).unwrap();
@@ -310,12 +289,7 @@ mod tests {
 
     fn create_temp_git_repo_with_claude_skills_dir() -> TempDir {
         let temp = TempDir::new().unwrap();
-        Command::new("git")
-            .args(["init", "--initial-branch=main"])
-            .current_dir(temp.path())
-            .output()
-            .unwrap();
-        configure_git_identity(temp.path());
+        init_repo_with_identity(temp.path());
 
         let skills_dir = temp.path().join(".claude/skills/my-skill");
         fs::create_dir_all(&skills_dir).unwrap();
@@ -375,11 +349,7 @@ mod tests {
     #[test]
     fn test_clone_sparse_falls_back_on_no_skills() {
         let temp = TempDir::new().unwrap();
-        Command::new("git")
-            .args(["init"])
-            .current_dir(temp.path())
-            .output()
-            .unwrap();
+        init_repo_with_identity(temp.path());
         fs::write(temp.path().join("README.md"), "no skills here").unwrap();
         Command::new("git")
             .args(["add", "-A"])
@@ -420,11 +390,7 @@ mod tests {
     #[test]
     fn test_find_case_insensitive_path_capitalized() {
         let temp = TempDir::new().unwrap();
-        Command::new("git")
-            .args(["init"])
-            .current_dir(temp.path())
-            .output()
-            .unwrap();
+        init_repo_with_identity(temp.path());
 
         let skills_dir = temp.path().join("Skills").join("my-skill");
         fs::create_dir_all(&skills_dir).unwrap();
@@ -452,11 +418,7 @@ mod tests {
     #[test]
     fn test_clone_sparse_with_capitalized_skills() {
         let temp = TempDir::new().unwrap();
-        Command::new("git")
-            .args(["init"])
-            .current_dir(temp.path())
-            .output()
-            .unwrap();
+        init_repo_with_identity(temp.path());
 
         let skills_dir = temp.path().join("Skills").join("my-skill");
         fs::create_dir_all(&skills_dir).unwrap();
@@ -507,11 +469,7 @@ mod tests {
     #[test]
     fn test_clone_sparse_prefers_skills_over_claude_skills() {
         let temp = TempDir::new().unwrap();
-        Command::new("git")
-            .args(["init"])
-            .current_dir(temp.path())
-            .output()
-            .unwrap();
+        init_repo_with_identity(temp.path());
 
         // Both skills/ and .claude/skills/ exist — should prefer skills/
         let skills_dir = temp.path().join("skills/my-skill");
@@ -556,11 +514,7 @@ mod tests {
         // Repo with "Skills" (capital S) — sparse-checkout with lowercase "skills"
         // won't match, resulting in empty working tree
         let temp = TempDir::new().unwrap();
-        Command::new("git")
-            .args(["init"])
-            .current_dir(temp.path())
-            .output()
-            .unwrap();
+        init_repo_with_identity(temp.path());
 
         let skills_dir = temp.path().join("Skills").join("my-skill");
         fs::create_dir_all(&skills_dir).unwrap();
@@ -605,11 +559,7 @@ mod tests {
         )
         .unwrap();
 
-        Command::new("git")
-            .args(["init"])
-            .current_dir(&repo)
-            .output()
-            .unwrap();
+        init_repo_with_identity(&repo);
         Command::new("git")
             .args(["add", "."])
             .current_dir(&repo)
@@ -653,11 +603,7 @@ mod tests {
         fs::create_dir(repo.join("node_modules")).unwrap();
 
         // Init git repo so git ls-tree works
-        Command::new("git")
-            .args(["init"])
-            .current_dir(&repo)
-            .output()
-            .unwrap();
+        init_repo_with_identity(&repo);
         Command::new("git")
             .args(["add", "."])
             .current_dir(&repo)
@@ -694,11 +640,7 @@ mod tests {
         fs::create_dir(repo.join("checks")).unwrap();
         fs::write(repo.join("checks").join("b.md"), "check b").unwrap();
 
-        Command::new("git")
-            .args(["init"])
-            .current_dir(&repo)
-            .output()
-            .unwrap();
+        init_repo_with_identity(&repo);
         Command::new("git")
             .args(["add", "."])
             .current_dir(&repo)
@@ -749,11 +691,7 @@ mod tests {
         .unwrap();
         fs::write(repo.join("README.md"), "not a skill").unwrap();
 
-        Command::new("git")
-            .args(["init"])
-            .current_dir(&repo)
-            .output()
-            .unwrap();
+        init_repo_with_identity(&repo);
         Command::new("git")
             .args(["add", "."])
             .current_dir(&repo)

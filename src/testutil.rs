@@ -1,6 +1,7 @@
 use crate::core::spec::SkillFrontmatter;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 use tempfile::TempDir;
 
 pub fn make_fm(name: &str) -> SkillFrontmatter {
@@ -20,28 +21,37 @@ pub fn create_git_repo_with_skill(temp: &TempDir, skill_content: &str) -> String
     format!("file://{}", repo_dir.display())
 }
 
+/// Initialize an existing directory as a git repo with a local user identity
+/// so subsequent `git commit` calls succeed in CI runners (where $HOME points
+/// to a per-job temp dir with no global git config). Use this from test
+/// helpers instead of calling `git init` directly.
+pub fn init_repo_with_identity(repo_dir: &Path) {
+    Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .current_dir(repo_dir)
+        .output()
+        .unwrap();
+    for (key, value) in [
+        ("user.email", "test@example.com"),
+        ("user.name", "Test"),
+        ("init.defaultBranch", "main"),
+    ] {
+        Command::new("git")
+            .args(["config", key, value])
+            .current_dir(repo_dir)
+            .output()
+            .unwrap();
+    }
+}
+
 pub fn init_git_repo(repo_dir: &Path) {
-    std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(repo_dir)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["config", "user.email", "t@t.com"])
-        .current_dir(repo_dir)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["config", "user.name", "T"])
-        .current_dir(repo_dir)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
+    init_repo_with_identity(repo_dir);
+    Command::new("git")
         .args(["add", "-A"])
         .current_dir(repo_dir)
         .output()
         .unwrap();
-    std::process::Command::new("git")
+    Command::new("git")
         .args(["commit", "-m", "init"])
         .current_dir(repo_dir)
         .output()
