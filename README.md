@@ -6,6 +6,14 @@
 Minimal CLI for managing AI agent skills in a centralized `.agents/skills/`
 directory. Strictly compliant with the [SKILL.md specification](https://agentskills.my/specification/).
 
+## Why
+
+I tried several tools for managing agent skills. Most of them bundle a marketplace, a leaderboard, format translation, multi-agent sync, a TUI, a server, and sometimes telemetry on top. I wanted to do one thing: sync a chosen set of GitHub repos into a single `~/.agents/skills/` directory on my machine.
+
+`tome` does that. Add a repo, list what is installed, update everything in one command, remove what you do not need. No symlink dance, no format translation, no remote service.
+
+If you want one job done well, this is it.
+
 ## What
 
 `tome` installs, lists, updates, removes, and exports AI agent skills stored as
