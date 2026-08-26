@@ -1,6 +1,6 @@
 # tome
 
-[![CI](https://github.com/solovey/tome/actions/workflows/ci.yml/badge.svg)](https://github.com/solovey/tome/actions/workflows/ci.yml)
+[![CI](https://github.com/like-a-freedom/tome/actions/workflows/ci.yml/badge.svg)](https://github.com/like-a-freedom/tome/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Minimal CLI for managing AI agent skills in a centralized `.agents/skills/`
@@ -28,7 +28,7 @@ cargo install tome
 ```
 
 Or grab a release binary from the
-[releases page](https://github.com/solovey/tome/releases).
+[releases page](https://github.com/like-a-freedom/tome/releases).
 
 ## Usage
 
