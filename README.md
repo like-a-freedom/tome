@@ -26,10 +26,10 @@ Or grab a release binary from the
 
 ```bash
 # Add a skill from a GitHub repository
-tome add anthropics/skills
+tome add owner/repo
 
 # Add a specific skill from a multi-skill repository
-tome add anthropics/skills@frontend-design
+tome add owner/repo@skill-name
 
 # Add a local file
 tome add file:///path/to/SKILL.md
@@ -56,8 +56,6 @@ Skills are installed to `~/.agents/skills/` by default. Override with
 
 - [`docs/PRD.md`](docs/PRD.md) — product requirements
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system architecture
-- [`docs/DESIGN.md`](docs/DESIGN.md) — key design decisions
-- [`docs/REFACTORING-PLAN.md`](docs/REFACTORING-PLAN.md) — refactoring roadmap
 - [`docs/adr/`](docs/adr/) — architecture decision records
 - [`CONTEXT.md`](CONTEXT.md) — domain glossary
 

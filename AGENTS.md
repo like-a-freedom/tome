@@ -25,7 +25,7 @@ Minimal CLI for managing AI agent skills in a centralized `.agents` directory.
 
 ```bash
 cargo build              # debug build
-cargo build --release    # release build (stripped, LTO'd, ~1 MB)
+cargo build --release    # release build (stripped, LTO=thin, ~1 MB)
 ```
 
 ## Test
