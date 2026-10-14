@@ -244,14 +244,7 @@ fn select_skills(skills: &[repo_detect::SkillInfo]) -> Result<Vec<repo_detect::S
         return Ok(vec![skills[0].clone()]);
     }
 
-    let mut items: Vec<crate::tui::SelectItem> = skills
-        .iter()
-        .map(|skill| crate::tui::SelectItem {
-            name: skill.name.clone(),
-            description: skill.description.clone().unwrap_or_default(),
-            selected: true,
-        })
-        .collect();
+    let mut items = build_select_items(skills);
 
     crate::tui::multi_select(&mut items)?;
 
@@ -267,6 +260,24 @@ fn select_skills(skills: &[repo_detect::SkillInfo]) -> Result<Vec<repo_detect::S
     }
 
     Ok(selected)
+}
+
+const LARGE_LIST_THRESHOLD: usize = 20;
+
+fn default_selected(len: usize) -> bool {
+    len <= LARGE_LIST_THRESHOLD
+}
+
+fn build_select_items(skills: &[repo_detect::SkillInfo]) -> Vec<crate::tui::SelectItem> {
+    let preselected = default_selected(skills.len());
+    skills
+        .iter()
+        .map(|skill| crate::tui::SelectItem {
+            name: skill.name.clone(),
+            description: skill.description.clone().unwrap_or_default(),
+            selected: preselected,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -384,5 +395,50 @@ mod tests {
 
         assert_eq!(result.installed, vec!["first v1.0.0"]);
         assert!(!skills_dir.join("second").exists());
+    }
+
+    fn fake_skill(name: &str) -> repo_detect::SkillInfo {
+        repo_detect::SkillInfo {
+            name: name.to_string(),
+            path: std::path::PathBuf::from(name),
+            description: Some(format!("{name} desc")),
+        }
+    }
+
+    #[test]
+    fn test_default_selected_threshold_boundary() {
+        assert!(super::default_selected(1));
+        assert!(super::default_selected(20));
+        assert!(!super::default_selected(21));
+        assert!(!super::default_selected(429));
+    }
+
+    #[test]
+    fn test_build_select_items_small_preselects_all() {
+        let skills = vec![fake_skill("a"), fake_skill("b"), fake_skill("c")];
+        let items = super::build_select_items(&skills);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].name, "a");
+        assert_eq!(items[0].description, "a desc");
+        assert!(items.iter().all(|i| i.selected));
+    }
+
+    #[test]
+    fn test_build_select_items_large_preselects_none() {
+        let skills: Vec<_> = (0..25).map(|i| fake_skill(&format!("s{i}"))).collect();
+        let items = super::build_select_items(&skills);
+        assert_eq!(items.len(), 25);
+        assert!(items.iter().all(|i| !i.selected));
+    }
+
+    #[test]
+    fn test_build_select_items_missing_description_defaults_empty() {
+        let skill = repo_detect::SkillInfo {
+            name: "x".to_string(),
+            path: std::path::PathBuf::from("x"),
+            description: None,
+        };
+        let items = super::build_select_items(std::slice::from_ref(&skill));
+        assert_eq!(items[0].description, "");
     }
 }
