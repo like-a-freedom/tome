@@ -71,6 +71,75 @@ pub fn apply_filter(items: &[SelectItem], query: &str) -> Vec<usize> {
         .collect()
 }
 
+const CHROME_ROWS: u16 = 8;
+const MIN_VIEW_HEIGHT: usize = 5;
+
+/// View state of the selection dialog. `cursor`/`offset` index into
+/// `filtered` (never into `items`); selection flags stay on `SelectItem`.
+struct TuiState {
+    filtered: Vec<usize>,
+    cursor: usize,
+    offset: usize,
+    height: usize,
+    filter: FilterState,
+}
+
+impl TuiState {
+    fn new(item_count: usize, height: usize) -> Self {
+        Self {
+            filtered: (0..item_count).collect(),
+            cursor: 0,
+            offset: 0,
+            height,
+            filter: FilterState::default(),
+        }
+    }
+
+    /// Recompute `filtered` from the current query; reset cursor/offset.
+    fn refilter(&mut self, items: &[SelectItem]) {
+        self.filtered = apply_filter(items, &self.filter.query);
+        self.cursor = 0;
+        self.offset = 0;
+    }
+
+    /// Move cursor (clamped to the filtered range) and keep it visible.
+    fn goto(&mut self, pos: usize) {
+        self.cursor = pos.min(self.filtered.len().saturating_sub(1));
+        self.offset =
+            clamp_view_offset(self.cursor, self.offset, self.height, self.filtered.len());
+    }
+}
+
+fn clamp_view_offset(cursor: usize, offset: usize, height: usize, total: usize) -> usize {
+    if total == 0 || height == 0 {
+        return 0;
+    }
+    let max_offset = total.saturating_sub(height.min(total));
+    let mut next = offset.min(max_offset);
+    if cursor < next {
+        next = cursor;
+    }
+    if cursor >= next + height {
+        next = cursor + 1 - height;
+    }
+    next.min(max_offset)
+}
+
+fn page_step(cursor: usize, total: usize, height: usize, down: bool) -> usize {
+    if total == 0 {
+        return 0;
+    }
+    if down {
+        (cursor + height).min(total - 1)
+    } else {
+        cursor.saturating_sub(height)
+    }
+}
+
+fn view_height(term_rows: u16) -> usize {
+    (term_rows.saturating_sub(CHROME_ROWS) as usize).max(MIN_VIEW_HEIGHT)
+}
+
 pub fn format_item(
     i: usize,
     item: &SelectItem,
@@ -941,5 +1010,108 @@ mod tests {
         let _ = apply_filter(&items, "beta");
         assert!(items[0].selected);
         assert!(!items[1].selected);
+    }
+
+    // === viewport geometry ===
+
+    #[test]
+    fn test_clamp_view_offset_keeps_cursor_visible_down() {
+        // 100 items, height 10, cursor moved to 10 while offset 0 → offset becomes 1.
+        assert_eq!(clamp_view_offset(10, 0, 10, 100), 1);
+    }
+
+    #[test]
+    fn test_clamp_view_offset_keeps_cursor_visible_up() {
+        assert_eq!(clamp_view_offset(3, 5, 10, 100), 3);
+    }
+
+    #[test]
+    fn test_clamp_view_offset_never_negative_scroll() {
+        assert_eq!(clamp_view_offset(0, 0, 10, 100), 0);
+    }
+
+    #[test]
+    fn test_clamp_view_offset_clamps_at_end() {
+        // Last item visible without overscrolling: 100 - 10 = 90.
+        assert_eq!(clamp_view_offset(99, 0, 10, 100), 90);
+    }
+
+    #[test]
+    fn test_clamp_view_offset_short_list() {
+        assert_eq!(clamp_view_offset(2, 0, 10, 3), 0);
+    }
+
+    #[test]
+    fn test_clamp_view_offset_empty() {
+        assert_eq!(clamp_view_offset(0, 0, 10, 0), 0);
+    }
+
+    #[test]
+    fn test_page_step_down_and_up() {
+        assert_eq!(page_step(5, 100, 10, true), 15);
+        assert_eq!(page_step(15, 100, 10, false), 5);
+    }
+
+    #[test]
+    fn test_page_step_clamps_at_bounds() {
+        assert_eq!(page_step(95, 100, 10, true), 99);
+        assert_eq!(page_step(5, 100, 10, false), 0);
+        assert_eq!(page_step(0, 0, 10, true), 0);
+    }
+
+    #[test]
+    fn test_view_height_subtracts_chrome() {
+        assert_eq!(view_height(24), 24 - CHROME_ROWS as usize);
+        assert_eq!(view_height(5), MIN_VIEW_HEIGHT);
+    }
+
+    #[test]
+    fn test_state_new_covers_all_unfocused() {
+        let state = TuiState::new(3, 10);
+        assert_eq!(state.filtered, vec![0, 1, 2]);
+        assert_eq!(state.cursor, 0);
+        assert_eq!(state.offset, 0);
+        assert_eq!(state.height, 10);
+        assert!(!state.filter.focused);
+        assert!(state.filter.query.is_empty());
+    }
+
+    #[test]
+    fn test_goto_moves_and_follows_with_viewport() {
+        let mut state = TuiState::new(100, 10);
+        state.goto(50);
+        assert_eq!(state.cursor, 50);
+        assert_eq!(state.offset, 41);
+        state.goto(0);
+        assert_eq!(state.cursor, 0);
+        assert_eq!(state.offset, 0);
+    }
+
+    #[test]
+    fn test_goto_clamps_past_end() {
+        let mut state = TuiState::new(3, 10);
+        state.goto(usize::MAX);
+        assert_eq!(state.cursor, 2);
+        assert_eq!(state.offset, 0);
+    }
+
+    #[test]
+    fn test_goto_empty_is_safe() {
+        let mut state = TuiState::new(0, 10);
+        state.goto(5);
+        assert_eq!(state.cursor, 0);
+        assert_eq!(state.offset, 0);
+    }
+
+    #[test]
+    fn test_refilter_recomputes_and_resets() {
+        let items = vec![make_item("azure-x", "d"), make_item("other", "d")];
+        let mut state = TuiState::new(2, 10);
+        state.cursor = 1;
+        state.filter.query = "azure".to_string();
+        state.refilter(&items);
+        assert_eq!(state.filtered, vec![0]);
+        assert_eq!(state.cursor, 0);
+        assert_eq!(state.offset, 0);
     }
 }
