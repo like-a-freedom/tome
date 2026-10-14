@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 use crossterm::{
     Command,
     cursor::MoveTo,
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     style::{Attribute, SetAttribute},
     terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode, size},
 };
@@ -235,7 +235,7 @@ pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
 
     let _raw = RawModeGuard::enable()?;
     let mut stdout = io::stdout();
-    let mut cursor = 0usize;
+    let mut state = TuiState::new(items.len(), 10);
 
     let (cols, _) = size().unwrap_or((MENU_FALLBACK_COLS, DEFAULT_ROWS));
     let name_width = calc_name_width(items);
@@ -246,13 +246,13 @@ pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
 
     (|| -> Result<()> {
         loop {
-            render_all(items, cursor, desc_width, &mut stdout)?;
+            render_all(items, state.cursor, desc_width, &mut stdout)?;
 
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Release {
                     continue;
                 }
-                if let Some(result) = handle_key(key.code, items, &mut cursor) {
+                if let Some(result) = handle_key(key, items, &mut state) {
                     return result;
                 }
             }
@@ -260,36 +260,114 @@ pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
     })()
 }
 
+/// Shared cursor movement for both modes. Returns true when handled.
+fn apply_navigation(code: KeyCode, state: &mut TuiState) -> bool {
+    match code {
+        KeyCode::Up => state.goto(state.cursor.saturating_sub(1)),
+        KeyCode::Down => state.goto(state.cursor + 1),
+        KeyCode::PageUp => {
+            state.goto(page_step(
+                state.cursor,
+                state.filtered.len(),
+                state.height,
+                false,
+            ));
+        }
+        KeyCode::PageDown => {
+            state.goto(page_step(
+                state.cursor,
+                state.filtered.len(),
+                state.height,
+                true,
+            ));
+        }
+        KeyCode::Home => state.goto(0),
+        KeyCode::End => state.goto(usize::MAX),
+        _ => return false,
+    }
+    true
+}
+
 /// Pure key-policy for the selection loop. Returns `Some(Ok(()))` on confirm,
 /// `Some(Err(..))` on cancel, and `None` to keep looping.
-fn handle_key(code: KeyCode, items: &mut [SelectItem], cursor: &mut usize) -> Option<Result<()>> {
-    match code {
+fn handle_key(
+    event: KeyEvent,
+    items: &mut [SelectItem],
+    state: &mut TuiState,
+) -> Option<Result<()>> {
+    if state.filter.focused {
+        return handle_filter_key(event, items, state);
+    }
+    if apply_navigation(event.code, state) {
+        return None;
+    }
+    match event.code {
         KeyCode::Char('q') | KeyCode::Esc => Some(Err(anyhow::anyhow!("Selection cancelled"))),
-        KeyCode::Up | KeyCode::Char('k') => {
-            *cursor = cursor.saturating_sub(1);
+        KeyCode::Char('/') => {
+            state.filter.focused = true;
             None
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if *cursor < items.len() - 1 {
-                *cursor += 1;
-            }
+        KeyCode::Char('k') => {
+            state.goto(state.cursor.saturating_sub(1));
+            None
+        }
+        KeyCode::Char('j') => {
+            state.goto(state.cursor + 1);
             None
         }
         KeyCode::Char(' ') => {
-            items[*cursor].selected = !items[*cursor].selected;
+            if let Some(&index) = state.filtered.get(state.cursor) {
+                items[index].selected = !items[index].selected;
+            }
             None
         }
         KeyCode::Char('a') | KeyCode::Char('A') => {
-            let all_selected = items.iter().all(|i| i.selected);
-            for item in items.iter_mut() {
-                item.selected = !all_selected;
+            let all_selected = state.filtered.iter().all(|&i| items[i].selected);
+            for &i in state.filtered.iter() {
+                items[i].selected = !all_selected;
             }
             None
         }
         KeyCode::Char('n') | KeyCode::Char('N') => {
-            for item in items.iter_mut() {
-                item.selected = false;
+            for &i in state.filtered.iter() {
+                items[i].selected = false;
             }
+            None
+        }
+        KeyCode::Enter if items.iter().any(|i| i.selected) => Some(Ok(())),
+        _ => None,
+    }
+}
+
+fn handle_filter_key(
+    event: KeyEvent,
+    items: &mut [SelectItem],
+    state: &mut TuiState,
+) -> Option<Result<()>> {
+    if apply_navigation(event.code, state) {
+        return None;
+    }
+    match event.code {
+        KeyCode::Esc => {
+            state.filter.focused = false;
+            None
+        }
+        KeyCode::Backspace => {
+            state.filter.query.pop();
+            state.refilter(items);
+            None
+        }
+        KeyCode::Char('u') if event.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.filter.query.clear();
+            state.refilter(items);
+            None
+        }
+        KeyCode::Char(c)
+            if !event.modifiers.contains(KeyModifiers::CONTROL)
+                && !event.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            state.filter.query.push(c);
+            state.refilter(items);
             None
         }
         KeyCode::Enter if items.iter().any(|i| i.selected) => Some(Ok(())),
@@ -876,90 +954,247 @@ mod tests {
     #[test]
     fn test_handle_key_cancel() {
         let mut items = two_items();
-        let mut cursor = 0usize;
-        assert!(handle_key(KeyCode::Char('q'), &mut items, &mut cursor).is_some());
-        assert!(handle_key(KeyCode::Esc, &mut items, &mut cursor).is_some());
+        let mut state = TuiState::new(items.len(), 10);
+        assert!(handle_key(key(KeyCode::Char('q')), &mut items, &mut state).is_some());
+        assert!(handle_key(key(KeyCode::Esc), &mut items, &mut state).is_some());
     }
 
     #[test]
     fn test_handle_key_up_boundary() {
         let mut items = two_items();
-        let mut cursor = 0usize;
-        handle_key(KeyCode::Up, &mut items, &mut cursor);
-        assert_eq!(cursor, 0);
+        let mut state = TuiState::new(items.len(), 10);
+        handle_key(key(KeyCode::Up), &mut items, &mut state);
+        assert_eq!(state.cursor, 0);
     }
 
     #[test]
     fn test_handle_key_up_middle() {
         let mut items = two_items();
-        let mut cursor = 1usize;
-        handle_key(KeyCode::Char('k'), &mut items, &mut cursor);
-        assert_eq!(cursor, 0);
+        let mut state = TuiState::new(items.len(), 10);
+        state.cursor = 1;
+        handle_key(key(KeyCode::Char('k')), &mut items, &mut state);
+        assert_eq!(state.cursor, 0);
     }
 
     #[test]
     fn test_handle_key_down_boundary() {
         let mut items = two_items();
-        let mut cursor = 1usize;
-        handle_key(KeyCode::Down, &mut items, &mut cursor);
-        assert_eq!(cursor, 1);
+        let mut state = TuiState::new(items.len(), 10);
+        state.cursor = 1;
+        handle_key(key(KeyCode::Down), &mut items, &mut state);
+        assert_eq!(state.cursor, 1);
     }
 
     #[test]
     fn test_handle_key_down_middle() {
         let mut items = two_items();
-        let mut cursor = 0usize;
-        handle_key(KeyCode::Char('j'), &mut items, &mut cursor);
-        assert_eq!(cursor, 1);
+        let mut state = TuiState::new(items.len(), 10);
+        handle_key(key(KeyCode::Char('j')), &mut items, &mut state);
+        assert_eq!(state.cursor, 1);
     }
 
     #[test]
     fn test_handle_key_space_toggles() {
         let mut items = two_items();
-        let mut cursor = 0usize;
-        handle_key(KeyCode::Char(' '), &mut items, &mut cursor);
+        let mut state = TuiState::new(items.len(), 10);
+        handle_key(key(KeyCode::Char(' ')), &mut items, &mut state);
         assert!(items[0].selected);
     }
 
     #[test]
     fn test_handle_key_a_toggles_all() {
         let mut items = two_items();
-        let mut cursor = 0usize;
-        handle_key(KeyCode::Char('a'), &mut items, &mut cursor);
+        let mut state = TuiState::new(items.len(), 10);
+        handle_key(key(KeyCode::Char('a')), &mut items, &mut state);
         assert!(items.iter().all(|i| i.selected));
-        handle_key(KeyCode::Char('A'), &mut items, &mut cursor);
+        handle_key(key(KeyCode::Char('A')), &mut items, &mut state);
         assert!(items.iter().all(|i| !i.selected));
     }
 
     #[test]
     fn test_handle_key_n_clears_all() {
         let mut items = two_items();
-        let mut cursor = 0usize;
-        handle_key(KeyCode::Char('n'), &mut items, &mut cursor);
+        let mut state = TuiState::new(items.len(), 10);
+        handle_key(key(KeyCode::Char('n')), &mut items, &mut state);
         assert!(items.iter().all(|i| !i.selected));
     }
 
     #[test]
     fn test_handle_key_enter_confirms_when_selected() {
         let mut items = two_items();
-        let mut cursor = 0usize;
-        let result = handle_key(KeyCode::Enter, &mut items, &mut cursor);
+        let mut state = TuiState::new(items.len(), 10);
+        let result = handle_key(key(KeyCode::Enter), &mut items, &mut state);
         assert!(matches!(result, Some(Ok(()))));
     }
 
     #[test]
     fn test_handle_key_enter_noop_when_none_selected() {
         let mut items = two_items();
-        let mut cursor = 0usize;
-        handle_key(KeyCode::Char('n'), &mut items, &mut cursor);
-        assert!(handle_key(KeyCode::Enter, &mut items, &mut cursor).is_none());
+        let mut state = TuiState::new(items.len(), 10);
+        handle_key(key(KeyCode::Char('n')), &mut items, &mut state);
+        assert!(handle_key(key(KeyCode::Enter), &mut items, &mut state).is_none());
     }
 
     #[test]
     fn test_handle_key_unknown_noop() {
         let mut items = two_items();
-        let mut cursor = 0usize;
-        assert!(handle_key(KeyCode::Char('x'), &mut items, &mut cursor).is_none());
+        let mut state = TuiState::new(items.len(), 10);
+        assert!(handle_key(key(KeyCode::Char('x')), &mut items, &mut state).is_none());
+    }
+
+    // === filter-mode keys ===
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    fn key_ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn three_items() -> [SelectItem; 3] {
+        [
+            make_item("azure-visualizer", "Azure graphs"),
+            make_item("qdrant-search", "Qdrant relevance"),
+            make_item("alpha", "first"),
+        ]
+    }
+
+    #[test]
+    fn test_slash_focuses_filter() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        let result = handle_key(key(KeyCode::Char('/')), &mut items, &mut state);
+        assert!(result.is_none());
+        assert!(state.filter.focused);
+    }
+
+    #[test]
+    fn test_typing_q_in_filter_types_it_does_not_cancel() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        state.filter.focused = true;
+        let result = handle_key(key(KeyCode::Char('q')), &mut items, &mut state);
+        assert!(result.is_none());
+        assert_eq!(state.filter.query, "q");
+        assert_eq!(state.filtered, vec![1]);
+    }
+
+    #[test]
+    fn test_typing_a_in_filter_types_it_does_not_toggle() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        state.filter.focused = true;
+        handle_key(key(KeyCode::Char('a')), &mut items, &mut state);
+        assert_eq!(state.filter.query, "a");
+        assert!(items.iter().all(|i| !i.selected));
+    }
+
+    #[test]
+    fn test_space_in_filter_types_space() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        state.filter.focused = true;
+        for c in "nt se".chars() {
+            handle_key(key(KeyCode::Char(c)), &mut items, &mut state);
+        }
+        assert_eq!(state.filter.query, "nt se");
+    }
+
+    #[test]
+    fn test_backspace_edits_query_and_recomputes() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        state.filter.focused = true;
+        state.filter.query = "qdr".to_string();
+        state.refilter(&items);
+        handle_key(key(KeyCode::Backspace), &mut items, &mut state);
+        assert_eq!(state.filter.query, "qd");
+        assert_eq!(state.filtered, vec![1]);
+    }
+
+    #[test]
+    fn test_ctrl_u_clears_query() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        state.filter.focused = true;
+        state.filter.query = "qdr".to_string();
+        state.refilter(&items);
+        handle_key(key_ctrl('u'), &mut items, &mut state);
+        assert!(state.filter.query.is_empty());
+        assert_eq!(state.filtered, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_esc_in_filter_unfocuses_and_keeps_query() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        state.filter.focused = true;
+        state.filter.query = "q".to_string();
+        let result = handle_key(key(KeyCode::Esc), &mut items, &mut state);
+        assert!(result.is_none());
+        assert!(!state.filter.focused);
+        assert_eq!(state.filter.query, "q");
+    }
+
+    #[test]
+    fn test_esc_unfocused_cancels() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        let result = handle_key(key(KeyCode::Esc), &mut items, &mut state);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_err());
+    }
+
+    #[test]
+    fn test_a_toggles_only_filtered() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        state.filter.query = "azure".to_string();
+        state.refilter(&items);
+        handle_key(key(KeyCode::Char('a')), &mut items, &mut state);
+        assert!(items[0].selected);
+        assert!(!items[1].selected);
+        assert!(!items[2].selected);
+    }
+
+    #[test]
+    fn test_n_clears_only_filtered() {
+        let mut items = three_items();
+        items[0].selected = true;
+        items[2].selected = true;
+        let mut state = TuiState::new(items.len(), 10);
+        state.filter.query = "azure".to_string();
+        state.refilter(&items);
+        handle_key(key(KeyCode::Char('n')), &mut items, &mut state);
+        assert!(!items[0].selected);
+        assert!(items[2].selected);
+    }
+
+    #[test]
+    fn test_arrows_move_in_filter_mode() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        state.filter.focused = true;
+        handle_key(key(KeyCode::Down), &mut items, &mut state);
+        assert_eq!(state.cursor, 1);
+        handle_key(key(KeyCode::Up), &mut items, &mut state);
+        assert_eq!(state.cursor, 0);
+    }
+
+    #[test]
+    fn test_keys_noop_on_empty_filter() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        state.filter.focused = true;
+        state.filter.query = "zzz".to_string();
+        state.refilter(&items);
+        assert!(state.filtered.is_empty());
+        assert!(handle_key(key(KeyCode::Down), &mut items, &mut state).is_none());
+        assert!(handle_key(key(KeyCode::Char(' ')), &mut items, &mut state).is_none());
+        assert!(handle_key(key(KeyCode::Enter), &mut items, &mut state).is_none());
+        assert_eq!(state.cursor, 0);
+        assert!(items.iter().all(|i| !i.selected));
     }
 
     // === substring filter ===
