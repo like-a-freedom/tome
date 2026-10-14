@@ -49,6 +49,28 @@ pub fn calc_name_width(items: &[SelectItem]) -> usize {
         .min(MAX_NAME_WIDTH)
 }
 
+#[derive(Default)]
+struct FilterState {
+    query: String,
+    focused: bool,
+}
+
+pub fn apply_filter(items: &[SelectItem], query: &str) -> Vec<usize> {
+    let needle = query.to_lowercase();
+    if needle.is_empty() {
+        return (0..items.len()).collect();
+    }
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            item.name.to_lowercase().contains(&needle)
+                || item.description.to_lowercase().contains(&needle)
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
 pub fn format_item(
     i: usize,
     item: &SelectItem,
@@ -869,5 +891,55 @@ mod tests {
         let mut items = two_items();
         let mut cursor = 0usize;
         assert!(handle_key(KeyCode::Char('x'), &mut items, &mut cursor).is_none());
+    }
+
+    // === substring filter ===
+
+    fn make_item(name: &str, desc: &str) -> SelectItem {
+        SelectItem {
+            name: name.to_string(),
+            description: desc.to_string(),
+            selected: false,
+        }
+    }
+
+    #[test]
+    fn test_apply_filter_empty_query_returns_all() {
+        let items = vec![make_item("alpha", "first"), make_item("beta", "second")];
+        assert_eq!(apply_filter(&items, ""), vec![0, 1]);
+    }
+
+    #[test]
+    fn test_apply_filter_matches_name_case_insensitive() {
+        let items = vec![
+            make_item("azure-visualizer", "x"),
+            make_item("qdrant-search", "y"),
+        ];
+        assert_eq!(apply_filter(&items, "AZURE"), vec![0]);
+        assert_eq!(apply_filter(&items, "qdrant"), vec![1]);
+    }
+
+    #[test]
+    fn test_apply_filter_matches_description() {
+        let items = vec![
+            make_item("a", "Prompt optimization guide"),
+            make_item("b", "other"),
+        ];
+        assert_eq!(apply_filter(&items, "prompt opt"), vec![0]);
+    }
+
+    #[test]
+    fn test_apply_filter_no_match_returns_empty() {
+        let items = vec![make_item("alpha", "first")];
+        assert!(apply_filter(&items, "zzz").is_empty());
+    }
+
+    #[test]
+    fn test_apply_filter_does_not_touch_selection() {
+        let mut items = vec![make_item("alpha", "first"), make_item("beta", "second")];
+        items[0].selected = true;
+        let _ = apply_filter(&items, "beta");
+        assert!(items[0].selected);
+        assert!(!items[1].selected);
     }
 }
