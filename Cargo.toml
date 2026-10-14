@@ -2,7 +2,6 @@
 name = "tome"
 version = "0.7.2"
 edition = "2024"
-rust-version = "1.85"
 resolver = "3"
 description = "Minimal CLI for managing AI agent skills"
 license = "MIT"
@@ -15,18 +14,18 @@ name = "tome"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.6.6", features = ["derive", "env"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
 anyhow = "1.0.104"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = "1.0.154"
 serde_yaml = "0.9.34"
 chrono = { version = "0.4.45", features = ["serde", "clock"], default-features = false }
-tempfile = "3.27"
+tempfile = "3.27.0"
 crossterm = "0.29.0"
 
 [dev-dependencies]
-assert_cmd = "2.2"
-predicates = "3.1"
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
 
 [profile.release]
 lto = "thin"
