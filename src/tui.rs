@@ -105,8 +105,7 @@ impl TuiState {
     /// Move cursor (clamped to the filtered range) and keep it visible.
     fn goto(&mut self, pos: usize) {
         self.cursor = pos.min(self.filtered.len().saturating_sub(1));
-        self.offset =
-            clamp_view_offset(self.cursor, self.offset, self.height, self.filtered.len());
+        self.offset = clamp_view_offset(self.cursor, self.offset, self.height, self.filtered.len());
     }
 }
 
@@ -194,7 +193,11 @@ fn build_render_buffer(items: &[SelectItem], state: &TuiState, desc_width: usize
         buf.push('█');
     }
     if !state.filter.query.is_empty() {
-        buf.push_str(&format!(" [{}/{} shown]", state.filtered.len(), items.len()));
+        buf.push_str(&format!(
+            " [{}/{} shown]",
+            state.filtered.len(),
+            items.len()
+        ));
     }
     buf.push_str("\r\n");
 
@@ -228,7 +231,10 @@ fn build_render_buffer(items: &[SelectItem], state: &TuiState, desc_width: usize
             buf.push_str("\r\n");
         }
         if end < state.filtered.len() {
-            buf.push_str(&format!("  ↓ {} more below\r\n", state.filtered.len() - end));
+            buf.push_str(&format!(
+                "  ↓ {} more below\r\n",
+                state.filtered.len() - end
+            ));
         }
     }
 
