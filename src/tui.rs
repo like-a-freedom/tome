@@ -262,20 +262,16 @@ pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
         bail!("No items to select");
     }
 
-    for item in items.iter_mut() {
-        item.selected = true;
-    }
-
     let _raw = RawModeGuard::enable()?;
     let mut stdout = io::stdout();
-    let mut state = TuiState::new(items.len(), 10);
 
-    let (cols, _) = size().unwrap_or((MENU_FALLBACK_COLS, DEFAULT_ROWS));
+    let (cols, rows) = size().unwrap_or((MENU_FALLBACK_COLS, DEFAULT_ROWS));
     let name_width = calc_name_width(items);
     let desc_width = (cols as usize)
         .saturating_sub(MENU_PREFIX_WIDTH)
         .saturating_sub(name_width)
         .clamp(MIN_DESC_WIDTH, MAX_DESC_WIDTH);
+    let mut state = TuiState::new(items.len(), view_height(rows));
 
     (|| -> Result<()> {
         loop {
