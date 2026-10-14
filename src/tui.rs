@@ -164,7 +164,10 @@ pub fn format_item(
     )
 }
 
-fn build_render_buffer(items: &[SelectItem], cursor: usize, desc_width: usize) -> String {
+const HINTS_UNFOCUSED: &str = "  Arrows/j/k: navigate | Space: toggle | /: filter | a: all filtered | n: none filtered | PgUp/PgDn: page | Enter: confirm | q: cancel";
+const HINTS_FOCUSED: &str = "  type to filter (incl. space) | Backspace: delete | Ctrl-U: clear | Esc: done | Up/Down: move | Enter: confirm";
+
+fn build_render_buffer(items: &[SelectItem], state: &TuiState, desc_width: usize) -> String {
     let selected_count = items.iter().filter(|i| i.selected).count();
 
     let mut buf = String::new();
@@ -179,24 +182,54 @@ fn build_render_buffer(items: &[SelectItem], cursor: usize, desc_width: usize) -
         selected_count,
         items.len()
     ));
-    buf.push_str("  Arrows/j/k: navigate | Space: toggle | a: all | n: none | Enter: confirm | q: cancel\r\n");
+    if state.filter.focused {
+        buf.push_str(HINTS_FOCUSED);
+    } else {
+        buf.push_str(HINTS_UNFOCUSED);
+    }
+    buf.push_str("\r\n\r\n");
+    buf.push_str("Filter (/ to edit, Esc done, Ctrl-U clear): ");
+    buf.push_str(&state.filter.query);
+    if state.filter.focused {
+        buf.push('█');
+    }
+    if !state.filter.query.is_empty() {
+        buf.push_str(&format!(" [{}/{} shown]", state.filtered.len(), items.len()));
+    }
     buf.push_str("\r\n");
 
     let name_width = calc_name_width(items);
-    for (i, item) in items.iter().enumerate() {
-        let focused = i == cursor;
-        if focused {
-            SetAttribute(Attribute::Bold)
-                .write_ansi(&mut buf)
-                .expect("writing to String is infallible");
+    if state.filtered.is_empty() {
+        buf.push_str(&format!("  No matches for \"{}\"\r\n", state.filter.query));
+    } else {
+        if state.offset > 0 {
+            buf.push_str(&format!("  ↑ {} more above\r\n", state.offset));
         }
-        buf.push_str(&format_item(i, item, name_width, desc_width, focused));
-        if focused {
-            SetAttribute(Attribute::Reset)
-                .write_ansi(&mut buf)
-                .expect("writing to String is infallible");
+        let end = (state.offset + state.height).min(state.filtered.len());
+        for (visible, &original) in state.filtered[state.offset..end].iter().enumerate() {
+            let focused = state.offset + visible == state.cursor;
+            if focused {
+                SetAttribute(Attribute::Bold)
+                    .write_ansi(&mut buf)
+                    .expect("writing to String is infallible");
+            }
+            buf.push_str(&format_item(
+                original,
+                &items[original],
+                name_width,
+                desc_width,
+                focused,
+            ));
+            if focused {
+                SetAttribute(Attribute::Reset)
+                    .write_ansi(&mut buf)
+                    .expect("writing to String is infallible");
+            }
+            buf.push_str("\r\n");
         }
-        buf.push_str("\r\n");
+        if end < state.filtered.len() {
+            buf.push_str(&format!("  ↓ {} more below\r\n", state.filtered.len() - end));
+        }
     }
 
     buf.push_str("\r\n");
@@ -214,11 +247,11 @@ fn build_render_buffer(items: &[SelectItem], cursor: usize, desc_width: usize) -
 
 fn render_all(
     items: &[SelectItem],
-    cursor: usize,
+    state: &TuiState,
     desc_width: usize,
     stdout: &mut io::Stdout,
 ) -> Result<()> {
-    let buf = build_render_buffer(items, cursor, desc_width);
+    let buf = build_render_buffer(items, state, desc_width);
     write!(stdout, "{}", buf)?;
     stdout.flush()?;
     Ok(())
@@ -246,7 +279,7 @@ pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
 
     (|| -> Result<()> {
         loop {
-            render_all(items, state.cursor, desc_width, &mut stdout)?;
+            render_all(items, &state, desc_width, &mut stdout)?;
 
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Release {
@@ -559,6 +592,12 @@ mod tests {
 
     // === build_render_buffer ===
 
+    fn render_at(items: &[SelectItem], cursor: usize) -> String {
+        let mut state = TuiState::new(items.len(), items.len().max(1));
+        state.cursor = cursor;
+        build_render_buffer(items, &state, 40)
+    }
+
     #[test]
     fn test_buffer_starts_with_clear_screen() {
         let items = vec![SelectItem {
@@ -566,7 +605,7 @@ mod tests {
             description: "d".into(),
             selected: true,
         }];
-        let buf = build_render_buffer(&items, 0, 40);
+        let buf = render_at(&items, 0);
         assert!(
             buf.starts_with("\x1B[2J\x1B[1;1H"),
             "Buffer must start with clear-screen + cursor-home escape"
@@ -587,7 +626,7 @@ mod tests {
                 selected: false,
             },
         ];
-        let buf = build_render_buffer(&items, 0, 40);
+        let buf = render_at(&items, 0);
 
         let lf_count = buf.matches('\n').count();
         let crlf_count = buf.matches("\r\n").count();
@@ -605,7 +644,7 @@ mod tests {
             description: "desc".into(),
             selected: true,
         }];
-        let buf = build_render_buffer(&items, 0, 40);
+        let buf = render_at(&items, 0);
         assert!(buf.contains("Select skills to install (1/1):"));
         assert!(buf.contains("Arrows/j/k: navigate"));
     }
@@ -629,7 +668,7 @@ mod tests {
                 selected: true,
             },
         ];
-        let buf = build_render_buffer(&items, 0, 40);
+        let buf = render_at(&items, 0);
         assert!(buf.contains("Select skills to install (2/3):"));
     }
 
@@ -652,7 +691,7 @@ mod tests {
                 selected: false,
             },
         ];
-        let buf = build_render_buffer(&items, 0, 40);
+        let buf = render_at(&items, 0);
 
         for item in &items {
             assert!(
@@ -688,7 +727,7 @@ mod tests {
             },
         ];
         // Cursor on item 1 (middle)
-        let buf = build_render_buffer(&items, 1, 40);
+        let buf = render_at(&items, 1);
 
         let bold_on = "\x1B[1m";
         let bold_off = "\x1B[0m";
@@ -733,7 +772,7 @@ mod tests {
                 selected: true,
             })
             .collect();
-        let buf = build_render_buffer(&items, 5, 40);
+        let buf = render_at(&items, 5);
 
         assert_eq!(
             buf.matches("\x1B[1m").count(),
@@ -761,7 +800,7 @@ mod tests {
                 selected: true,
             },
         ];
-        let buf = build_render_buffer(&items, 0, 40);
+        let buf = render_at(&items, 0);
         assert!(buf.contains("Press Enter to install 2 skill(s)"));
         assert!(!buf.contains("Select at least one skill, or press q to cancel"));
     }
@@ -773,7 +812,7 @@ mod tests {
             description: "d".into(),
             selected: false,
         }];
-        let buf = build_render_buffer(&items, 0, 40);
+        let buf = render_at(&items, 0);
         assert!(buf.contains("Select at least one skill, or press q to cancel"));
         assert!(!buf.contains("Press Enter to install"));
     }
@@ -793,7 +832,7 @@ mod tests {
             },
         ];
         // Focus first item
-        let buf = build_render_buffer(&items, 0, 40);
+        let buf = render_at(&items, 0);
 
         // After the bold-off code on the focused line, there must be \r\n
         let reset_pos = buf.find("\x1B[0m").unwrap();
@@ -1195,6 +1234,71 @@ mod tests {
         assert!(handle_key(key(KeyCode::Enter), &mut items, &mut state).is_none());
         assert_eq!(state.cursor, 0);
         assert!(items.iter().all(|i| !i.selected));
+    }
+
+    // === viewport render ===
+
+    #[test]
+    fn test_buffer_shows_viewport_window_with_indicators() {
+        let items: Vec<SelectItem> = (0..10)
+            .map(|i| make_item(&format!("skill-{i:02}"), "desc"))
+            .collect();
+        let mut state = TuiState::new(items.len(), 4);
+        state.cursor = 5;
+        state.offset = 3;
+        let buf = build_render_buffer(&items, &state, 20);
+        assert!(buf.contains("skill-03"));
+        assert!(buf.contains("skill-06"));
+        assert!(!buf.contains("skill-00"));
+        assert!(!buf.contains("skill-09"));
+        assert!(buf.contains("more above"));
+        assert!(buf.contains("more below"));
+    }
+
+    #[test]
+    fn test_buffer_no_indicators_when_all_visible() {
+        let items = vec![make_item("a", "x"), make_item("b", "y")];
+        let state = TuiState::new(items.len(), 10);
+        let buf = build_render_buffer(&items, &state, 20);
+        assert!(!buf.contains("more above"));
+        assert!(!buf.contains("more below"));
+    }
+
+    #[test]
+    fn test_buffer_shows_filter_line_with_counts() {
+        let items = vec![make_item("azure-x", "d"), make_item("other", "d")];
+        let mut state = TuiState::new(items.len(), 10);
+        state.filter.query = "azure".to_string();
+        state.filter.focused = true;
+        state.refilter(&items);
+        let buf = build_render_buffer(&items, &state, 20);
+        assert!(buf.contains("Filter"));
+        assert!(buf.contains("azure"));
+        assert!(buf.contains("[1/2 shown]"));
+    }
+
+    #[test]
+    fn test_buffer_focused_hints_differ_from_unfocused() {
+        let items = vec![make_item("a", "x")];
+        let plain = TuiState::new(items.len(), 10);
+        let mut focused_state = TuiState::new(items.len(), 10);
+        focused_state.filter.focused = true;
+        let a = build_render_buffer(&items, &plain, 20);
+        let b = build_render_buffer(&items, &focused_state, 20);
+        assert!(a.contains("/: filter"));
+        assert!(b.contains("Esc: done"));
+        assert!(!b.contains("/: filter"));
+    }
+
+    #[test]
+    fn test_buffer_empty_filter_shows_no_matches() {
+        let items = vec![make_item("a", "x")];
+        let mut state = TuiState::new(items.len(), 10);
+        state.filter.query = "zzz".to_string();
+        state.filter.focused = true;
+        state.refilter(&items);
+        let buf = build_render_buffer(&items, &state, 20);
+        assert!(buf.contains("No matches for \"zzz\""));
     }
 
     // === substring filter ===
