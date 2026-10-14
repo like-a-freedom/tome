@@ -27,12 +27,16 @@ impl Drop for RawModeGuard {
 
 const DEFAULT_NAME_WIDTH: usize = 20;
 const MAX_NAME_WIDTH: usize = 30;
-const NUM_COL_WIDTH: usize = 2;
+const NUM_COL_WIDTH: usize = 3;
 const MENU_FALLBACK_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
-const MENU_PREFIX_WIDTH: usize = 13;
+const MENU_PREFIX_WIDTH: usize = 14;
 const MIN_DESC_WIDTH: usize = 15;
 const MAX_DESC_WIDTH: usize = 60;
+
+/// Max characters of the filter query echoed on the filter line (keeps the
+/// line within an 80-column terminal together with the prefix and caret).
+const MAX_QUERY_DISPLAY: usize = 40;
 
 pub struct SelectItem {
     pub name: String,
@@ -55,7 +59,7 @@ struct FilterState {
     focused: bool,
 }
 
-pub fn apply_filter(items: &[SelectItem], query: &str) -> Vec<usize> {
+fn apply_filter(items: &[SelectItem], query: &str) -> Vec<usize> {
     let needle = query.to_lowercase();
     if needle.is_empty() {
         return (0..items.len()).collect();
@@ -163,8 +167,10 @@ pub fn format_item(
     )
 }
 
-const HINTS_UNFOCUSED: &str = "  Arrows/j/k: navigate | Space: toggle | /: filter | a: all filtered | n: none filtered | PgUp/PgDn: page | Enter: confirm | q: cancel";
-const HINTS_FOCUSED: &str = "  type to filter (incl. space) | Backspace: delete | Ctrl-U: clear | Esc: done | Up/Down: move | Enter: confirm";
+const HINTS_UNFOCUSED: &str =
+    "  Arrows/j/k: navigate | /: filter | space: toggle | a/n: all/none | Enter | q";
+const HINTS_FOCUSED: &str =
+    "  type to filter | Backspace: del | Ctrl-U: clear | Esc: done | Enter: confirm";
 
 fn build_render_buffer(items: &[SelectItem], state: &TuiState, desc_width: usize) -> String {
     let selected_count = items.iter().filter(|i| i.selected).count();
@@ -187,8 +193,11 @@ fn build_render_buffer(items: &[SelectItem], state: &TuiState, desc_width: usize
         buf.push_str(HINTS_UNFOCUSED);
     }
     buf.push_str("\r\n\r\n");
-    buf.push_str("Filter (/ to edit, Esc done, Ctrl-U clear): ");
-    buf.push_str(&state.filter.query);
+    buf.push_str("Filter: ");
+    buf.push_str(&crate::style::truncate_with_ellipsis(
+        &state.filter.query,
+        MAX_QUERY_DISPLAY,
+    ));
     if state.filter.focused {
         buf.push('█');
     }
@@ -203,7 +212,10 @@ fn build_render_buffer(items: &[SelectItem], state: &TuiState, desc_width: usize
 
     let name_width = calc_name_width(items);
     if state.filtered.is_empty() {
-        buf.push_str(&format!("  No matches for \"{}\"\r\n", state.filter.query));
+        buf.push_str(&format!(
+            "  No matches for \"{}\"\r\n",
+            crate::style::truncate_with_ellipsis(&state.filter.query, MAX_QUERY_DISPLAY)
+        ));
     } else {
         if state.offset > 0 {
             buf.push_str(&format!("  ↑ {} more above\r\n", state.offset));
@@ -556,7 +568,7 @@ mod tests {
 
         let name_width = calc_name_width(&items);
         let desc_width = (80usize)
-            .saturating_sub(13)
+            .saturating_sub(14)
             .saturating_sub(name_width)
             .clamp(15, 60);
 
@@ -567,7 +579,7 @@ mod tests {
             .collect();
 
         let widths: Vec<usize> = lines.iter().map(|l| display_width(l)).collect();
-        let expected = 13 + name_width + desc_width;
+        let expected = 14 + name_width + desc_width;
         for (i, w) in widths.iter().enumerate() {
             assert_eq!(
                 *w, expected,
@@ -1301,6 +1313,35 @@ mod tests {
         state.refilter(&items);
         let buf = build_render_buffer(&items, &state, 20);
         assert!(buf.contains("No matches for \"zzz\""));
+    }
+
+    #[test]
+    fn test_hints_fit_80_columns() {
+        // Guards the CHROME_ROWS budget: a hint wider than the fallback
+        // terminal width would wrap to a second row and clip the viewport.
+        assert!(display_width(HINTS_UNFOCUSED) <= MENU_FALLBACK_COLS as usize);
+        assert!(display_width(HINTS_FOCUSED) <= MENU_FALLBACK_COLS as usize);
+    }
+
+    #[test]
+    fn test_space_toggles_highlighted_filtered_item() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        state.filter.query = "qdrant".to_string();
+        state.refilter(&items);
+        assert_eq!(state.filtered, vec![1]);
+        handle_key(key(KeyCode::Char(' ')), &mut items, &mut state);
+        assert!(items[1].selected);
+        assert!(!items[0].selected);
+        assert!(!items[2].selected);
+    }
+
+    #[test]
+    fn test_format_item_numbering_alignment_for_three_digits() {
+        let item = make_item("skill", "d");
+        let single = format_item(0, &item, 10, 20, false);
+        let triple = format_item(99, &item, 10, 20, false);
+        assert_eq!(display_width(&single), display_width(&triple));
     }
 
     // === substring filter ===
