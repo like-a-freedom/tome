@@ -213,6 +213,7 @@ impl UpdateService {
             return Ok(result);
         }
 
+        let mut transaction = fs::SkillTransaction::new(&self.config.skills_dir)?;
         let total_skills = names.len();
         let (file_names, git_names): (Vec<String>, Vec<String>) =
             names.into_iter().partition(|name| {
@@ -234,7 +235,16 @@ impl UpdateService {
         reporter.start(total_skills, source_count);
 
         for (index, name) in file_names.iter().enumerate() {
-            match self.update_file_skill(&mut manifest, name, index + 1, source_count, reporter) {
+            match self.update_file_skill(
+                &mut manifest,
+                &mut transaction,
+                name,
+                SourcePosition {
+                    index: index + 1,
+                    total: source_count,
+                },
+                reporter,
+            ) {
                 FileUpdateResult::Updated(info) => result.updated.push(info),
                 FileUpdateResult::Skipped(info) => result.skipped.push(info),
                 FileUpdateResult::Failed(reason) => {
@@ -249,6 +259,7 @@ impl UpdateService {
         for (index, (remote, skill_names)) in group_list.iter().enumerate() {
             let group_result = self.update_git_group(
                 &mut manifest,
+                &mut transaction,
                 GitGroupRequest {
                     remote,
                     skill_names,
@@ -270,7 +281,7 @@ impl UpdateService {
 
         result.stale = manifest.find_stale(&self.config.skills_dir);
         reporter.phase(ProgressPhase::Saving);
-        manifest.save(manifest_path)?;
+        transaction.commit_with(|| manifest.save(manifest_path))?;
         Ok(result)
     }
 
@@ -304,9 +315,9 @@ impl UpdateService {
     fn update_file_skill(
         &self,
         manifest: &mut Manifest,
+        transaction: &mut fs::SkillTransaction,
         name: &str,
-        source_idx: usize,
-        source_count: usize,
+        position: SourcePosition,
         reporter: &mut impl UpdateReporter,
     ) -> FileUpdateResult {
         let (url, old_commit, version) = match manifest.get_skill(name) {
@@ -317,7 +328,7 @@ impl UpdateService {
             ),
             None => return FileUpdateResult::Failed("skill missing from manifest".to_string()),
         };
-        reporter.repo_started(source_idx, source_count, name, 1);
+        reporter.repo_started(position.index, position.total, name, 1);
         reporter.phase(ProgressPhase::Downloading);
 
         let downloaded = match crate::core::install::download_skill_file(&url) {
@@ -354,8 +365,17 @@ impl UpdateService {
             }
         };
 
+        if frontmatter.name != name {
+            reporter.skill_checked();
+            reporter.repo_finished(name, RepoOutcome::new(0, 0, 1, 0));
+            return FileUpdateResult::Failed(format!(
+                "skill name changed from '{name}' to '{}'",
+                frontmatter.name
+            ));
+        }
+
         reporter.phase(ProgressPhase::Copying);
-        if let Err(error) = fs::copy_skill(&downloaded.path, &skill_dir) {
+        if let Err(error) = transaction.replace(&downloaded.path, &skill_dir) {
             reporter.skill_checked();
             reporter.repo_finished(name, RepoOutcome::new(0, 0, 1, 0));
             return FileUpdateResult::Failed(format!("copy failed: {error}"));
@@ -383,6 +403,7 @@ impl UpdateService {
     fn update_git_group(
         &self,
         manifest: &mut Manifest,
+        transaction: &mut fs::SkillTransaction,
         request: GitGroupRequest<'_>,
         reporter: &mut impl UpdateReporter,
     ) -> Result<UpdateResult> {
@@ -477,7 +498,7 @@ impl UpdateService {
             let local_path = self.config.skills_dir.join(name);
 
             if !source_path.join("SKILL.md").exists() {
-                if let Err(error) = fs::remove_skill_dir(&local_path) {
+                if let Err(error) = transaction.remove(&local_path) {
                     record_failure(&mut result, name, format!("remove failed: {error}"));
                     reporter.skill_checked();
                     continue;
@@ -497,6 +518,16 @@ impl UpdateService {
                 }
             };
 
+            if frontmatter.name != *name {
+                record_failure(
+                    &mut result,
+                    name,
+                    format!("skill name changed from '{name}' to '{}'", frontmatter.name),
+                );
+                reporter.skill_checked();
+                continue;
+            }
+
             let local_skill_missing = !local_path.join("SKILL.md").exists();
             if crate::core::commit::matches(&entry.commit, &new_commit) && !local_skill_missing {
                 result.skipped.push(UpdateInfo {
@@ -511,7 +542,7 @@ impl UpdateService {
             }
 
             reporter.phase(ProgressPhase::Copying);
-            if let Err(error) = fs::copy_skill(&source_path, &local_path) {
+            if let Err(error) = transaction.replace(&source_path, &local_path) {
                 record_failure(&mut result, name, format!("copy failed: {error}"));
                 reporter.skill_checked();
                 continue;
@@ -538,6 +569,7 @@ impl UpdateService {
         if sync_new {
             self.sync_new_repo_skills(
                 manifest,
+                transaction,
                 GitGroupContext {
                     repo_path,
                     remote,
@@ -571,6 +603,7 @@ impl UpdateService {
     fn sync_new_repo_skills(
         &self,
         manifest: &mut Manifest,
+        transaction: &mut fs::SkillTransaction,
         context: GitGroupContext<'_>,
         result: &mut UpdateResult,
         reporter: &mut impl UpdateReporter,
@@ -582,11 +615,16 @@ impl UpdateService {
 
         let mut new_skills: Vec<_> = Vec::new();
         for skill in detected {
-            if manifest.is_tracked(&skill.name) || self.config.skills_dir.join(&skill.name).exists()
-            {
+            if manifest.is_tracked(&skill.name) {
                 continue;
             }
-            new_skills.push(skill);
+            match fs::skill_path_exists(&self.config.skills_dir.join(&skill.name)) {
+                Ok(true) => continue,
+                Ok(false) => new_skills.push(skill),
+                Err(error) => {
+                    record_failure(result, &skill.name, format!("inspect failed: {error}"))
+                }
+            }
         }
         if new_skills.is_empty() {
             return;
@@ -606,8 +644,7 @@ impl UpdateService {
             };
 
             let dest = self.config.skills_dir.join(&skill.name);
-            if let Err(error) = fs::copy_skill(&skill.path, &dest) {
-                fs::remove_skill_dir(&dest).ok();
+            if let Err(error) = transaction.replace(&skill.path, &dest) {
                 record_failure(result, &skill.name, format!("copy failed: {error}"));
                 reporter.skill_checked();
                 continue;
@@ -776,10 +813,12 @@ mod tests {
 
         let service =
             UpdateService::with_manifest_path(skills_dir.clone(), skills_dir.join(".skills.json"));
+        let mut transaction = crate::fs::SkillTransaction::new(&skills_dir).unwrap();
         let mut reporter = crate::progress::UpdateProgress::new(false);
         let result = service
             .update_git_group(
                 &mut manifest,
+                &mut transaction,
                 GitGroupRequest {
                     remote: &remote,
                     skill_names: &["changed".to_string()],
@@ -791,6 +830,7 @@ mod tests {
                 &mut reporter,
             )
             .unwrap();
+        transaction.commit().unwrap();
 
         assert_eq!(updated_names(&result), vec!["changed"]);
         assert_eq!(
@@ -810,17 +850,19 @@ mod tests {
             "---\nname: present\ndescription: present\n---\n",
         );
         let mut manifest = Manifest::new();
-        manifest.add_skill("missing", make_entry("missing", "0000000", &remote));
+        manifest.add_skill("present", make_entry("present", "0000000", &remote));
 
         let service =
             UpdateService::with_manifest_path(skills_dir.clone(), skills_dir.join(".skills.json"));
+        let mut transaction = crate::fs::SkillTransaction::new(&skills_dir).unwrap();
         let mut reporter = crate::progress::UpdateProgress::new(false);
         let result = service
             .update_git_group(
                 &mut manifest,
+                &mut transaction,
                 GitGroupRequest {
                     remote: &remote,
-                    skill_names: &["missing".to_string()],
+                    skill_names: &["present".to_string()],
                     sparse: false,
                     live: false,
                     sync_new: true,
@@ -829,11 +871,10 @@ mod tests {
                 &mut reporter,
             )
             .unwrap();
+        transaction.commit().unwrap();
 
-        assert_eq!(updated_names(&result), vec!["missing", "present"]);
-        assert!(manifest.is_tracked("missing"));
+        assert_eq!(updated_names(&result), vec!["present"]);
         assert!(manifest.is_tracked("present"));
-        assert!(skills_dir.join("missing/SKILL.md").exists());
         assert!(skills_dir.join("present/SKILL.md").exists());
     }
 
@@ -850,10 +891,12 @@ mod tests {
         let mut manifest = Manifest::new();
         let service =
             UpdateService::with_manifest_path(skills_dir.clone(), skills_dir.join(".skills.json"));
+        let mut transaction = crate::fs::SkillTransaction::new(&skills_dir).unwrap();
         let mut reporter = RecordingReporter::default();
         service
             .update_git_group(
                 &mut manifest,
+                &mut transaction,
                 GitGroupRequest {
                     remote: &remote,
                     skill_names: &[],
@@ -865,6 +908,7 @@ mod tests {
                 &mut reporter,
             )
             .unwrap();
+        transaction.commit().unwrap();
 
         assert!(reporter.phases.contains(&ProgressPhase::Copying));
         assert_eq!(reporter.sync_counts, vec![1]);
@@ -899,10 +943,12 @@ mod tests {
 
         let service =
             UpdateService::with_manifest_path(skills_dir.clone(), skills_dir.join(".skills.json"));
+        let mut transaction = crate::fs::SkillTransaction::new(&skills_dir).unwrap();
         let mut reporter = crate::progress::UpdateProgress::new(false);
         let result = service
             .update_git_group(
                 &mut manifest,
+                &mut transaction,
                 GitGroupRequest {
                     remote: &remote,
                     skill_names: &[],
@@ -914,6 +960,7 @@ mod tests {
                 &mut reporter,
             )
             .unwrap();
+        transaction.commit().unwrap();
 
         assert_eq!(result.failures.len(), 1);
         assert_eq!(result.failures[0].name, "bad/name");
@@ -955,10 +1002,12 @@ mod tests {
         let mut manifest = Manifest::new();
         let service =
             UpdateService::with_manifest_path(skills_dir.clone(), skills_dir.join(".skills.json"));
+        let mut transaction = crate::fs::SkillTransaction::new(&skills_dir).unwrap();
         let mut reporter = crate::progress::UpdateProgress::new(false);
         let result = service
             .update_git_group(
                 &mut manifest,
+                &mut transaction,
                 GitGroupRequest {
                     remote: &remote,
                     skill_names: &[],
@@ -970,6 +1019,7 @@ mod tests {
                 &mut reporter,
             )
             .unwrap();
+        transaction.commit().unwrap();
 
         restore_permissions(&skills_dir);
 
@@ -1117,5 +1167,99 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+    #[test]
+    fn update_rolls_back_replacement_when_manifest_save_fails() {
+        let temp = TempDir::new().unwrap();
+        let skills = temp.path().join("skills");
+        let local = skills.join("first");
+        fs::create_dir_all(local.join("state")).unwrap();
+        fs::write(local.join("SKILL.md"), "original").unwrap();
+        let source = temp.path().join("source-SKILL.md");
+        fs::write(&source, "---\nname: first\ndescription: replacement\n---\n").unwrap();
+        let path = local.join("state/.skills.json");
+        let mut manifest = Manifest::new();
+        manifest.add_skill(
+            "first",
+            make_entry(
+                "first",
+                crate::core::manifest::FILE_URL_COMMIT,
+                &format!("file://{}", source.display()),
+            ),
+        );
+        manifest.save(&path).unwrap();
+        let before = fs::read(&path).unwrap();
+        let service = UpdateService::with_manifest_path(skills, path.clone());
+        assert!(
+            service
+                .run(None, false, false, &mut RecordingReporter::default())
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_to_string(local.join("SKILL.md")).unwrap(),
+            "original"
+        );
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
+
+    #[test]
+    fn update_rejects_changed_skill_identity_for_git_and_file_sources() {
+        for git_source in [true, false] {
+            let temp = TempDir::new().unwrap();
+            let skills = temp.path().join("skills");
+            let local = skills.join("original");
+            fs::create_dir_all(&local).unwrap();
+            fs::write(local.join("SKILL.md"), "original content").unwrap();
+            fs::write(local.join("helper.txt"), "keep helper").unwrap();
+            let replacement = "---\nname: renamed\ndescription: replacement\n---\n";
+            let remote = if git_source {
+                testutil::create_git_repo_with_skill(&temp, replacement)
+            } else {
+                let source = temp.path().join("source-SKILL.md");
+                fs::write(&source, replacement).unwrap();
+                format!("file://{}", source.display())
+            };
+            let commit = if git_source {
+                "0000000"
+            } else {
+                crate::core::manifest::FILE_URL_COMMIT
+            };
+            let path = skills.join(".skills.json");
+            let mut manifest = Manifest::new();
+            manifest.add_skill("original", make_entry("original", commit, &remote));
+            manifest.save(&path).unwrap();
+            let service = UpdateService::with_manifest_path(skills.clone(), path.clone());
+            let result = service
+                .run(
+                    Some("original"),
+                    false,
+                    false,
+                    &mut RecordingReporter::default(),
+                )
+                .unwrap();
+            assert!(
+                result.updated.is_empty(),
+                "identity change accepted, git={git_source}"
+            );
+            assert_eq!(result.failures.len(), 1);
+            assert!(result.failures[0].reason.contains("name"));
+            assert_eq!(
+                fs::read_to_string(local.join("SKILL.md")).unwrap(),
+                "original content"
+            );
+            assert_eq!(
+                fs::read_to_string(local.join("helper.txt")).unwrap(),
+                "keep helper"
+            );
+            assert_eq!(
+                Manifest::load(&path)
+                    .unwrap()
+                    .get_skill("original")
+                    .unwrap()
+                    .commit,
+                commit
+            );
+            assert!(!skills.join("renamed").exists());
+        }
     }
 }

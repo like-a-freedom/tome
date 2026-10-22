@@ -10,6 +10,7 @@ const CURL_CONNECT_TIMEOUT_SECS: u32 = 10;
 const CURL_MAX_TIME_SECS: u32 = 30;
 
 pub struct DownloadedSkill {
+    _temp_dir: tempfile::TempDir,
     pub path: PathBuf,
     pub content: Vec<u8>,
 }
@@ -61,7 +62,8 @@ pub fn download_skill_file(url: &str) -> Result<DownloadedSkill> {
         .with_context(|| format!("Failed to write {}", skill_md.display()))?;
 
     Ok(DownloadedSkill {
-        path: temp_dir.keep(),
+        path: temp_dir.path().to_path_buf(),
+        _temp_dir: temp_dir,
         content,
     })
 }
@@ -161,8 +163,11 @@ pub fn install_skills(
 
     for skill in skills {
         crate::core::spec::validate_skill_name(&skill.frontmatter.name)?;
+    }
+    let mut transaction = fs::SkillTransaction::new(skills_dir)?;
+    for skill in skills {
         let dest_dir = skills_dir.join(&skill.frontmatter.name);
-        if dest_dir.exists() && !force {
+        if fs::skill_path_exists(&dest_dir)? && !force {
             if manifest.is_tracked(&skill.frontmatter.name) {
                 skipped_tracked.push(skill.frontmatter.name.clone());
             } else {
@@ -171,7 +176,7 @@ pub fn install_skills(
             continue;
         }
 
-        fs::copy_skill(&skill.repo_path, &dest_dir)?;
+        transaction.replace(&skill.repo_path, &dest_dir)?;
 
         let mut entry = SkillEntry::new(
             &skill.label,
@@ -187,7 +192,7 @@ pub fn install_skills(
         installed.push(format!("{}{}", skill.frontmatter.name, version_tag));
     }
 
-    manifest.save(manifest_path)?;
+    transaction.commit_with(|| manifest.save(manifest_path))?;
 
     Ok(InstallResult {
         installed,
@@ -497,5 +502,88 @@ mod tests {
         let result =
             download_skill_file("https://this-domain-does-not-exist-12345.example/SKILL.md");
         assert!(result.is_err());
+    }
+    fn resolved_fixture(root: &Path, name: &str) -> ResolvedSkill {
+        let source = root.join(format!("source-{name}"));
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("SKILL.md"), format!("new {name}")).unwrap();
+        ResolvedSkill {
+            repo_path: source,
+            frontmatter: make_fm(name),
+            label: "owner/repo".into(),
+            path: name.into(),
+            commit: "new-commit".into(),
+            remote: "remote".into(),
+            branch: "main".into(),
+        }
+    }
+
+    #[test]
+    fn install_rolls_back_entire_batch_on_copy_failure() {
+        let temp = TempDir::new().unwrap();
+        let skills = temp.path().join("skills");
+        let manifest = skills.join(".skills.json");
+        let first = resolved_fixture(temp.path(), "first");
+        install_skills(&[first], false, &skills, &manifest).unwrap();
+        std::fs::write(skills.join("first/SKILL.md"), "original").unwrap();
+        let original_manifest = std::fs::read(&manifest).unwrap();
+        let first = resolved_fixture(temp.path(), "first");
+        let new = resolved_fixture(temp.path(), "new");
+        let mut broken = resolved_fixture(temp.path(), "broken");
+        broken.repo_path = temp.path().join("missing-source");
+        assert!(install_skills(&[first, new, broken], true, &skills, &manifest).is_err());
+        assert_eq!(
+            std::fs::read_to_string(skills.join("first/SKILL.md")).unwrap(),
+            "original"
+        );
+        assert!(!skills.join("new").exists());
+        assert!(!skills.join("broken").exists());
+        assert_eq!(std::fs::read(manifest).unwrap(), original_manifest);
+    }
+
+    #[test]
+    fn install_rolls_back_when_manifest_cannot_be_saved() {
+        let temp = TempDir::new().unwrap();
+        let skills = temp.path().join("skills");
+        let manifest = skills.join("missing-parent/.skills.json");
+        let first = resolved_fixture(temp.path(), "first");
+        std::fs::create_dir_all(skills.join("first")).unwrap();
+        std::fs::write(skills.join("first/SKILL.md"), "original").unwrap();
+        let new = resolved_fixture(temp.path(), "new");
+        assert!(install_skills(&[first, new], true, &skills, &manifest).is_err());
+        assert_eq!(
+            std::fs::read_to_string(skills.join("first/SKILL.md")).unwrap(),
+            "original"
+        );
+        assert!(!skills.join("new").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_skips_untracked_dangling_symlink_without_force() {
+        let temp = TempDir::new().unwrap();
+        let skills = temp.path().join("skills");
+        std::fs::create_dir(&skills).unwrap();
+        let outside = temp.path().join("missing-outside");
+        std::os::unix::fs::symlink(&outside, skills.join("linked")).unwrap();
+        let skill = resolved_fixture(temp.path(), "linked");
+        let result =
+            install_skills(&[skill], false, &skills, &skills.join(".skills.json")).unwrap();
+        assert!(result.installed.is_empty());
+        assert_eq!(result.skipped_existing, vec!["linked"]);
+        assert_eq!(std::fs::read_link(skills.join("linked")).unwrap(), outside);
+    }
+
+    #[test]
+    fn downloaded_skill_removes_temporary_files_when_dropped() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("SKILL.md");
+        std::fs::write(&source, "---\nname: download\ndescription: test\n---\n").unwrap();
+        let downloaded = download_skill_file(&format!("file://{}", source.display())).unwrap();
+        let downloaded_path = downloaded.path.clone();
+        assert!(downloaded_path.join("SKILL.md").exists());
+        drop(downloaded);
+        assert!(!downloaded_path.exists());
+        assert!(source.exists());
     }
 }

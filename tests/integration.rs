@@ -1041,3 +1041,214 @@ fn scalable_interactive_commands_reject_pipes_before_work() {
             .stderr(predicate::str::contains("terminal"));
     }
 }
+
+#[test]
+fn add_root_skill_rejects_wrong_explicit_selector() {
+    let temp = TempDir::new().unwrap();
+    let repo = temp.path().join("repo");
+    fs::create_dir(&repo).unwrap();
+    fs::write(
+        repo.join("SKILL.md"),
+        "---\nname: actual\ndescription: root skill\n---\n",
+    )
+    .unwrap();
+    common::init_git_repo(&repo);
+    let git_config = temp.path().join("gitconfig");
+    fs::write(
+        &git_config,
+        format!(
+            "[url \"file://{}\"]\n    insteadOf = https://github.com/audit/repo.git\n",
+            repo.display()
+        ),
+    )
+    .unwrap();
+    let skills = temp.path().join("skills");
+    Command::cargo_bin("tome")
+        .unwrap()
+        .env("SKILLS_DIR", &skills)
+        .env("GIT_CONFIG_GLOBAL", &git_config)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args(["add", "audit/repo@wrong", "--no-sparse"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Requested skill"));
+    assert!(!skills.join("actual").exists());
+}
+
+#[test]
+fn failed_update_returns_failure_and_preserves_installed_skill() {
+    let temp = TempDir::new().unwrap();
+    let source = temp.path().join("SKILL.md");
+    let content = "---\nname: stable\ndescription: old\n---\n";
+    fs::write(&source, content).unwrap();
+    let skills = temp.path().join("skills");
+    Command::cargo_bin("tome")
+        .unwrap()
+        .env("SKILLS_DIR", &skills)
+        .args(["add", &format!("file://{}", source.display())])
+        .assert()
+        .success();
+    fs::write(
+        &source,
+        "---\nname: stable\n---\ninvalid missing description",
+    )
+    .unwrap();
+    Command::cargo_bin("tome")
+        .unwrap()
+        .env("SKILLS_DIR", &skills)
+        .arg("update")
+        .assert()
+        .failure();
+    assert_eq!(
+        fs::read_to_string(skills.join("stable/SKILL.md")).unwrap(),
+        content
+    );
+}
+
+#[test]
+fn cli_git_lifecycle_preserves_scope_and_reconciles_hundreds_of_skills() {
+    const EXTRA_SKILLS: usize = 200;
+    for sparse in [false, true] {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        let original = repo.join("skills/original");
+        fs::create_dir_all(original.join("scripts")).unwrap();
+        let initial = "---\nname: original\ndescription: initial\nversion: 1\n---\n";
+        let updated = "---\nname: original\ndescription: updated\nversion: 2\n---\n";
+        fs::write(original.join("SKILL.md"), initial).unwrap();
+        fs::write(original.join("scripts/old.txt"), "old asset").unwrap();
+        common::init_git_repo(&repo);
+        let url = format!("file://{}", repo.display());
+        let skills = temp.path().join("skills");
+        let manifest_path = skills.join(".skills.json");
+        let run = |args: &[&str]| {
+            let mut command = Command::cargo_bin("tome").unwrap();
+            command.env("SKILLS_DIR", &skills).args(args);
+            if !sparse && matches!(args.first(), Some(&"add" | &"update")) {
+                command.arg("--no-sparse");
+            }
+            command.assert()
+        };
+        let read_manifest = || -> serde_json::Value {
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap()
+        };
+        let commit = || {
+            for args in [
+                ["add", "-A"].as_slice(),
+                ["commit", "-m", "change"].as_slice(),
+            ] {
+                let output = ProcessCommand::new("git")
+                    .current_dir(&repo)
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            let output = ProcessCommand::new("git")
+                .current_dir(&repo)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+
+        run(&["add", &url]).success();
+        assert_eq!(read_manifest()["skills"].as_object().unwrap().len(), 1);
+        fs::write(skills.join("original/SKILL.md"), "local edit").unwrap();
+        run(&["add", &url]).success();
+        assert_eq!(
+            fs::read_to_string(skills.join("original/SKILL.md")).unwrap(),
+            "local edit"
+        );
+        run(&["add", &url, "--force"]).success();
+        assert_eq!(
+            fs::read_to_string(skills.join("original/SKILL.md")).unwrap(),
+            initial
+        );
+
+        fs::write(original.join("SKILL.md"), updated).unwrap();
+        fs::remove_file(original.join("scripts/old.txt")).unwrap();
+        fs::write(original.join("scripts/new.txt"), "new asset").unwrap();
+        for index in 0..EXTRA_SKILLS {
+            let name = format!("extra-{index:03}");
+            let dir = repo.join("skills").join(&name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: new skill\n---\n"),
+            )
+            .unwrap();
+        }
+        let new_commit = commit();
+        run(&["update", "original"]).success();
+        assert_eq!(
+            read_manifest()["skills"].as_object().unwrap().len(),
+            1,
+            "targeted update must not discover unrelated skills"
+        );
+        assert_eq!(
+            fs::read_to_string(skills.join("original/SKILL.md")).unwrap(),
+            updated
+        );
+        assert!(!skills.join("original/scripts/old.txt").exists());
+        assert_eq!(
+            fs::read_to_string(skills.join("original/scripts/new.txt")).unwrap(),
+            "new asset"
+        );
+
+        run(&["update"]).success();
+        let after_sync = read_manifest();
+        assert_eq!(
+            after_sync["skills"].as_object().unwrap().len(),
+            EXTRA_SKILLS + 1
+        );
+        for (name, entry) in after_sync["skills"].as_object().unwrap() {
+            assert_eq!(entry["commit"], new_commit);
+            assert!(skills.join(name).join("SKILL.md").is_file());
+        }
+        run(&["update"]).success();
+        assert_eq!(
+            read_manifest(),
+            after_sync,
+            "unchanged update must be idempotent"
+        );
+
+        fs::remove_dir_all(&original).unwrap();
+        commit();
+        run(&["update"]).success();
+        assert!(!skills.join("original").exists());
+        assert!(read_manifest()["skills"].get("original").is_none());
+        assert_eq!(
+            read_manifest()["skills"].as_object().unwrap().len(),
+            EXTRA_SKILLS
+        );
+
+        let before_failure = read_manifest();
+        let unavailable = temp.path().join("unavailable");
+        fs::rename(&repo, &unavailable).unwrap();
+        run(&["update"]).failure();
+        assert_eq!(read_manifest(), before_failure);
+        for name in before_failure["skills"].as_object().unwrap().keys() {
+            assert!(skills.join(name).join("SKILL.md").is_file());
+        }
+        fs::rename(&unavailable, &repo).unwrap();
+        run(&["remove", &url, "--force"]).success();
+        assert!(read_manifest()["skills"].as_object().unwrap().is_empty());
+        for name in before_failure["skills"].as_object().unwrap().keys() {
+            assert!(!skills.join(name).exists());
+        }
+        assert!(fs::read_dir(&skills).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tome-transaction-")
+        }));
+        run(&["remove", &url, "--force"]).failure();
+    }
+}

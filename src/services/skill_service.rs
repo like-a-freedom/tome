@@ -88,9 +88,6 @@ impl SkillService {
 
             let is_single = matches!(skills.as_slice(), [_]);
             let selected = match skills.as_slice() {
-                [skill] if skill.path == temp_dir.path() => {
-                    vec![skill.clone()]
-                }
                 [skill] => {
                     if let Some(ref requested) = skill_name
                         && requested != &skill.name
@@ -247,12 +244,13 @@ impl SkillService {
         if names.is_empty() {
             return Ok(());
         }
+        let mut transaction = crate::fs::SkillTransaction::new(&self.config.skills_dir)?;
         for name in names {
             let skill_dir = self.config.skills_dir.join(name);
-            crate::fs::remove_skill_dir(&skill_dir)?;
+            transaction.remove(&skill_dir)?;
             manifest.remove_skill(name);
         }
-        manifest.save(manifest_path)
+        transaction.commit_with(|| manifest.save(manifest_path))
     }
 }
 
@@ -498,5 +496,54 @@ mod tests {
         );
         assert!(skills_dir.join("keep").exists());
         assert!(Manifest::load(&path).unwrap().is_tracked("keep"));
+    }
+    #[test]
+    fn remove_rolls_back_when_manifest_save_fails() {
+        let temp = TempDir::new().unwrap();
+        let skills = temp.path().join("skills");
+        fs::create_dir_all(skills.join("first")).unwrap();
+        fs::write(skills.join("first/SKILL.md"), "original").unwrap();
+        // A supported custom manifest location inside a removed skill causes save to fail.
+        let path = skills.join("first/.skills.json");
+        let mut manifest = Manifest::new();
+        manifest.add_skill(
+            "first",
+            SkillEntry::new(
+                "owner/repo",
+                "",
+                &testutil::make_fm("first"),
+                "abc",
+                "remote",
+            ),
+        );
+        manifest.save(&path).unwrap();
+        let before = fs::read(&path).unwrap();
+        let service = SkillService::with_manifest_path(skills.clone(), path.clone());
+        assert!(service.remove("first").is_err());
+        assert_eq!(
+            fs::read_to_string(skills.join("first/SKILL.md")).unwrap(),
+            "original"
+        );
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_unlinks_dangling_skill_symlink() {
+        let temp = TempDir::new().unwrap();
+        let skills = temp.path().join("skills");
+        fs::create_dir_all(&skills).unwrap();
+        std::os::unix::fs::symlink(temp.path().join("missing"), skills.join("linked")).unwrap();
+        let path = skills.join(".skills.json");
+        let mut manifest = Manifest::new();
+        manifest.add_skill(
+            "linked",
+            SkillEntry::new("source", "", &testutil::make_fm("linked"), "abc", "remote"),
+        );
+        manifest.save(&path).unwrap();
+        let service = SkillService::with_manifest_path(skills.clone(), path.clone());
+        service.remove("linked").unwrap();
+        assert!(fs::symlink_metadata(skills.join("linked")).is_err());
+        assert!(!Manifest::load(&path).unwrap().is_tracked("linked"));
     }
 }

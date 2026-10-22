@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 use crate::core::spec::SkillFrontmatter;
@@ -108,7 +109,20 @@ impl Manifest {
 
     pub fn save(&self, path: &Path) -> Result<()> {
         let content = serde_json::to_string_pretty(self).context("Failed to serialize manifest")?;
-        fs::write(path, content).context("Failed to write manifest")?;
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let mut staged =
+            tempfile::NamedTempFile::new_in(parent).context("Failed to stage manifest")?;
+        staged
+            .write_all(content.as_bytes())
+            .context("Failed to write manifest")?;
+        staged
+            .as_file()
+            .sync_all()
+            .context("Failed to sync manifest")?;
+        staged.persist(path).context("Failed to replace manifest")?;
         Ok(())
     }
 
@@ -634,5 +648,28 @@ mod tests {
         let manifest = make_manifest_with_source("owner/repo", "my-skill");
         assert!(manifest.resolve_names("unknown-skill").is_empty());
         assert!(manifest.resolve_names("other/repo").is_empty());
+    }
+    #[test]
+    fn save_replaces_manifest_without_truncating_previous_inode() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join(".skills.json");
+        let snapshot = temp.path().join("snapshot.json");
+        Manifest::new().save(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        std::fs::hard_link(&path, &snapshot).unwrap();
+        let mut changed = Manifest::new();
+        changed.add_skill(
+            "new",
+            SkillEntry::new(
+                "source",
+                "",
+                &crate::testutil::make_fm("new"),
+                "abc",
+                "remote",
+            ),
+        );
+        changed.save(&path).unwrap();
+        assert_eq!(std::fs::read(snapshot).unwrap(), before);
+        assert!(Manifest::load(&path).unwrap().is_tracked("new"));
     }
 }

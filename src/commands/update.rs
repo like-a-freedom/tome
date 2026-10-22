@@ -115,6 +115,9 @@ pub fn execute_options(
         start.elapsed().as_secs_f64(),
     );
 
+    if !result.failures.is_empty() {
+        anyhow::bail!("Failed to update {} skill(s)", result.failures.len());
+    }
     Ok(())
 }
 

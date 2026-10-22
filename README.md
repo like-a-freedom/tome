@@ -100,6 +100,21 @@ The picker renders on stderr, so redirected export stdout contains only commands
 `tome remove` without a target also requires an interactive terminal. Resize the
 terminal to at least 24 columns and 11 rows to use list actions.
 
+## File safety and failures
+
+Add, update and remove stage filesystem changes with reversible backups until
+`.skills.json` is saved using an atomic replacement. A copy failure preserves the
+installed skill; a fatal error or failed manifest save rolls back the operation.
+Update can still save successful skills when other sources fail, and returns a
+nonzero exit status if any skill failed. A source changing a tracked skill's name
+is rejected and leaves its installed content intact.
+
+Untracked paths, including dangling symlinks, are skipped without `add --force`.
+Replacing or removing a skill symlink changes the link itself, preserving its
+target. Downloaded `SKILL.md` temporary files are cleaned up after the operation.
+These guarantees cover handled errors; crash recovery and concurrent mutations
+from separate processes are not transactional.
+
 ## Documentation
 
 - [`docs/PRD.md`](docs/PRD.md) — product requirements

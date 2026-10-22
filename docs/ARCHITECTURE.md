@@ -183,6 +183,18 @@ tome remove [name] [--force]
   → remove their manifest entries
 ```
 
+All three mutation flows share `fs::SkillTransaction`: replacement content is
+copied into a hidden staging directory on the skills filesystem before the old
+path is renamed into a backup. Removal also renames into that backup. Backups
+are released only after `Manifest::save` writes, syncs and atomically replaces
+the manifest. Dropping an uncommitted transaction restores its changes in reverse
+order; if restoration fails, backup files are retained and their path is printed.
+An unfinished replacement prevents manifest persistence. Update source failures
+are isolated when staging has not changed the installed path; successful skills
+can commit while failed skills remain intact. The CLI returns failure when any
+update failed. This is in-process error recovery, without a durable crash journal
+or locking between writers.
+
 ### List and export
 
 `list` loads or rebuilds the manifest, reports stale entries without deleting
