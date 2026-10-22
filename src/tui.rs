@@ -279,15 +279,14 @@ fn clip(text: &str, width: usize) -> String {
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
-    let mut used = 0;
     for c in clean(text).chars() {
-        let cells = crate::style::char_display_width(c);
-        if used + cells > width && !line.is_empty() {
-            lines.push(std::mem::take(&mut line));
-            used = 0;
-        }
+        let previous_end = line.len();
         line.push(c);
-        used += cells;
+        if display_width(&line) > width && previous_end > 0 {
+            line.truncate(previous_end);
+            lines.push(std::mem::take(&mut line));
+            line.push(c);
+        }
     }
     lines.push(line);
     lines
@@ -2100,5 +2099,24 @@ mod tests {
         state.details = true;
         let frame = plain_frame(&build_render_buffer(&items, &state, 0));
         assert!(frame.lines().last().unwrap().contains("Esc: back"));
+    }
+    #[test]
+    fn review_bmp_emoji_frames_fit_independent_cell_budget() {
+        let items = vec![ListItem {
+            name: "skill".into(),
+            description: "✅".repeat(45),
+            ..ListItem::default()
+        }];
+        let mut state = TuiState::new(1, 2);
+        state.resize(40, 12);
+        for details in [false, true] {
+            state.details = details;
+            let frame = plain_frame(&build_render_buffer(&items, &state, 0));
+            for line in frame.lines() {
+                // Independent fixture oracle: ASCII is one cell; this emoji is two.
+                let cells: usize = line.chars().map(|c| if c == '✅' { 2 } else { 1 }).sum();
+                assert!(cells < 40, "{cells} cells: {line}");
+            }
+        }
     }
 }

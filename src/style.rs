@@ -17,39 +17,11 @@ pub fn styled(code: &str, s: &str) -> String {
 // ── Box-drawing helpers ──────────────────────────────────────────
 
 pub fn char_display_width(c: char) -> usize {
-    let cp = c as u32;
-    if ('\u{0300}'..='\u{036f}').contains(&c)
-        || ('\u{1ab0}'..='\u{1aff}').contains(&c)
-        || ('\u{1dc0}'..='\u{1dff}').contains(&c)
-        || ('\u{20d0}'..='\u{20ff}').contains(&c)
-        || ('\u{fe00}'..='\u{fe0f}').contains(&c)
-        || ('\u{fe20}'..='\u{fe2f}').contains(&c)
-        || matches!(c, '\u{200c}' | '\u{200d}')
-    {
-        return 0;
-    }
-    if ('\u{1f300}'..='\u{1faff}').contains(&c)
-        || (0x1100..=0x115F).contains(&cp)
-        || (0x2E80..=0x303E).contains(&cp)
-        || (0x3040..=0x33BF).contains(&cp)
-        || (0x3400..=0x4DBF).contains(&cp)
-        || (0x4E00..=0x9FFF).contains(&cp)
-        || (0xA000..=0xA4CF).contains(&cp)
-        || (0xAC00..=0xD7AF).contains(&cp)
-        || (0xF900..=0xFAFF).contains(&cp)
-        || (0xFE30..=0xFE6F).contains(&cp)
-        || (0xFF01..=0xFF60).contains(&cp)
-        || (0xFFE0..=0xFFE6).contains(&cp)
-        || (0x20000..=0x2FA1F).contains(&cp)
-    {
-        2
-    } else {
-        1
-    }
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
 }
 
 pub fn display_width(s: &str) -> usize {
-    s.chars().map(char_display_width).sum()
+    unicode_width::UnicodeWidthStr::width(s)
 }
 
 pub const ELLIPSIS_LEN: usize = 3;
@@ -61,30 +33,19 @@ pub fn truncate_with_ellipsis(s: &str, max_width: usize) -> String {
     if display_width(s) <= max_width {
         return s.to_string();
     }
-    if max_width < ELLIPSIS_LEN {
-        let mut width = 0;
-        let mut end = 0;
-        for (i, ch) in s.char_indices() {
-            let w = char_display_width(ch);
-            if width + w > max_width {
-                break;
-            }
-            width += w;
-            end = i + ch.len_utf8();
-        }
-        return s[..end].to_string();
-    }
-    let mut width = 0;
+    let ellipsis = if max_width >= ELLIPSIS_LEN { "..." } else { "" };
+    let budget = max_width.saturating_sub(ellipsis.len());
     let mut end = 0;
+    // Measure complete prefixes: variation selectors can change the width of
+    // an earlier character, so summing character widths is insufficient.
     for (i, ch) in s.char_indices() {
-        let w = char_display_width(ch);
-        if width + w + ELLIPSIS_LEN > max_width {
+        let next = i + ch.len_utf8();
+        if display_width(&s[..next]) > budget {
             break;
         }
-        width += w;
-        end = i + ch.len_utf8();
+        end = next;
     }
-    format!("{}...", &s[..end])
+    format!("{}{}", &s[..end], ellipsis)
 }
 
 pub fn line(c: char, width: usize) -> String {
@@ -205,5 +166,15 @@ mod tests {
     fn scalable_terminal_cells_account_for_emoji_and_combining_marks() {
         assert_eq!(display_width("🚀界e\u{301}"), 5);
         assert_eq!(truncate_with_ellipsis("🚀🚀", 2), "🚀");
+    }
+    #[test]
+    fn review_common_bmp_emoji_have_two_terminal_cells() {
+        assert_eq!(display_width("✅☕⌚❌⭐"), 10);
+        assert_eq!(
+            truncate_with_ellipsis(&"✅".repeat(45), 39),
+            format!("{}...", "✅".repeat(18))
+        );
+        assert_eq!(display_width("✈️"), 2);
+        assert_eq!(display_width(&truncate_with_ellipsis("✈️✈️", 1)), 1);
     }
 }
