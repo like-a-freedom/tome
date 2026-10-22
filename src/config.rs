@@ -39,10 +39,10 @@ pub enum Commands {
     /// Remove an installed skill
     Remove {
         /// Skill name to remove
-        name: String,
+        name: Option<String>,
 
         /// Skip confirmation prompt
-        #[arg(long)]
+        #[arg(long, requires = "name")]
         force: bool,
     },
 
@@ -50,6 +50,10 @@ pub enum Commands {
     Update {
         /// Specific skill to update (optional)
         name: Option<String>,
+
+        /// Choose the exact skills to update
+        #[arg(long, conflicts_with = "name")]
+        interactive: bool,
 
         /// Show full update details
         #[arg(long)]
@@ -65,10 +69,18 @@ pub enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+
+        /// Print a table instead of the interactive browser
+        #[arg(long, conflicts_with = "json")]
+        plain: bool,
     },
 
     /// Export install commands for all tracked skills
-    Export,
+    Export {
+        /// Choose skills before writing the install script
+        #[arg(long)]
+        interactive: bool,
+    },
 }
 
 fn default_skills_dir() -> PathBuf {
@@ -148,7 +160,9 @@ mod tests {
     #[test]
     fn test_remove_command_parsing() {
         let cli = Cli::parse_from(["tome", "remove", "skill-name"]);
-        assert!(matches!(cli.command, Commands::Remove { ref name, .. } if name == "skill-name"));
+        assert!(
+            matches!(cli.command, Commands::Remove { ref name, .. } if name.as_deref() == Some("skill-name"))
+        );
     }
 
     #[test]
@@ -191,7 +205,7 @@ mod tests {
     fn test_list_json_parsing() {
         let cli = Cli::parse_from(["tome", "list", "--json"]);
         match cli.command {
-            Commands::List { json } => assert!(json),
+            Commands::List { json, .. } => assert!(json),
             _ => panic!("Expected List"),
         }
     }
@@ -199,7 +213,7 @@ mod tests {
     #[test]
     fn test_export_command_parsing() {
         let cli = Cli::parse_from(["tome", "export"]);
-        assert!(matches!(cli.command, Commands::Export));
+        assert!(matches!(cli.command, Commands::Export { .. }));
     }
 
     #[test]
@@ -218,5 +232,23 @@ mod tests {
             Commands::Add { path, .. } => assert_eq!(path.as_deref(), Some("skills/foo")),
             _ => panic!("Expected Add"),
         }
+    }
+    #[test]
+    fn scalable_list_plain_is_available() {
+        assert!(Cli::try_parse_from(["tome", "list", "--plain"]).is_ok());
+        assert!(Cli::try_parse_from(["tome", "list", "--plain", "--json"]).is_err());
+    }
+
+    #[test]
+    fn scalable_remove_without_target_is_picker() {
+        assert!(Cli::try_parse_from(["tome", "remove"]).is_ok());
+        assert!(Cli::try_parse_from(["tome", "remove", "--force"]).is_err());
+    }
+
+    #[test]
+    fn scalable_interactive_flags_and_conflicts() {
+        assert!(Cli::try_parse_from(["tome", "update", "--interactive"]).is_ok());
+        assert!(Cli::try_parse_from(["tome", "export", "--interactive"]).is_ok());
+        assert!(Cli::try_parse_from(["tome", "update", "skill", "--interactive"]).is_err());
     }
 }

@@ -9,6 +9,15 @@ use crate::core::parse_source;
 use crate::style::{self, BOLD, CYAN, DIM};
 
 pub fn execute(json: bool, skills_dir: &Path, manifest_path: &Path) -> Result<()> {
+    execute_options(json, false, skills_dir, manifest_path)
+}
+
+pub fn execute_options(
+    json: bool,
+    plain: bool,
+    skills_dir: &Path,
+    manifest_path: &Path,
+) -> Result<()> {
     // 1. Load or rebuild manifest
     let (manifest, was_rebuilt) = if !manifest_path.exists() {
         let rebuilt = Manifest::rebuild_from_directory(skills_dir)?;
@@ -35,26 +44,65 @@ pub fn execute(json: bool, skills_dir: &Path, manifest_path: &Path) -> Result<()
             "Warning: {} manifest {} not found on disk: {}",
             stale.len(),
             if stale.len() == 1 { "entry" } else { "entries" },
-            stale.join(", ")
+            if crate::tui::automatic_available() {
+                "see inventory for missing skills".into()
+            } else {
+                stale.join(", ")
+            }
         );
     }
 
     // 3. Scan for untracked skills
     let untracked = scan_untracked_skills(skills_dir, &manifest)?;
 
-    // 4. Output
+    // Persist a rebuilt inventory before entering an interactive session.
+    if was_rebuilt {
+        manifest.save(manifest_path)?;
+    }
     if json {
         output_json(&manifest, &untracked)?;
+    } else if !plain
+        && crate::tui::automatic_available()
+        && !(manifest.is_empty() && untracked.is_empty())
+    {
+        let mut rows = manifest_rows(&manifest);
+        for row in &mut rows {
+            if stale.contains(&row.name) {
+                row.status = "tracked; missing on disk".into();
+            }
+        }
+        rows.extend(untracked.iter().map(|skill| crate::tui::ListItem {
+            name: skill.name.clone(),
+            description: skill.description.clone(),
+            version: display_version(&skill.version).into(),
+            source: "no repository".into(),
+            status: "untracked".into(),
+            selected: false,
+        }));
+        crate::tui::run_list("Installed skills", &mut rows, crate::tui::ListMode::Browse)?;
     } else {
         output_table(&manifest, &untracked);
     }
 
-    // 5. Save manifest (only if it was rebuilt from directory)
-    if was_rebuilt {
-        manifest.save(manifest_path)?;
-    }
-
     Ok(())
+}
+
+/// Tracked inventory only; mutation pickers must never offer unowned directories.
+pub(crate) fn manifest_rows(manifest: &Manifest) -> Vec<crate::tui::ListItem> {
+    let mut rows: Vec<_> = manifest
+        .all_skills()
+        .into_iter()
+        .map(|(name, entry)| crate::tui::ListItem {
+            name: name.into(),
+            description: entry.description.clone(),
+            source: parse_source::repo_label(&entry.source).into(),
+            version: display_version(&entry.version).into(),
+            status: "tracked".into(),
+            selected: false,
+        })
+        .collect();
+    rows.sort_by(|a, b| a.source.cmp(&b.source).then_with(|| a.name.cmp(&b.name)));
+    rows
 }
 
 fn scan_untracked_skills(skills_dir: &Path, manifest: &Manifest) -> Result<Vec<UntrackedSkill>> {

@@ -89,7 +89,8 @@ CLI arguments → application service → output formatting
 - `commands/add.rs` constructs `SkillService`, calls `install`, and renders
   `InstallResult`.
 - `commands/remove.rs` resolves the removal target through `SkillService`,
-  prompts when required, then calls `SkillService::remove`.
+  selects/reviews exact names when interactive, then calls
+  `SkillService::remove_selected`. All names are validated before any deletion.
 - `commands/update.rs` constructs `UpdateService`, supplies the
   `UpdateReporter`, and renders the returned result.
 
@@ -113,6 +114,8 @@ removing skills deleted from their source, installing skills that newly
 appeared in a tracked repository, reconciling stale entries, and saving the
 manifest. It emits reporter-neutral `ProgressPhase` and `RepoOutcome` events
 through `UpdateReporter`. `progress.rs` is the terminal adapter for that seam.
+`run_selected` shares the same repository grouping with the all/target scopes,
+validates every exact key before work, and never syncs newly discovered skills.
 
 ### Core modules
 
@@ -143,7 +146,7 @@ network GitHub endpoint.
 ### Update
 
 ```text
-tome update [name]
+tome update [name] [--interactive]
   → load manifest and select entries
   → group Git entries by remote; keep file URLs separate
   → clone/download each source
@@ -171,10 +174,11 @@ output is line-based and does not emit live progress cursor controls.
 ### Remove
 
 ```text
-tome remove name [--force]
+tome remove [name] [--force]
   → resolve the name, source label, or URL through SkillService
   → reject untracked targets before prompting
-  → confirm unless --force
+  → select exact keys if no target, then review (y confirms, Enter cancels)
+  → confirm explicit targets unless --force
   → remove all resolved skill directories
   → remove their manifest entries
 ```
@@ -182,9 +186,28 @@ tome remove name [--force]
 ### List and export
 
 `list` loads or rebuilds the manifest, reports stale entries without deleting
-them, scans for manually placed skills, and renders table or JSON output.
+them, scans for manually placed skills, and renders the shared browser in usable
+interactive terminals. `--plain`, `--json` and redirected output bypass the TUI.
 `export` loads the manifest, sorts entries by skill name, and prints equivalent
-`tome add` commands.
+`tome add` commands. `--interactive` filters these by exact selected manifest keys
+and keeps all picker output on stderr, including when stdout is redirected.
+
+### Shared terminal lists
+
+`tui.rs` owns browse, multiselect and destructive-review modes, original item
+indices, metadata search, selected-only filtering, paging and scrollable details.
+The renderer respects current terminal cell dimensions and sanitizes control
+characters in metadata. A session guard owns raw mode, cursor visibility and the
+alternate screen on stderr; resize events recalculate the viewport. Tiny windows
+show a resize hint and accept only cancellation. Search Enter leaves search without
+accepting the operation. Review filtering never changes the deletion set.
+
+Command adapters build `ListItem` metadata from the manifest and scan results.
+The service APIs stay independent of terminal events. `output.rs` maps operation
+results to status rows: long interactive reports reuse browse mode after a count
+summary, small reports stay inline, and noninteractive reports retain full output.
+Default update progress stays compact; verbose update includes every result.
+The legacy `SelectItem`/`multi_select` adapter remains supported.
 
 ## Deferred Architecture Decisions
 

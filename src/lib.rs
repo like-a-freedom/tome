@@ -37,22 +37,26 @@ pub fn run(cli: Cli) -> Result<()> {
             &manifest_path,
         ),
         config::Commands::Remove { name, force } => {
-            commands::remove::execute(&name, force, &skills_dir, &manifest_path)
+            commands::remove::execute_options(name.as_deref(), force, &skills_dir, &manifest_path)
         }
         config::Commands::Update {
             name,
+            interactive,
             verbose,
             no_sparse,
-        } => commands::update::execute(
+        } => commands::update::execute_options(
             name.as_deref(),
+            interactive,
             verbose,
             !no_sparse,
             &skills_dir,
             &manifest_path,
         ),
-        config::Commands::List { json } => {
-            commands::list::execute(json, &skills_dir, &manifest_path)
+        config::Commands::List { json, plain } => {
+            commands::list::execute_options(json, plain, &skills_dir, &manifest_path)
         }
-        config::Commands::Export => commands::export::execute(&skills_dir, &manifest_path),
+        config::Commands::Export { interactive } => {
+            commands::export::execute_options(interactive, &skills_dir, &manifest_path)
+        }
     }
 }

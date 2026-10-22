@@ -9,6 +9,43 @@ pub fn execute(
     skills_dir: &Path,
     manifest_path: &Path,
 ) -> Result<()> {
+    execute_options(name, false, verbose, sparse, skills_dir, manifest_path)
+}
+
+pub fn execute_options(
+    name: Option<&str>,
+    interactive: bool,
+    verbose: bool,
+    sparse: bool,
+    skills_dir: &Path,
+    manifest_path: &Path,
+) -> Result<()> {
+    let selected = if interactive {
+        crate::tui::require_interactive()?;
+        let manifest = crate::core::manifest::Manifest::load(manifest_path)?;
+        let mut rows = super::list::manifest_rows(&manifest);
+        if rows.is_empty() {
+            println!("No skills to update.");
+            return Ok(());
+        }
+        if crate::tui::run_list(
+            "Select skills to update",
+            &mut rows,
+            crate::tui::ListMode::Select,
+        )? != crate::tui::ListOutcome::Accepted
+        {
+            println!("Aborted.");
+            return Ok(());
+        }
+        Some(
+            rows.into_iter()
+                .filter(|r| r.selected)
+                .map(|r| r.name)
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        None
+    };
     let service = crate::services::UpdateService::with_manifest_path(
         skills_dir.to_path_buf(),
         manifest_path.to_path_buf(),
@@ -16,21 +53,26 @@ pub fn execute(
     let mut progress = crate::progress::UpdateProgress::new(verbose);
     let live = progress.enabled();
     let start = std::time::Instant::now();
-    let result = service.run(name, sparse, live, &mut progress)?;
+    let result = if let Some(names) = selected {
+        service.run_selected(&names, sparse, live, &mut progress)?
+    } else {
+        service.run(name, sparse, live, &mut progress)?
+    };
 
-    if !result.stale.is_empty() {
-        crate::output::print_stale_header(result.stale.len(), &result.stale);
-    }
+    progress.finish();
 
     if result.is_empty() {
-        progress.finish();
         println!("No skills to update.");
         return Ok(());
     }
 
-    progress.finish();
+    let mut report = crate::output::update_report(&result, verbose);
+    let browsed = crate::output::browse_report("Update details", &mut report)?;
+    if !browsed && !result.stale.is_empty() {
+        crate::output::print_stale_header(result.stale.len(), &result.stale);
+    }
 
-    if verbose {
+    if verbose && !browsed {
         for info in &result.updated {
             match info.source {
                 crate::services::update_service::UpdateSource::File => {
@@ -59,8 +101,10 @@ pub fn execute(
             crate::output::print_removed(name);
         }
     }
-    for failure in &result.failures {
-        crate::output::print_failed(&failure.name, "update", &failure.reason);
+    if !browsed {
+        for failure in &result.failures {
+            crate::output::print_failed(&failure.name, "update", &failure.reason);
+        }
     }
 
     crate::output::print_update_summary(

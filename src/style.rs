@@ -18,7 +18,18 @@ pub fn styled(code: &str, s: &str) -> String {
 
 pub fn char_display_width(c: char) -> usize {
     let cp = c as u32;
-    if (0x1100..=0x115F).contains(&cp)
+    if ('\u{0300}'..='\u{036f}').contains(&c)
+        || ('\u{1ab0}'..='\u{1aff}').contains(&c)
+        || ('\u{1dc0}'..='\u{1dff}').contains(&c)
+        || ('\u{20d0}'..='\u{20ff}').contains(&c)
+        || ('\u{fe00}'..='\u{fe0f}').contains(&c)
+        || ('\u{fe20}'..='\u{fe2f}').contains(&c)
+        || matches!(c, '\u{200c}' | '\u{200d}')
+    {
+        return 0;
+    }
+    if ('\u{1f300}'..='\u{1faff}').contains(&c)
+        || (0x1100..=0x115F).contains(&cp)
         || (0x2E80..=0x303E).contains(&cp)
         || (0x3040..=0x33BF).contains(&cp)
         || (0x3400..=0x4DBF).contains(&cp)
@@ -188,6 +199,11 @@ mod tests {
 
     #[test]
     fn test_truncate_unicode_small_width() {
-        assert_eq!(truncate_with_ellipsis("🚀🚀🚀", 2), "🚀🚀");
+        assert_eq!(truncate_with_ellipsis("🚀🚀🚀", 2), "🚀");
+    }
+    #[test]
+    fn scalable_terminal_cells_account_for_emoji_and_combining_marks() {
+        assert_eq!(display_width("🚀界e\u{301}"), 5);
+        assert_eq!(truncate_with_ellipsis("🚀🚀", 2), "🚀");
     }
 }

@@ -169,6 +169,7 @@ pub(crate) fn print_stale_header(count: usize, names: &[String]) {
 }
 
 const TERM_WIDTH: usize = 60;
+const REPORT_FALLBACK_SIZE: (u16, u16) = (80, 24);
 
 fn format_duration(secs: f64) -> String {
     let time = if secs < 60.0 {
@@ -257,6 +258,92 @@ pub(crate) fn print_update_summary(
         style::box_bottom(TERM_WIDTH),
     );
     println!("{}", style::RESET);
+}
+
+pub(crate) fn report_is_long(count: usize, rows: u16, interactive: bool) -> bool {
+    interactive && count > crate::tui::list_capacity(rows)
+}
+
+pub(crate) fn browse_report(
+    title: &str,
+    rows: &mut [crate::tui::ListItem],
+) -> anyhow::Result<bool> {
+    let (_, height) = crossterm::terminal::size().unwrap_or(REPORT_FALLBACK_SIZE);
+    if !report_is_long(rows.len(), height, crate::tui::automatic_available()) {
+        return Ok(false);
+    }
+    let mut counts = std::collections::BTreeMap::new();
+    for row in rows.iter() {
+        *counts.entry(row.status.as_str()).or_insert(0_usize) += 1;
+    }
+    let summary: Vec<_> = counts
+        .into_iter()
+        .map(|(status, count)| format!("{count} {status}"))
+        .collect();
+    eprintln!("{}: {}", title, summary.join(" | "));
+    crate::tui::run_list(title, rows, crate::tui::ListMode::Browse)?;
+    Ok(true)
+}
+
+pub(crate) fn install_report(
+    result: &crate::core::install::InstallResult,
+) -> Vec<crate::tui::ListItem> {
+    let mut rows = Vec::new();
+    for (names, status) in [
+        (&result.installed, "installed"),
+        (&result.skipped_tracked, "already tracked"),
+        (&result.skipped_existing, "already exists"),
+    ] {
+        rows.extend(names.iter().map(|name| crate::tui::ListItem {
+            name: name.clone(),
+            status: status.into(),
+            ..crate::tui::ListItem::default()
+        }));
+    }
+    rows
+}
+pub(crate) fn removal_report(names: &[String]) -> Vec<crate::tui::ListItem> {
+    names
+        .iter()
+        .map(|name| crate::tui::ListItem {
+            name: name.clone(),
+            status: "removed".into(),
+            ..crate::tui::ListItem::default()
+        })
+        .collect()
+}
+pub(crate) fn update_report(
+    result: &crate::services::update_service::UpdateResult,
+    verbose: bool,
+) -> Vec<crate::tui::ListItem> {
+    let mut rows = Vec::new();
+    if verbose {
+        for (infos, status) in [
+            (&result.updated, "updated"),
+            (&result.skipped, "up to date"),
+        ] {
+            rows.extend(infos.iter().map(|info| crate::tui::ListItem {
+                name: info.name.clone(),
+                version: info.version.clone(),
+                status: status.into(),
+                description: format!("{} -> {}", info.old_commit, info.new_commit),
+                ..crate::tui::ListItem::default()
+            }));
+        }
+        rows.extend(removal_report(&result.removed));
+    }
+    rows.extend(result.failures.iter().map(|failure| crate::tui::ListItem {
+        name: failure.name.clone(),
+        description: failure.reason.clone(),
+        status: "failed".into(),
+        ..crate::tui::ListItem::default()
+    }));
+    rows.extend(result.stale.iter().map(|name| crate::tui::ListItem {
+        name: name.clone(),
+        status: "missing on disk".into(),
+        ..crate::tui::ListItem::default()
+    }));
+    rows
 }
 
 #[cfg(test)]
@@ -414,5 +501,57 @@ mod tests {
             "expected cyan frame after styled content, got {:?}",
             &rendered[content_end..]
         );
+    }
+    #[test]
+    fn scalable_reports_use_browser_only_for_long_interactive_output() {
+        assert!(report_is_long(500, 24, true));
+        assert!(!report_is_long(500, 24, false));
+        assert!(!report_is_long(2, 24, true));
+    }
+
+    #[test]
+    fn scalable_install_and_removal_reports_keep_every_status_and_name() {
+        let result = crate::core::install::InstallResult {
+            installed: vec!["alpha".into()],
+            skipped_tracked: vec!["beta".into()],
+            skipped_existing: vec!["gamma".into()],
+        };
+        let rows = install_report(&result);
+        assert_eq!(
+            rows.iter()
+                .map(|r| (r.name.as_str(), r.status.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("alpha", "installed"),
+                ("beta", "already tracked"),
+                ("gamma", "already exists")
+            ]
+        );
+        assert_eq!(removal_report(&["beta".into()])[0].name, "beta");
+    }
+
+    #[test]
+    fn scalable_update_report_keeps_failures_and_stale_names_in_compact_mode() {
+        use crate::services::update_service::*;
+        let result = UpdateResult {
+            failures: vec![UpdateFailure {
+                name: "broken".into(),
+                reason: "network timeout".into(),
+            }],
+            stale: vec!["missing".into()],
+            removed: vec!["deleted".into()],
+            ..UpdateResult::default()
+        };
+        let rows = update_report(&result, false);
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter()
+                .any(|r| r.name == "broken" && r.description.contains("network timeout"))
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.name == "missing" && r.status == "missing on disk")
+        );
+        assert_eq!(update_report(&result, true).len(), 3);
     }
 }

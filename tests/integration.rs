@@ -981,3 +981,63 @@ fn test_export_tracked_skills_through_cli() {
             "tome add owner/repo --path skills/exported",
         ));
 }
+
+#[test]
+fn scalable_list_plain_and_json_keep_all_500_skills_in_pipes() {
+    let temp = TempDir::new().unwrap();
+    for i in 0..500 {
+        let name = format!("skill-{i:04}");
+        let dir = temp.path().join(&name);
+        fs::create_dir(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Example\n---\n"),
+        )
+        .unwrap();
+    }
+    let output = Command::cargo_bin("tome")
+        .unwrap()
+        .env("SKILLS_DIR", temp.path())
+        .args(["list", "--plain"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let table = String::from_utf8(output.stdout).unwrap();
+    assert!(table.contains("skill-0000") && table.contains("skill-0499"));
+    assert!(!table.contains("\x1b[?1049"));
+    let output = Command::cargo_bin("tome")
+        .unwrap()
+        .env("SKILLS_DIR", temp.path())
+        .args(["list", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 500);
+}
+
+#[test]
+fn scalable_remove_without_target_in_pipe_is_actionable_error() {
+    let temp = TempDir::new().unwrap();
+    Command::cargo_bin("tome")
+        .unwrap()
+        .env("SKILLS_DIR", temp.path())
+        .arg("remove")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("terminal"));
+}
+
+#[test]
+fn scalable_interactive_commands_reject_pipes_before_work() {
+    let temp = TempDir::new().unwrap();
+    for command in ["update", "export"] {
+        Command::cargo_bin("tome")
+            .unwrap()
+            .env("SKILLS_DIR", temp.path())
+            .args([command, "--interactive"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("terminal"));
+    }
+}

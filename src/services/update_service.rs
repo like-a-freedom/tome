@@ -140,6 +140,13 @@ struct GitGroupRequest<'a> {
     position: SourcePosition,
 }
 
+#[derive(Clone, Copy)]
+enum UpdateScope<'a> {
+    All,
+    Target(&'a str),
+    Selected(&'a [String]),
+}
+
 /// Application service for updating skills from their recorded sources.
 pub struct UpdateService {
     config: crate::services::ServiceConfig,
@@ -166,9 +173,37 @@ impl UpdateService {
         live: bool,
         reporter: &mut impl UpdateReporter,
     ) -> Result<UpdateResult> {
+        self.run_scope(
+            specific_name.map_or(UpdateScope::All, UpdateScope::Target),
+            sparse,
+            live,
+            reporter,
+        )
+    }
+
+    fn run_scope(
+        &self,
+        scope: UpdateScope<'_>,
+        sparse: bool,
+        live: bool,
+        reporter: &mut impl UpdateReporter,
+    ) -> Result<UpdateResult> {
         let manifest_path = &self.config.manifest_path;
         let mut manifest = Manifest::load(manifest_path)?;
-        let names = self.selected_names(&manifest, specific_name)?;
+        let mut names = match scope {
+            UpdateScope::All => self.selected_names(&manifest, None)?,
+            UpdateScope::Target(name) => self.selected_names(&manifest, Some(name))?,
+            UpdateScope::Selected(names) => {
+                for name in names {
+                    if !manifest.is_tracked(name) {
+                        anyhow::bail!("Skill '{}' not found in manifest.", name);
+                    }
+                }
+                names.to_vec()
+            }
+        };
+        names.sort();
+        names.dedup();
         let mut result = UpdateResult {
             stale: manifest.find_stale(&self.config.skills_dir),
             ..UpdateResult::default()
@@ -218,7 +253,7 @@ impl UpdateService {
                     remote,
                     skill_names,
                     sparse,
-                    sync_new: specific_name.is_none(),
+                    sync_new: matches!(scope, UpdateScope::All),
                     live,
                     position: SourcePosition {
                         index: file_names.len() + index + 1,
@@ -237,6 +272,16 @@ impl UpdateService {
         reporter.phase(ProgressPhase::Saving);
         manifest.save(manifest_path)?;
         Ok(result)
+    }
+
+    pub fn run_selected(
+        &self,
+        names: &[String],
+        sparse: bool,
+        live: bool,
+        reporter: &mut impl UpdateReporter,
+    ) -> Result<UpdateResult> {
+        self.run_scope(UpdateScope::Selected(names), sparse, live, reporter)
     }
 
     fn selected_names(
@@ -638,10 +683,13 @@ mod tests {
     struct RecordingReporter {
         phases: Vec<ProgressPhase>,
         sync_counts: Vec<usize>,
+        source_starts: Vec<usize>,
     }
 
     impl UpdateReporter for RecordingReporter {
-        fn start(&mut self, _total_skills: usize, _total_sources: usize) {}
+        fn start(&mut self, _total_skills: usize, total_sources: usize) {
+            self.source_starts.push(total_sources);
+        }
 
         fn repo_started(
             &mut self,
@@ -1003,5 +1051,71 @@ mod tests {
         assert_eq!(result.removed, vec!["deleted"]);
         assert!(!skills_dir.join("deleted").exists());
         assert!(!loaded.is_tracked("deleted"));
+    }
+    #[test]
+    fn scalable_selected_update_keeps_exact_scope_and_one_repository_group() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        let skills_dir = temp.path().join("installed");
+        let remote = format!("file://{}", repo.display());
+        let mut manifest = Manifest::new();
+        for name in ["alpha", "beta", "untouched", "new-skill"] {
+            let source = repo.join(name);
+            fs::create_dir_all(&source).unwrap();
+            fs::write(
+                source.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: new\n---\nnew body\n"),
+            )
+            .unwrap();
+            if name != "new-skill" {
+                let local = skills_dir.join(name);
+                fs::create_dir_all(&local).unwrap();
+                fs::write(local.join("SKILL.md"), "old body").unwrap();
+                manifest.add_skill(
+                    name,
+                    SkillEntry::new("owner/repo", name, &testutil::make_fm(name), "old", &remote),
+                );
+            }
+        }
+        testutil::init_git_repo(&repo);
+        let path = skills_dir.join(".skills.json");
+        manifest.save(&path).unwrap();
+        let service = UpdateService::with_manifest_path(skills_dir.clone(), path.clone());
+        let mut reporter = RecordingReporter::default();
+        let result = service
+            .run_selected(
+                &["beta".into(), "alpha".into(), "alpha".into()],
+                false,
+                false,
+                &mut reporter,
+            )
+            .unwrap();
+        let mut names = updated_names(&result);
+        names.sort();
+        assert_eq!(names, vec!["alpha", "beta"]);
+        assert_eq!(reporter.source_starts, vec![1]);
+        assert_eq!(
+            fs::read_to_string(skills_dir.join("untouched/SKILL.md")).unwrap(),
+            "old body"
+        );
+        assert!(!skills_dir.join("new-skill").exists());
+        let before = fs::read(&path).unwrap();
+        assert!(
+            service
+                .run_selected(
+                    &["alpha".into(), "unknown".into()],
+                    false,
+                    false,
+                    &mut reporter
+                )
+                .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert!(
+            service
+                .run_selected(&[], false, false, &mut reporter)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

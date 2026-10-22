@@ -43,22 +43,62 @@ tome add owner/repo@skill-name
 tome add file:///path/to/SKILL.md
 
 # List installed skills
-tome list
+tome list                  # searchable browser in a terminal
+tome list --plain          # full table, without the browser
 tome list --json
 
 # Update all tracked skills
 tome update
 tome update my-skill        # targeted update
+tome update --interactive  # choose exact skills; no new skills are installed
 
-# Remove a skill
+# Select skills to remove, then review and confirm with y
+tome remove
 tome remove my-skill
+tome remove owner/repo --force  # explicit target; skip confirmation
 
 # Export an install script for all tracked skills
 tome export > install.sh
+tome export --interactive > install.sh  # export only selected skills
 ```
 
 Skills are installed to `~/.agents/skills/` by default. Override with
 `SKILLS_DIR=/path/to/skills` or `tome --dir /path/to/skills <command>`.
+
+## Working with large lists
+
+The same searchable, paged list is used for installation, inventory, removal,
+interactive update/export, and long operation reports. Lists sort by source and
+skill name. The focused skill shows its source, version, status and description;
+press `d` for full, scrollable details.
+
+| Key | Action |
+| --- | --- |
+| Arrows / `j` / `k` | Move through skills |
+| Page Up / Page Down / Home / End | Jump through the list or details |
+| `/` | Search names, descriptions, sources, versions and statuses; all words must match |
+| Enter / Esc while searching | Leave search, keeping the filter |
+| Ctrl-U while searching | Clear the query |
+| Space | Toggle the focused skill in a picker |
+| `a` / `n` | Select / clear every matching skill, including matches outside the viewport |
+| Tab | Show only selected skills; hidden selections are retained and counted |
+| Enter in a picker | Continue with the selected skills |
+| `d`, then Esc | Open full details, then return |
+| `q` / Esc / Ctrl-C | Close or cancel; Ctrl-C also works during search |
+
+Removal starts with nothing selected. Its review lists the entire deletion set;
+searching the review does not narrow that set. Only `y` confirms deletion. Enter
+cancels, and `b` returns to selection with the choices preserved. `--force`
+requires an explicit skill, source or URL. Closing a report leaves the completed
+operation intact.
+
+Automatic browsing requires terminal stdin, stdout and stderr and a usable
+`TERM` (not `dumb`). Pipes retain complete, line-based output; `list --plain` and
+`list --json` always bypass the browser. Explicit `--interactive` update/export
+requires terminal stdin and stderr and fails with an actionable error otherwise.
+The picker renders on stderr, so redirected export stdout contains only commands.
+`tome remove` without a target also requires an interactive terminal. Resize the
+terminal to at least 24 columns and 11 rows to use list actions.
 
 ## Documentation
 

@@ -36,7 +36,13 @@ pub fn execute(
     let result = service.install(source, path_override, force, sparse, None)?;
 
     // Output formatting (only output, no business logic)
-    print_install_result(&result);
+    let mut report = crate::output::install_report(&result);
+    for row in &mut report {
+        row.source = parsed.label();
+    }
+    if !crate::output::browse_report("Install results", &mut report)? {
+        print_install_result(&result);
+    }
 
     Ok(())
 }

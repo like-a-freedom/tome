@@ -4,14 +4,47 @@ use std::path::Path;
 use crate::core::manifest::Manifest;
 
 pub fn execute(_skills_dir: &Path, manifest_path: &Path) -> Result<()> {
-    let output = execute_to_string(manifest_path)?;
+    execute_options(false, _skills_dir, manifest_path)
+}
+
+pub fn execute_options(interactive: bool, _skills_dir: &Path, manifest_path: &Path) -> Result<()> {
+    let selected = if interactive {
+        crate::tui::require_interactive()?;
+        let manifest = Manifest::load(manifest_path)?;
+        let mut rows = super::list::manifest_rows(&manifest);
+        if rows.is_empty() {
+            return Ok(());
+        }
+        if crate::tui::run_list(
+            "Select skills to export",
+            &mut rows,
+            crate::tui::ListMode::Select,
+        )? != crate::tui::ListOutcome::Accepted
+        {
+            return Ok(());
+        }
+        Some(
+            rows.into_iter()
+                .filter(|r| r.selected)
+                .map(|r| r.name)
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        None
+    };
+    let output = execute_selected_to_string(manifest_path, selected.as_deref())?;
     if !output.is_empty() {
         print!("{}", output);
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn execute_to_string(manifest_path: &Path) -> Result<String> {
+    execute_selected_to_string(manifest_path, None)
+}
+
+fn execute_selected_to_string(manifest_path: &Path, selected: Option<&[String]>) -> Result<String> {
     if !manifest_path.exists() {
         return Ok(String::new());
     }
@@ -23,6 +56,9 @@ fn execute_to_string(manifest_path: &Path) -> Result<String> {
     }
 
     let mut entries: Vec<_> = manifest.all_skills();
+    if let Some(selected) = selected {
+        entries.retain(|(name, _)| selected.iter().any(|s| s == name));
+    }
     entries.sort_by_key(|(name, _)| (*name).to_string());
 
     let mut lines: Vec<String> = Vec::new();
@@ -153,5 +189,29 @@ mod tests {
 
         let result = execute(&skills_dir, &manifest_path);
         assert!(result.is_ok());
+    }
+    #[test]
+    fn scalable_export_exact_selection_does_not_expand_repository() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("manifest.json");
+        let mut manifest = Manifest::new();
+        for name in ["alpha", "beta"] {
+            manifest.add_skill(
+                name,
+                SkillEntry::new(
+                    &format!("owner/repo@{name}"),
+                    &format!("skills/{name}"),
+                    &crate::testutil::make_fm(name),
+                    "abc",
+                    "https://github.com/owner/repo.git",
+                ),
+            );
+        }
+        manifest.save(&path).unwrap();
+        assert_eq!(
+            execute_selected_to_string(&path, Some(&["beta".into()])).unwrap(),
+            "tome add owner/repo@beta --path skills/beta\n"
+        );
+        assert_eq!(execute_selected_to_string(&path, Some(&[])).unwrap(), "");
     }
 }

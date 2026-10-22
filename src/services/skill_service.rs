@@ -120,7 +120,7 @@ impl SkillService {
                     }
                     None => match picker {
                         Some(pick) => pick(&skills)?,
-                        None => select_skills(&skills)?,
+                        None => select_skills(&skills, &label)?,
                     },
                 },
             };
@@ -227,9 +227,26 @@ impl SkillService {
         Ok(names)
     }
 
+    /// Remove exact manifest keys, validating the entire selection before mutation.
+    pub fn remove_selected(&self, names: &[String]) -> Result<Vec<String>> {
+        let mut exact = names.to_vec();
+        exact.sort();
+        exact.dedup();
+        self.remove_names(&exact)?;
+        Ok(exact)
+    }
+
     fn remove_names(&self, names: &[String]) -> Result<()> {
         let manifest_path = &self.config.manifest_path;
         let mut manifest = crate::core::manifest::Manifest::load(manifest_path)?;
+        for name in names {
+            if !manifest.is_tracked(name) {
+                anyhow::bail!("Skill '{}' is not installed by tome", name);
+            }
+        }
+        if names.is_empty() {
+            return Ok(());
+        }
         for name in names {
             let skill_dir = self.config.skills_dir.join(name);
             crate::fs::remove_skill_dir(&skill_dir)?;
@@ -239,14 +256,27 @@ impl SkillService {
     }
 }
 
-fn select_skills(skills: &[repo_detect::SkillInfo]) -> Result<Vec<repo_detect::SkillInfo>> {
+fn select_skills(
+    skills: &[repo_detect::SkillInfo],
+    source: &str,
+) -> Result<Vec<repo_detect::SkillInfo>> {
     if skills.len() == 1 {
         return Ok(vec![skills[0].clone()]);
     }
 
     let mut items = build_select_items(skills);
 
-    crate::tui::multi_select(&mut items)?;
+    for item in &mut items {
+        item.source = source.into();
+    }
+    if crate::tui::run_list(
+        "Select skills to install",
+        &mut items,
+        crate::tui::ListMode::Select,
+    )? != crate::tui::ListOutcome::Accepted
+    {
+        anyhow::bail!("Selection cancelled");
+    }
 
     let selected: Vec<repo_detect::SkillInfo> = skills
         .iter()
@@ -268,14 +298,15 @@ fn default_selected(len: usize) -> bool {
     len <= LARGE_LIST_THRESHOLD
 }
 
-fn build_select_items(skills: &[repo_detect::SkillInfo]) -> Vec<crate::tui::SelectItem> {
+fn build_select_items(skills: &[repo_detect::SkillInfo]) -> Vec<crate::tui::ListItem> {
     let preselected = default_selected(skills.len());
     skills
         .iter()
-        .map(|skill| crate::tui::SelectItem {
+        .map(|skill| crate::tui::ListItem {
             name: skill.name.clone(),
             description: skill.description.clone().unwrap_or_default(),
             selected: preselected,
+            ..crate::tui::ListItem::default()
         })
         .collect()
 }
@@ -440,5 +471,32 @@ mod tests {
         };
         let items = super::build_select_items(std::slice::from_ref(&skill));
         assert_eq!(items[0].description, "");
+    }
+    #[test]
+    fn scalable_removal_validates_entire_exact_batch_before_deletion() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        std::fs::create_dir_all(skills_dir.join("keep")).unwrap();
+        let path = skills_dir.join(".skills.json");
+        let mut manifest = Manifest::new();
+        manifest.add_skill(
+            "keep",
+            crate::core::manifest::SkillEntry::new(
+                "owner/repo",
+                "",
+                &crate::testutil::make_fm("keep"),
+                "abc",
+                "file:///repo",
+            ),
+        );
+        manifest.save(&path).unwrap();
+        let service = SkillService::with_manifest_path(skills_dir.clone(), path.clone());
+        assert!(
+            service
+                .remove_names(&["keep".into(), "unknown".into()])
+                .is_err()
+        );
+        assert!(skills_dir.join("keep").exists());
+        assert!(Manifest::load(&path).unwrap().is_tracked("keep"));
     }
 }

@@ -1,47 +1,109 @@
-use anyhow::{Result, bail};
+use crate::style::display_width;
+use anyhow::{Context, Result, bail};
 use crossterm::{
     Command,
-    cursor::MoveTo,
+    cursor::{Hide, MoveTo, Show},
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     style::{Attribute, SetAttribute},
-    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode, size},
+    terminal::{
+        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode, size,
+    },
 };
-use std::io::{self, Write};
-
-use crate::style::display_width;
-
-struct RawModeGuard;
-
-impl RawModeGuard {
-    fn enable() -> Result<Self> {
-        enable_raw_mode()?;
-        Ok(Self)
-    }
-}
-
-impl Drop for RawModeGuard {
-    fn drop(&mut self) {
-        let _ = disable_raw_mode();
-    }
-}
+use std::io::{self, IsTerminal, Write};
 
 const DEFAULT_NAME_WIDTH: usize = 20;
 const MAX_NAME_WIDTH: usize = 30;
 const NUM_COL_WIDTH: usize = 3;
 const MENU_FALLBACK_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
-const MENU_PREFIX_WIDTH: usize = 14;
-const MIN_DESC_WIDTH: usize = 15;
-const MAX_DESC_WIDTH: usize = 60;
-
-/// Max characters of the filter query echoed on the filter line (keeps the
-/// line within an 80-column terminal together with the prefix and caret).
+const CHROME_ROWS: u16 = 10;
 const MAX_QUERY_DISPLAY: usize = 40;
+const MIN_COLS: u16 = 24;
+const DETAIL_CHROME: usize = 6;
+const WIDE_COLS: usize = 72;
+const ROW_PREFIX: usize = 6;
 
 pub struct SelectItem {
     pub name: String,
     pub description: String,
     pub selected: bool,
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct ListItem {
+    pub name: String,
+    pub description: String,
+    pub source: String,
+    pub version: String,
+    pub status: String,
+    pub selected: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ListMode {
+    Browse,
+    Select,
+    Review,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ListOutcome {
+    Accepted,
+    Cancelled,
+    Back,
+}
+
+trait Entry {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn selected(&self) -> bool;
+    fn set_selected(&mut self, selected: bool);
+    fn source(&self) -> &str {
+        ""
+    }
+    fn version(&self) -> &str {
+        ""
+    }
+    fn status(&self) -> &str {
+        ""
+    }
+}
+impl Entry for SelectItem {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn selected(&self) -> bool {
+        self.selected
+    }
+    fn set_selected(&mut self, selected: bool) {
+        self.selected = selected;
+    }
+}
+impl Entry for ListItem {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn selected(&self) -> bool {
+        self.selected
+    }
+    fn set_selected(&mut self, selected: bool) {
+        self.selected = selected;
+    }
+    fn source(&self) -> &str {
+        &self.source
+    }
+    fn version(&self) -> &str {
+        &self.version
+    }
+    fn status(&self) -> &str {
+        &self.status
+    }
 }
 
 pub fn calc_name_width(items: &[SelectItem]) -> usize {
@@ -59,35 +121,43 @@ struct FilterState {
     focused: bool,
 }
 
-fn apply_filter(items: &[SelectItem], query: &str) -> Vec<usize> {
-    let needle = query.to_lowercase();
-    if needle.is_empty() {
-        return (0..items.len()).collect();
-    }
+fn apply_filter<T: Entry>(items: &[T], query: &str) -> Vec<usize> {
+    let query = query.to_lowercase();
     items
         .iter()
         .enumerate()
         .filter(|(_, item)| {
-            item.name.to_lowercase().contains(&needle)
-                || item.description.to_lowercase().contains(&needle)
+            let fields = [
+                item.name(),
+                item.description(),
+                item.source(),
+                item.version(),
+                item.status(),
+            ]
+            .map(str::to_lowercase);
+            query
+                .split_whitespace()
+                .all(|word| fields.iter().any(|field| field.contains(word)))
         })
         .map(|(index, _)| index)
         .collect()
 }
 
-const CHROME_ROWS: u16 = 8;
-const MIN_VIEW_HEIGHT: usize = 5;
-
-/// View state of the selection dialog. `cursor`/`offset` index into
-/// `filtered` (never into `items`); selection flags stay on `SelectItem`.
 struct TuiState {
     filtered: Vec<usize>,
     cursor: usize,
     offset: usize,
     height: usize,
     filter: FilterState,
+    selected_only: bool,
+    mode: ListMode,
+    title: String,
+    cols: u16,
+    rows: u16,
+    details: bool,
+    detail_offset: usize,
+    back: bool,
 }
-
 impl TuiState {
     fn new(item_count: usize, height: usize) -> Self {
         Self {
@@ -96,53 +166,74 @@ impl TuiState {
             offset: 0,
             height,
             filter: FilterState::default(),
+            selected_only: false,
+            mode: ListMode::Select,
+            title: "Select skills to install".into(),
+            cols: MENU_FALLBACK_COLS,
+            rows: (height as u16).saturating_add(CHROME_ROWS),
+            details: false,
+            detail_offset: 0,
+            back: false,
         }
     }
-
-    /// Recompute `filtered` from the current query; reset cursor/offset.
-    fn refilter(&mut self, items: &[SelectItem]) {
-        self.filtered = apply_filter(items, &self.filter.query);
+    fn refilter<T: Entry>(&mut self, items: &[T]) {
+        self.filtered = apply_filter(items, &self.filter.query)
+            .into_iter()
+            .filter(|&i| !self.selected_only || items[i].selected())
+            .collect();
+        self.filtered.sort_by(|&a, &b| {
+            items[a]
+                .source()
+                .cmp(items[b].source())
+                .then_with(|| items[a].name().cmp(items[b].name()))
+        });
         self.cursor = 0;
         self.offset = 0;
+        self.detail_offset = 0;
     }
-
-    /// Move cursor (clamped to the filtered range) and keep it visible.
     fn goto(&mut self, pos: usize) {
         self.cursor = pos.min(self.filtered.len().saturating_sub(1));
         self.offset = clamp_view_offset(self.cursor, self.offset, self.height, self.filtered.len());
+        self.detail_offset = 0;
+    }
+    fn resize(&mut self, cols: u16, rows: u16) {
+        self.cols = cols;
+        self.rows = rows;
+        self.height = view_height(rows);
+        self.goto(self.cursor);
     }
 }
-
 fn clamp_view_offset(cursor: usize, offset: usize, height: usize, total: usize) -> usize {
     if total == 0 || height == 0 {
         return 0;
     }
-    let max_offset = total.saturating_sub(height.min(total));
-    let mut next = offset.min(max_offset);
+    let mut next = offset.min(total.saturating_sub(height));
     if cursor < next {
         next = cursor;
     }
     if cursor >= next + height {
         next = cursor + 1 - height;
     }
-    next.min(max_offset)
+    next.min(total.saturating_sub(height))
 }
-
 fn page_step(cursor: usize, total: usize, height: usize, down: bool) -> usize {
     if total == 0 {
         return 0;
     }
     if down {
-        (cursor + height).min(total - 1)
+        cursor.saturating_add(height).min(total - 1)
     } else {
         cursor.saturating_sub(height)
     }
 }
-
+pub fn list_capacity(rows: u16) -> usize {
+    view_height(rows)
+}
 fn view_height(term_rows: u16) -> usize {
-    (term_rows.saturating_sub(CHROME_ROWS) as usize).max(MIN_VIEW_HEIGHT)
+    term_rows.saturating_sub(CHROME_ROWS) as usize
 }
 
+/// Keep the legacy row formatter for callers; the interactive renderer adapts to its viewport.
 pub fn format_item(
     i: usize,
     item: &SelectItem,
@@ -152,8 +243,8 @@ pub fn format_item(
 ) -> String {
     let checkbox = if item.selected { "[x]" } else { "[ ]" };
     let num = format!("{:>width$}.", i + 1, width = NUM_COL_WIDTH);
-    let name = crate::style::truncate_with_ellipsis(&item.name, name_width);
-    let desc = crate::style::truncate_with_ellipsis(&item.description, desc_width);
+    let name = clip(&item.name, name_width);
+    let desc = clip(&item.description, desc_width);
     let marker = if focused { ">" } else { " " };
     let pad = name_width.saturating_sub(display_width(&name));
     format!(
@@ -168,182 +259,327 @@ pub fn format_item(
 }
 
 const HINTS_UNFOCUSED: &str =
-    "  Arrows/j/k: navigate | /: filter | space: toggle | a/n: all/none | Enter | q";
-const HINTS_FOCUSED: &str =
-    "  type to filter | Backspace: del | Ctrl-U: clear | Esc: done | Enter: confirm";
+    "Arrows/j/k: navigate | PgUp/PgDn | Home/End | /: filter | d: details";
+const HINTS_FOCUSED: &str = "Type to search | Ctrl-U: clear | Esc/Enter: return to list";
 
-fn build_render_buffer(items: &[SelectItem], state: &TuiState, desc_width: usize) -> String {
-    let selected_count = items.iter().filter(|i| i.selected).count();
+fn clean(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+fn clip(text: &str, width: usize) -> String {
+    crate::style::truncate_with_ellipsis(&clean(text), width)
+}
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut used = 0;
+    for c in clean(text).chars() {
+        let cells = crate::style::char_display_width(c);
+        if used + cells > width && !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+            used = 0;
+        }
+        line.push(c);
+        used += cells;
+    }
+    lines.push(line);
+    lines
+}
+fn detail_text<T: Entry>(item: &T) -> String {
+    format!(
+        "Name: {}  Source: {}  Version: {}  Status: {}  Description: {}",
+        item.name(),
+        item.source(),
+        item.version(),
+        item.status(),
+        item.description()
+    )
+}
 
+fn build_render_buffer<T: Entry>(items: &[T], state: &TuiState, _desc_width: usize) -> String {
+    let width = usize::from(state.cols.saturating_sub(1));
     let mut buf = String::new();
     Clear(ClearType::All)
         .write_ansi(&mut buf)
-        .expect("writing to String is infallible");
-    MoveTo(0, 0)
-        .write_ansi(&mut buf)
-        .expect("writing to String is infallible");
-    buf.push_str(&format!(
-        "Select skills to install ({}/{}):\r\n",
-        selected_count,
+        .expect("String write");
+    MoveTo(0, 0).write_ansi(&mut buf).expect("String write");
+    if state.rows <= CHROME_ROWS || state.cols < MIN_COLS {
+        buf.push_str(&clip("Resize terminal; Ctrl-C to cancel", width));
+        return buf;
+    }
+    let selected = items.iter().filter(|i| i.selected()).count();
+    let visible_selected = state
+        .filtered
+        .iter()
+        .filter(|&&i| items[i].selected())
+        .count();
+    let mut lines = Vec::new();
+    lines.push(if state.mode == ListMode::Select {
+        format!("{} ({}/{}):", state.title, selected, items.len())
+    } else {
+        format!("{} ({} skills)", state.title, items.len())
+    });
+    lines.push(if state.mode == ListMode::Select {
+        format!(
+            "{}/{} | {} selected | {} hidden{}",
+            state.filtered.len(),
+            items.len(),
+            selected,
+            selected - visible_selected,
+            if state.selected_only {
+                " | selected only"
+            } else {
+                ""
+            }
+        )
+    } else {
+        format!("{} matches | {} total", state.filtered.len(), items.len())
+    });
+    lines.push(if state.filter.focused {
+        HINTS_FOCUSED.into()
+    } else if width < WIDE_COLS {
+        "jk/Up/Dn PgUp/Dn /search d/info".into()
+    } else {
+        HINTS_UNFOCUSED.into()
+    });
+    lines.push(match state.mode {
+        ListMode::Browse => "Enter/q/Esc: close".into(),
+        ListMode::Select if width < WIDE_COLS => "Space toggle a/n all/none Tab selected".into(),
+        ListMode::Select => {
+            "Space: toggle | a/n: matches all/none | Tab: selected | Enter: next".into()
+        }
+        ListMode::Review if width < WIDE_COLS => "y remove ALL | Enter/q cancel | b back".into(),
+        ListMode::Review => "y: remove ALL reviewed skills | Enter/q: cancel | b: back".into(),
+    });
+    lines.push(format!(
+        "Filter: {}{} [{}/{} shown]",
+        clip(
+            &state.filter.query,
+            MAX_QUERY_DISPLAY.min(width.saturating_sub(ROW_PREFIX))
+        ),
+        if state.filter.focused { "█" } else { "" },
+        state.filtered.len(),
         items.len()
     ));
-    if state.filter.focused {
-        buf.push_str(HINTS_FOCUSED);
+    if state.details {
+        let available = usize::from(state.rows).saturating_sub(DETAIL_CHROME);
+        let content = state
+            .filtered
+            .get(state.cursor)
+            .map(|&i| wrap(&detail_text(&items[i]), width))
+            .unwrap_or_else(|| vec!["No focused skill".into()]);
+        let offset = state
+            .detail_offset
+            .min(content.len().saturating_sub(available));
+        lines.extend(content.iter().skip(offset).take(available).cloned());
+        while lines.len() < usize::from(state.rows).saturating_sub(1) {
+            lines.push(String::new());
+        }
+        lines.push(if width < WIDE_COLS {
+            format!("Details {}/{} | Esc: back", offset + 1, content.len())
+        } else {
+            format!(
+                "Details {}/{} | arrows/PgUp/PgDn/Home/End | Esc: back",
+                offset + 1,
+                content.len()
+            )
+        });
     } else {
-        buf.push_str(HINTS_UNFOCUSED);
-    }
-    buf.push_str("\r\n\r\n");
-    buf.push_str("Filter: ");
-    buf.push_str(&crate::style::truncate_with_ellipsis(
-        &state.filter.query,
-        MAX_QUERY_DISPLAY,
-    ));
-    if state.filter.focused {
-        buf.push('█');
-    }
-    if !state.filter.query.is_empty() {
-        buf.push_str(&format!(
-            " [{}/{} shown]",
-            state.filtered.len(),
-            items.len()
-        ));
-    }
-    buf.push_str("\r\n");
-
-    let name_width = calc_name_width(items);
-    if state.filtered.is_empty() {
-        buf.push_str(&format!(
-            "  No matches for \"{}\"\r\n",
-            crate::style::truncate_with_ellipsis(&state.filter.query, MAX_QUERY_DISPLAY)
-        ));
-    } else {
-        if state.offset > 0 {
-            buf.push_str(&format!("  ↑ {} more above\r\n", state.offset));
+        for position in state.offset..state.offset + state.height {
+            let row = if let Some(&i) = state.filtered.get(position) {
+                let item = &items[i];
+                let marker = if position == state.cursor { ">" } else { " " };
+                let check = if state.mode == ListMode::Select {
+                    if item.selected() { "[x] " } else { "[ ] " }
+                } else {
+                    ""
+                };
+                let name_width = if width >= WIDE_COLS {
+                    MAX_NAME_WIDTH.min(width / 2)
+                } else {
+                    width.saturating_sub(ROW_PREFIX)
+                };
+                let name = clip(item.name(), name_width);
+                if width >= WIDE_COLS {
+                    let pad = name_width.saturating_sub(display_width(&name));
+                    format!(
+                        "{marker} {check}{name}{}  {} | {}",
+                        " ".repeat(pad),
+                        item.status(),
+                        if item.source().is_empty() {
+                            item.description()
+                        } else {
+                            item.source()
+                        }
+                    )
+                } else {
+                    format!("{marker} {check}{name}")
+                }
+            } else if position == state.offset && state.filtered.is_empty() {
+                if state.selected_only && state.filter.query.is_empty() {
+                    "No skills selected. Tab: all skills".into()
+                } else {
+                    format!(
+                        "No matches for \"{}\"; / then Ctrl-U: clear",
+                        state.filter.query
+                    )
+                }
+            } else {
+                String::new()
+            };
+            lines.push(row);
         }
         let end = (state.offset + state.height).min(state.filtered.len());
-        for (visible, &original) in state.filtered[state.offset..end].iter().enumerate() {
-            let focused = state.offset + visible == state.cursor;
-            if focused {
-                SetAttribute(Attribute::Bold)
-                    .write_ansi(&mut buf)
-                    .expect("writing to String is infallible");
-            }
-            buf.push_str(&format_item(
-                original,
-                &items[original],
-                name_width,
-                desc_width,
-                focused,
-            ));
-            if focused {
-                SetAttribute(Attribute::Reset)
-                    .write_ansi(&mut buf)
-                    .expect("writing to String is infallible");
-            }
-            buf.push_str("\r\n");
+        let mut range = format!(
+            "{}-{} of {}",
+            if end == 0 { 0 } else { state.offset + 1 },
+            end,
+            state.filtered.len()
+        );
+        if state.offset > 0 {
+            range.push_str(&format!(" | {} more above", state.offset));
         }
         if end < state.filtered.len() {
-            buf.push_str(&format!(
-                "  ↓ {} more below\r\n",
-                state.filtered.len() - end
+            range.push_str(&format!(" | {} more below", state.filtered.len() - end));
+        }
+        lines.push(range);
+        if let Some(&i) = state.filtered.get(state.cursor) {
+            let item = &items[i];
+            lines.push(format!("{}  [d: full details]", item.name()));
+            lines.push(format!(
+                "{} | version {} | {}",
+                item.source(),
+                item.version(),
+                item.status()
             ));
+            lines.push(item.description().into());
+        } else {
+            lines.extend([String::new(), String::new(), String::new()]);
+        }
+        lines.push(match state.mode {
+            ListMode::Select if selected == 0 => {
+                "Select at least one skill, or press q to cancel".into()
+            }
+            ListMode::Select => format!(
+                "Press Enter to {} {} skill(s)",
+                if state.title == "Select skills to install" {
+                    "install"
+                } else {
+                    "continue with"
+                },
+                selected
+            ),
+            ListMode::Browse => "Browse skills | /: search | d: full details | q: close".into(),
+            ListMode::Review => format!(
+                "Remove {} reviewed skill(s)? y confirms; default: No",
+                items.len()
+            ),
+        });
+    }
+    for (i, line) in lines.iter().take(usize::from(state.rows)).enumerate() {
+        if i > 0 {
+            buf.push_str("\r\n");
+        }
+        let focused_row = !state.details
+            && i == 5 + state.cursor.saturating_sub(state.offset)
+            && state.filtered.get(state.cursor).is_some();
+        if focused_row {
+            SetAttribute(Attribute::Bold)
+                .write_ansi(&mut buf)
+                .expect("String write");
+        }
+        buf.push_str(&clip(line, width));
+        if focused_row {
+            SetAttribute(Attribute::Reset)
+                .write_ansi(&mut buf)
+                .expect("String write");
         }
     }
-
-    buf.push_str("\r\n");
-    if selected_count > 0 {
-        buf.push_str(&format!(
-            "Press Enter to install {} skill(s)\r\n",
-            selected_count
-        ));
-    } else {
-        buf.push_str("Select at least one skill, or press q to cancel\r\n");
-    }
-
     buf
 }
 
-fn render_all(
-    items: &[SelectItem],
-    state: &TuiState,
-    desc_width: usize,
-    stdout: &mut io::Stdout,
-) -> Result<()> {
-    let buf = build_render_buffer(items, state, desc_width);
-    write!(stdout, "{}", buf)?;
-    stdout.flush()?;
-    Ok(())
-}
-
-pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
-    if items.is_empty() {
-        bail!("No items to select");
-    }
-
-    let _raw = RawModeGuard::enable()?;
-    let mut stdout = io::stdout();
-
-    let (cols, rows) = size().unwrap_or((MENU_FALLBACK_COLS, DEFAULT_ROWS));
-    let name_width = calc_name_width(items);
-    let desc_width = (cols as usize)
-        .saturating_sub(MENU_PREFIX_WIDTH)
-        .saturating_sub(name_width)
-        .clamp(MIN_DESC_WIDTH, MAX_DESC_WIDTH);
-    let mut state = TuiState::new(items.len(), view_height(rows));
-
-    (|| -> Result<()> {
-        loop {
-            render_all(items, &state, desc_width, &mut stdout)?;
-
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Release {
-                    continue;
-                }
-                if let Some(result) = handle_key(key, items, &mut state) {
-                    return result;
-                }
-            }
-        }
-    })()
-}
-
-/// Shared cursor movement for both modes. Returns true when handled.
 fn apply_navigation(code: KeyCode, state: &mut TuiState) -> bool {
     match code {
         KeyCode::Up => state.goto(state.cursor.saturating_sub(1)),
-        KeyCode::Down => state.goto(state.cursor + 1),
-        KeyCode::PageUp => {
-            state.goto(page_step(
-                state.cursor,
-                state.filtered.len(),
-                state.height,
-                false,
-            ));
-        }
-        KeyCode::PageDown => {
-            state.goto(page_step(
-                state.cursor,
-                state.filtered.len(),
-                state.height,
-                true,
-            ));
-        }
+        KeyCode::Down => state.goto(state.cursor.saturating_add(1)),
+        KeyCode::PageUp => state.goto(page_step(
+            state.cursor,
+            state.filtered.len(),
+            state.height,
+            false,
+        )),
+        KeyCode::PageDown => state.goto(page_step(
+            state.cursor,
+            state.filtered.len(),
+            state.height,
+            true,
+        )),
         KeyCode::Home => state.goto(0),
         KeyCode::End => state.goto(usize::MAX),
         _ => return false,
-    }
+    };
     true
 }
-
-/// Pure key-policy for the selection loop. Returns `Some(Ok(()))` on confirm,
-/// `Some(Err(..))` on cancel, and `None` to keep looping.
-fn handle_key(
+fn handle_key<T: Entry>(
     event: KeyEvent,
-    items: &mut [SelectItem],
+    items: &mut [T],
     state: &mut TuiState,
 ) -> Option<Result<()>> {
+    if event.code == KeyCode::Char('c') && event.modifiers.contains(KeyModifiers::CONTROL) {
+        return Some(Err(anyhow::anyhow!("Selection cancelled")));
+    }
+    if state.cols < MIN_COLS || state.rows <= CHROME_ROWS {
+        return match event.code {
+            KeyCode::Esc | KeyCode::Char('q') => Some(Err(anyhow::anyhow!("Selection cancelled"))),
+            _ => None,
+        };
+    }
+    if state.details {
+        match event.code {
+            KeyCode::Esc | KeyCode::Char('q' | 'd') => state.details = false,
+            KeyCode::Down | KeyCode::Char('j') => {
+                state.detail_offset = state.detail_offset.saturating_add(1)
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.detail_offset = state.detail_offset.saturating_sub(1)
+            }
+            KeyCode::PageDown => {
+                state.detail_offset = state.detail_offset.saturating_add(state.height)
+            }
+            KeyCode::PageUp => {
+                state.detail_offset = state.detail_offset.saturating_sub(state.height)
+            }
+            KeyCode::Home => state.detail_offset = 0,
+            KeyCode::End => state.detail_offset = usize::MAX,
+            _ => (),
+        }
+        if let Some(&i) = state.filtered.get(state.cursor) {
+            let count = wrap(
+                &detail_text(&items[i]),
+                usize::from(state.cols.saturating_sub(1)),
+            )
+            .len();
+            state.detail_offset = state
+                .detail_offset
+                .min(count.saturating_sub(usize::from(state.rows).saturating_sub(DETAIL_CHROME)));
+        }
+        return None;
+    }
     if state.filter.focused {
         return handle_filter_key(event, items, state);
+    }
+    if event
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        return None;
     }
     if apply_navigation(event.code, state) {
         return None;
@@ -354,72 +590,172 @@ fn handle_key(
             state.filter.focused = true;
             None
         }
+        KeyCode::Char('d') => {
+            state.details = true;
+            state.detail_offset = 0;
+            None
+        }
         KeyCode::Char('k') => {
             state.goto(state.cursor.saturating_sub(1));
             None
         }
         KeyCode::Char('j') => {
-            state.goto(state.cursor + 1);
+            state.goto(state.cursor.saturating_add(1));
             None
         }
-        KeyCode::Char(' ') => {
-            if let Some(&index) = state.filtered.get(state.cursor) {
-                items[index].selected = !items[index].selected;
+        KeyCode::Tab if state.mode == ListMode::Select => {
+            state.selected_only = !state.selected_only;
+            state.refilter(items);
+            None
+        }
+        KeyCode::Char(' ') if state.mode == ListMode::Select => {
+            if let Some(&i) = state.filtered.get(state.cursor) {
+                items[i].set_selected(!items[i].selected());
+            }
+            if state.selected_only {
+                state.refilter(items);
             }
             None
         }
-        KeyCode::Char('a') | KeyCode::Char('A') => {
-            let all_selected = state.filtered.iter().all(|&i| items[i].selected);
-            for &i in state.filtered.iter() {
-                items[i].selected = !all_selected;
+        KeyCode::Char('a' | 'A' | 'n' | 'N') if state.mode == ListMode::Select => {
+            let select = matches!(event.code, KeyCode::Char('a' | 'A'));
+            for &i in &state.filtered {
+                items[i].set_selected(select);
+            }
+            if state.selected_only {
+                state.refilter(items);
             }
             None
         }
-        KeyCode::Char('n') | KeyCode::Char('N') => {
-            for &i in state.filtered.iter() {
-                items[i].selected = false;
-            }
-            None
+        KeyCode::Char('b') if state.mode == ListMode::Review => {
+            state.back = true;
+            Some(Ok(()))
         }
-        KeyCode::Enter if items.iter().any(|i| i.selected) => Some(Ok(())),
+        KeyCode::Char('y') if state.mode == ListMode::Review => Some(Ok(())),
+        KeyCode::Enter if state.mode == ListMode::Review => {
+            Some(Err(anyhow::anyhow!("Removal cancelled")))
+        }
+        KeyCode::Enter if state.mode == ListMode::Browse || items.iter().any(Entry::selected) => {
+            Some(Ok(()))
+        }
         _ => None,
     }
 }
-
-fn handle_filter_key(
+fn handle_filter_key<T: Entry>(
     event: KeyEvent,
-    items: &mut [SelectItem],
+    items: &mut [T],
     state: &mut TuiState,
 ) -> Option<Result<()>> {
     if apply_navigation(event.code, state) {
         return None;
     }
     match event.code {
-        KeyCode::Esc => {
-            state.filter.focused = false;
-            None
-        }
+        KeyCode::Esc | KeyCode::Enter => state.filter.focused = false,
         KeyCode::Backspace => {
             state.filter.query.pop();
             state.refilter(items);
-            None
         }
         KeyCode::Char('u') if event.modifiers.contains(KeyModifiers::CONTROL) => {
             state.filter.query.clear();
             state.refilter(items);
-            None
         }
         KeyCode::Char(c)
-            if !event.modifiers.contains(KeyModifiers::CONTROL)
-                && !event.modifiers.contains(KeyModifiers::ALT) =>
+            if !event
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
         {
             state.filter.query.push(c);
             state.refilter(items);
-            None
         }
-        KeyCode::Enter if items.iter().any(|i| i.selected) => Some(Ok(())),
-        _ => None,
+        _ => (),
+    };
+    None
+}
+
+pub fn interactive_available() -> bool {
+    io::stdin().is_terminal()
+        && io::stderr().is_terminal()
+        && std::env::var("TERM").is_ok_and(|t| t != "dumb")
+}
+pub fn automatic_available() -> bool {
+    interactive_available() && io::stdout().is_terminal()
+}
+pub fn require_interactive() -> Result<()> {
+    if !interactive_available() {
+        bail!(
+            "Interactive selection requires a terminal on stdin/stderr and TERM other than dumb; provide an explicit skill name instead"
+        );
     }
+    Ok(())
+}
+struct TerminalSession;
+impl TerminalSession {
+    fn enter() -> Result<Self> {
+        enable_raw_mode().context("Failed to enable terminal raw mode")?;
+        let guard = Self;
+        crossterm::execute!(io::stderr(), EnterAlternateScreen, Hide)
+            .context("Failed to enter skill browser")?;
+        Ok(guard)
+    }
+}
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        let _ = crossterm::execute!(
+            io::stderr(),
+            SetAttribute(Attribute::Reset),
+            Show,
+            LeaveAlternateScreen
+        );
+        let _ = disable_raw_mode();
+    }
+}
+fn run_loop<T: Entry>(title: &str, items: &mut [T], mode: ListMode) -> Result<ListOutcome> {
+    require_interactive()?;
+    let _session = TerminalSession::enter()?;
+    let (cols, rows) = size().unwrap_or((MENU_FALLBACK_COLS, DEFAULT_ROWS));
+    let mut state = TuiState::new(items.len(), view_height(rows));
+    state.resize(cols, rows);
+    state.title = title.into();
+    state.mode = mode;
+    state.filtered.sort_by(|&a, &b| {
+        items[a]
+            .source()
+            .cmp(items[b].source())
+            .then_with(|| items[a].name().cmp(items[b].name()))
+    });
+    let mut stderr = io::stderr();
+    loop {
+        write!(stderr, "{}", build_render_buffer(items, &state, 0))
+            .context("Failed to draw skill browser")?;
+        stderr.flush().context("Failed to flush skill browser")?;
+        match event::read().context("Failed to read terminal event")? {
+            Event::Resize(cols, rows) => state.resize(cols, rows),
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if let Some(result) = handle_key(key, items, &mut state) {
+                    return Ok(if result.is_err() {
+                        ListOutcome::Cancelled
+                    } else if state.back {
+                        ListOutcome::Back
+                    } else {
+                        ListOutcome::Accepted
+                    });
+                }
+            }
+            _ => (),
+        }
+    }
+}
+pub fn run_list(title: &str, items: &mut [ListItem], mode: ListMode) -> Result<ListOutcome> {
+    run_loop(title, items, mode)
+}
+pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
+    if items.is_empty() {
+        bail!("No items to select");
+    }
+    if run_loop("Select skills to install", items, ListMode::Select)? != ListOutcome::Accepted {
+        bail!("Selection cancelled");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1055,12 +1391,14 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_key_a_toggles_all() {
+    fn test_handle_key_a_selects_all_and_n_clears() {
         let mut items = two_items();
         let mut state = TuiState::new(items.len(), 10);
         handle_key(key(KeyCode::Char('a')), &mut items, &mut state);
         assert!(items.iter().all(|i| i.selected));
         handle_key(key(KeyCode::Char('A')), &mut items, &mut state);
+        assert!(items.iter().all(|i| i.selected));
+        handle_key(key(KeyCode::Char('n')), &mut items, &mut state);
         assert!(items.iter().all(|i| !i.selected));
     }
 
@@ -1175,7 +1513,7 @@ mod tests {
         state.refilter(&items);
         handle_key(key_ctrl('u'), &mut items, &mut state);
         assert!(state.filter.query.is_empty());
-        assert_eq!(state.filtered, vec![0, 1, 2]);
+        assert_eq!(state.filtered, vec![2, 0, 1]);
     }
 
     #[test]
@@ -1300,7 +1638,7 @@ mod tests {
         let a = build_render_buffer(&items, &plain, 20);
         let b = build_render_buffer(&items, &focused_state, 20);
         assert!(a.contains("/: filter"));
-        assert!(b.contains("Esc: done"));
+        assert!(b.contains("Esc/Enter: return to list"));
         assert!(!b.contains("/: filter"));
     }
 
@@ -1444,7 +1782,7 @@ mod tests {
     #[test]
     fn test_view_height_subtracts_chrome() {
         assert_eq!(view_height(24), 24 - CHROME_ROWS as usize);
-        assert_eq!(view_height(5), MIN_VIEW_HEIGHT);
+        assert_eq!(view_height(5), 0);
     }
 
     #[test]
@@ -1495,5 +1833,272 @@ mod tests {
         assert_eq!(state.filtered, vec![0]);
         assert_eq!(state.cursor, 0);
         assert_eq!(state.offset, 0);
+    }
+    #[test]
+    fn scalable_enter_leaves_search_without_accepting() {
+        let mut items = two_items();
+        items[0].selected = true;
+        let mut state = TuiState::new(items.len(), 10);
+        state.filter.focused = true;
+        assert!(handle_key(key(KeyCode::Enter), &mut items, &mut state).is_none());
+        assert!(!state.filter.focused);
+    }
+
+    #[test]
+    fn scalable_ctrl_c_cancels_search() {
+        let mut items = two_items();
+        let mut state = TuiState::new(items.len(), 10);
+        state.filter.focused = true;
+        assert!(matches!(
+            handle_key(key_ctrl('c'), &mut items, &mut state),
+            Some(Err(_))
+        ));
+    }
+
+    #[test]
+    fn scalable_filter_words_match_across_fields() {
+        let items = vec![make_item("rust-audit", "Security checks")];
+        assert_eq!(apply_filter(&items, "CHECKS rust"), vec![0]);
+    }
+
+    #[test]
+    fn scalable_short_terminal_does_not_overflow() {
+        assert_eq!(view_height(3), 0);
+    }
+
+    #[test]
+    fn scalable_tab_reviews_selection_without_losing_hidden_choices() {
+        let mut items: Vec<_> = (0..1000)
+            .map(|i| make_item(&format!("skill-{i:04}"), "description"))
+            .collect();
+        items[990].selected = true;
+        items[2].selected = true;
+        let mut state = TuiState::new(items.len(), 10);
+        handle_key(key(KeyCode::Tab), &mut items, &mut state);
+        assert_eq!(state.filtered, vec![2, 990]);
+        state.filter.query = "0990".into();
+        state.refilter(&items);
+        assert_eq!(state.filtered, vec![990]);
+        let buf = build_render_buffer(&items, &state, 40);
+        assert!(buf.contains("1 hidden"));
+        handle_key(key(KeyCode::Char('n')), &mut items, &mut state);
+        assert!(items[2].selected);
+        assert!(!items[990].selected);
+        assert!(state.filtered.is_empty());
+    }
+
+    fn plain_frame(frame: &str) -> String {
+        let mut plain = String::new();
+        let mut chars = frame.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                if chars.next() == Some('[') {
+                    for a in chars.by_ref() {
+                        if a.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                plain.push(c);
+            }
+        }
+        plain
+    }
+
+    #[test]
+    fn scalable_renderer_fits_height_and_sanitizes_metadata() {
+        let items: Vec<_> = (0..1000)
+            .map(|i| make_item(&format!("skill-{i}"), "bad\nline\r\t\x1b[31mtext"))
+            .collect();
+        let state = TuiState::new(items.len(), view_height(24));
+        let frame = build_render_buffer(&items, &state, 40);
+        assert!(!frame.contains("bad\nline"));
+        let plain = plain_frame(&frame);
+        assert!(
+            plain.lines().count() <= 24,
+            "{} rows",
+            plain.lines().count()
+        );
+        assert!(plain.lines().all(|line| display_width(line) < 80));
+    }
+
+    #[test]
+    fn scalable_details_reveal_long_description_tail() {
+        let mut items = vec![make_item(
+            "skill",
+            &format!("{} tail-visible", "long description ".repeat(100)),
+        )];
+        let mut state = TuiState::new(items.len(), 10);
+        handle_key(key(KeyCode::Char('d')), &mut items, &mut state);
+        handle_key(key(KeyCode::End), &mut items, &mut state);
+        let frame = build_render_buffer(&items, &state, 40);
+        assert!(frame.contains("tail-visible"));
+    }
+
+    #[test]
+    fn scalable_metadata_search_preserves_source_order() {
+        let items = vec![
+            ListItem {
+                name: "alpha".into(),
+                source: "z/repo".into(),
+                description: "security".into(),
+                ..ListItem::default()
+            },
+            ListItem {
+                name: "beta".into(),
+                source: "a/repo".into(),
+                description: "security".into(),
+                ..ListItem::default()
+            },
+        ];
+        let mut state = TuiState::new(2, 10);
+        state.filter.query = "security repo".into();
+        state.refilter(&items);
+        assert_eq!(state.filtered, vec![1, 0]);
+        state.filter.query = "z/repo alpha".into();
+        state.refilter(&items);
+        assert_eq!(state.filtered, vec![0]);
+    }
+
+    #[test]
+    fn scalable_browse_and_review_never_toggle_items() {
+        for mode in [ListMode::Browse, ListMode::Review] {
+            let mut items = two_items();
+            let mut state = TuiState::new(2, 10);
+            state.mode = mode;
+            for code in [KeyCode::Char(' '), KeyCode::Char('a'), KeyCode::Tab] {
+                handle_key(key(code), &mut items, &mut state);
+            }
+            assert_eq!(
+                items.iter().map(|i| i.selected).collect::<Vec<_>>(),
+                vec![false, true]
+            );
+            if mode == ListMode::Review {
+                assert!(matches!(
+                    handle_key(key(KeyCode::Enter), &mut items, &mut state),
+                    Some(Err(_))
+                ));
+                state.filter.focused = true;
+                assert!(handle_key(key(KeyCode::Char('y')), &mut items, &mut state).is_none());
+                state.filter.focused = false;
+                assert!(matches!(
+                    handle_key(key(KeyCode::Char('y')), &mut items, &mut state),
+                    Some(Ok(()))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn scalable_frames_fit_resized_terminals() {
+        let mut items: Vec<_> = (0..1000)
+            .map(|i| ListItem {
+                name: format!("скилл-{i}-{}", "界".repeat(30)),
+                source: "owner/very-long-repo".into(),
+                version: "1.0.0".into(),
+                status: "tracked".into(),
+                description: "long description ".repeat(50),
+                ..ListItem::default()
+            })
+            .collect();
+        let mut state = TuiState::new(1000, 10);
+        for (cols, rows) in [(120, 40), (80, 24), (40, 12), (8, 3)] {
+            state.resize(cols, rows);
+            state.goto(999);
+            for details in [false, true] {
+                state.details = details;
+                let frame = plain_frame(&build_render_buffer(&items, &state, 0));
+                assert!(frame.lines().count() <= rows as usize);
+                assert!(frame.lines().all(|l| display_width(l) < cols as usize));
+            }
+            if cols == 8 {
+                assert!(handle_key(key(KeyCode::Char('y')), &mut items, &mut state).is_none());
+                assert!(matches!(
+                    handle_key(key_ctrl('c'), &mut items, &mut state),
+                    Some(Err(_))
+                ));
+            }
+        }
+    }
+    #[test]
+    fn scalable_review_requires_unmodified_y() {
+        let mut items = two_items();
+        let mut state = TuiState::new(2, 10);
+        state.mode = ListMode::Review;
+        assert!(handle_key(key_ctrl('y'), &mut items, &mut state).is_none());
+        assert!(
+            handle_key(
+                KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT),
+                &mut items,
+                &mut state
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn scalable_narrow_summary_keeps_hidden_selection_count() {
+        let items: Vec<_> = (0..1000)
+            .map(|i| ListItem {
+                name: format!("skill-{i:04}"),
+                selected: i < 2,
+                ..ListItem::default()
+            })
+            .collect();
+        let mut state = TuiState::new(1000, 2);
+        state.resize(40, 12);
+        state.filter.query = "skill-0000".into();
+        state.refilter(&items);
+        let frame = plain_frame(&build_render_buffer(&items, &state, 0));
+        let summary = frame.lines().nth(1).unwrap();
+        assert!(summary.contains("2 selected"), "{summary}");
+        assert!(summary.contains("1 hidden"), "{summary}");
+    }
+    #[test]
+    fn scalable_read_only_headers_show_reviewed_count() {
+        let items = two_items();
+        let mut state = TuiState::new(2, 10);
+        for mode in [ListMode::Browse, ListMode::Review] {
+            state.mode = mode;
+            let frame = plain_frame(&build_render_buffer(&items, &state, 0));
+            assert!(frame.lines().next().unwrap().contains("(2 skills)"));
+            assert!(!frame.lines().nth(1).unwrap().contains("selected"));
+        }
+    }
+    #[test]
+    fn scalable_select_matches_is_idempotent_and_scoped() {
+        let mut items = two_items();
+        items[0].selected = true;
+        let mut state = TuiState::new(2, 10);
+        state.filter.query = items[0].name.clone();
+        state.refilter(&items);
+        handle_key(key(KeyCode::Char('a')), &mut items, &mut state);
+        assert!(items.iter().all(|i| i.selected));
+        handle_key(key(KeyCode::Char('n')), &mut items, &mut state);
+        assert!(!items[0].selected);
+        assert!(items[1].selected);
+    }
+
+    #[test]
+    fn scalable_wide_rows_keep_status_before_long_metadata() {
+        let items = vec![ListItem {
+            name: "skill".into(),
+            source: "very-long-repository/".repeat(20),
+            status: "failed".into(),
+            ..ListItem::default()
+        }];
+        let state = TuiState::new(1, 14);
+        let frame = plain_frame(&build_render_buffer(&items, &state, 0));
+        assert!(frame.lines().nth(5).unwrap().contains("failed"));
+    }
+    #[test]
+    fn scalable_narrow_details_keep_back_action_visible() {
+        let items = two_items();
+        let mut state = TuiState::new(2, 2);
+        state.resize(40, 12);
+        state.details = true;
+        let frame = plain_frame(&build_render_buffer(&items, &state, 0));
+        assert!(frame.lines().last().unwrap().contains("Esc: back"));
     }
 }
