@@ -260,7 +260,7 @@ pub fn format_item(
 
 const HINTS_UNFOCUSED: &str =
     "Arrows/j/k: navigate | PgUp/PgDn | Home/End | /: filter | d: details";
-const HINTS_FOCUSED: &str = "Type to search | Ctrl-U: clear | Esc/Enter: return to list";
+const HINTS_FOCUSED: &str = "Type to search | Alt-Space: space | Esc: list | Space/Enter: select";
 
 fn clean(text: &str) -> String {
     text.chars()
@@ -531,6 +531,27 @@ fn handle_key<T: Entry>(
     items: &mut [T],
     state: &mut TuiState,
 ) -> Option<Result<()>> {
+    if event.kind == KeyEventKind::Release {
+        return None;
+    }
+    if event.kind == KeyEventKind::Repeat {
+        let navigation = matches!(
+            event.code,
+            KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+                | KeyCode::Home
+                | KeyCode::End
+                | KeyCode::Char('j' | 'k')
+        );
+        let editing = state.filter.focused
+            && matches!(event.code, KeyCode::Backspace | KeyCode::Char(_))
+            && event.code != KeyCode::Char(' ');
+        if !navigation && !editing {
+            return None;
+        }
+    }
     if event.code == KeyCode::Char('c') && event.modifiers.contains(KeyModifiers::CONTROL) {
         return Some(Err(anyhow::anyhow!("Selection cancelled")));
     }
@@ -645,11 +666,44 @@ fn handle_filter_key<T: Entry>(
     items: &mut [T],
     state: &mut TuiState,
 ) -> Option<Result<()>> {
+    if event.code == KeyCode::Char(' ') && event.modifiers == KeyModifiers::ALT {
+        state.filter.query.push(' ');
+        state.refilter(items);
+        return None;
+    }
+    if !event
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+    {
+        if event.code == KeyCode::Tab && state.mode == ListMode::Select {
+            state.filter.focused = false;
+            return handle_key(event, items, state);
+        }
+        if event.code == KeyCode::Enter {
+            state.filter.focused = false;
+            if state.mode == ListMode::Select
+                && !items.iter().any(Entry::selected)
+                && let Some(&i) = state.filtered.get(state.cursor)
+            {
+                items[i].set_selected(true);
+            }
+            return handle_key(event, items, state);
+        }
+        if event.code == KeyCode::Char(' ')
+            && !event.modifiers.contains(KeyModifiers::SHIFT)
+            && state.mode == ListMode::Select
+        {
+            state.filter.focused = false;
+            let result = handle_key(event, items, state);
+            state.filter.focused = true;
+            return result;
+        }
+    }
     if apply_navigation(event.code, state) {
         return None;
     }
     match event.code {
-        KeyCode::Esc | KeyCode::Enter => state.filter.focused = false,
+        KeyCode::Esc => state.filter.focused = false,
         KeyCode::Backspace => {
             state.filter.query.pop();
             state.refilter(items);
@@ -1481,12 +1535,17 @@ mod tests {
     }
 
     #[test]
-    fn test_space_in_filter_types_space() {
+    fn test_alt_space_in_filter_types_space() {
         let mut items = three_items();
         let mut state = TuiState::new(items.len(), 10);
         state.filter.focused = true;
         for c in "nt se".chars() {
-            handle_key(key(KeyCode::Char(c)), &mut items, &mut state);
+            let event = if c == ' ' {
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
+            } else {
+                key(KeyCode::Char(c))
+            };
+            handle_key(event, &mut items, &mut state);
         }
         assert_eq!(state.filter.query, "nt se");
     }
@@ -1637,7 +1696,7 @@ mod tests {
         let a = build_render_buffer(&items, &plain, 20);
         let b = build_render_buffer(&items, &focused_state, 20);
         assert!(a.contains("/: filter"));
-        assert!(b.contains("Esc/Enter: return to list"));
+        assert!(b.contains("Alt-Space: space"));
         assert!(!b.contains("/: filter"));
     }
 
@@ -1834,13 +1893,179 @@ mod tests {
         assert_eq!(state.offset, 0);
     }
     #[test]
-    fn scalable_enter_leaves_search_without_accepting() {
-        let mut items = two_items();
+    fn search_tab_opens_selected_view_without_changing_query() {
+        let mut items = three_items();
+        items[1].selected = true;
+        let mut state = TuiState::new(items.len(), 10);
+        for c in "/qdrant".chars() {
+            handle_key(key(KeyCode::Char(c)), &mut items, &mut state);
+        }
+        handle_key(key(KeyCode::Tab), &mut items, &mut state);
+        assert!(state.selected_only);
+        assert!(!state.filter.focused);
+        assert_eq!(state.filter.query, "qdrant");
+        assert_eq!(state.filtered, vec![1]);
+        handle_key(key(KeyCode::Tab), &mut items, &mut state);
+        assert!(!state.selected_only);
+        assert!(items[1].selected);
+    }
+
+    #[test]
+    fn held_space_does_not_toggle_selection_back_off() {
+        for searching in [false, true] {
+            let mut items = three_items();
+            let mut state = TuiState::new(items.len(), 10);
+            state.filter.focused = searching;
+            handle_key(key(KeyCode::Char(' ')), &mut items, &mut state);
+            let mut repeat = key(KeyCode::Char(' '));
+            repeat.kind = KeyEventKind::Repeat;
+            handle_key(repeat, &mut items, &mut state);
+            assert!(items[0].selected);
+        }
+    }
+
+    #[test]
+    fn repeated_navigation_and_search_text_still_work() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        let mut down = key(KeyCode::Down);
+        down.kind = KeyEventKind::Repeat;
+        handle_key(down, &mut items, &mut state);
+        assert_eq!(state.cursor, 1);
+        handle_key(key(KeyCode::Char('/')), &mut items, &mut state);
+        let mut text = key(KeyCode::Char('a'));
+        text.kind = KeyEventKind::Repeat;
+        handle_key(text, &mut items, &mut state);
+        assert_eq!(state.filter.query, "a");
+        assert!(items.iter().all(|item| !item.selected));
+    }
+
+    #[test]
+    fn key_release_never_edits_search_or_toggles_selection() {
+        for searching in [false, true] {
+            let mut items = three_items();
+            let mut state = TuiState::new(items.len(), 10);
+            state.filter.focused = searching;
+            for code in [KeyCode::Char(' '), KeyCode::Char('a'), KeyCode::Enter] {
+                let mut event = key(code);
+                event.kind = KeyEventKind::Release;
+                assert!(handle_key(event, &mut items, &mut state).is_none());
+            }
+            assert!(state.filter.query.is_empty());
+            assert!(items.iter().all(|item| !item.selected));
+        }
+    }
+
+    #[test]
+    fn shared_list_picker_search_supports_selection_and_selected_view() {
+        let mut items = vec![
+            ListItem {
+                name: "alpha".into(),
+                ..ListItem::default()
+            },
+            ListItem {
+                name: "beta".into(),
+                ..ListItem::default()
+            },
+        ];
+        let mut state = TuiState::new(items.len(), 10);
+        for c in "/beta".chars() {
+            handle_key(key(KeyCode::Char(c)), &mut items, &mut state);
+        }
+        handle_key(key(KeyCode::Char(' ')), &mut items, &mut state);
+        handle_key(key(KeyCode::Tab), &mut items, &mut state);
+        assert_eq!(state.filtered, vec![1]);
+        assert!(state.selected_only);
+        assert!(items[1].selected);
+        assert!(!items[0].selected);
+        assert!(matches!(
+            handle_key(key(KeyCode::Enter), &mut items, &mut state),
+            Some(Ok(()))
+        ));
+    }
+
+    #[test]
+    fn held_enter_does_not_accept_next_picker() {
+        let mut items = three_items();
         items[0].selected = true;
         let mut state = TuiState::new(items.len(), 10);
-        state.filter.focused = true;
+        let mut repeat = key(KeyCode::Enter);
+        repeat.kind = KeyEventKind::Repeat;
+        assert!(handle_key(repeat, &mut items, &mut state).is_none());
+    }
+
+    #[test]
+    fn filter_space_selects_match_and_enter_accepts() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        for c in "/qdrant".chars() {
+            handle_key(key(KeyCode::Char(c)), &mut items, &mut state);
+        }
+        handle_key(key(KeyCode::Char(' ')), &mut items, &mut state);
+        assert!(items[1].selected);
+        assert!(!items[0].selected);
+        assert!(!items[2].selected);
+        assert_eq!(state.filter.query, "qdrant");
+        assert!(matches!(
+            handle_key(key(KeyCode::Enter), &mut items, &mut state),
+            Some(Ok(()))
+        ));
+    }
+
+    #[test]
+    fn filter_enter_accepts_focused_match_when_nothing_selected() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        for c in "/qdrant".chars() {
+            handle_key(key(KeyCode::Char(c)), &mut items, &mut state);
+        }
+        assert!(matches!(
+            handle_key(key(KeyCode::Enter), &mut items, &mut state),
+            Some(Ok(()))
+        ));
+        assert!(items[1].selected);
+        assert!(!items[0].selected);
+        assert!(!items[2].selected);
+    }
+
+    #[test]
+    fn filter_enter_preserves_hidden_selection_without_selecting_match() {
+        let mut items = three_items();
+        items[0].selected = true;
+        let mut state = TuiState::new(items.len(), 10);
+        for c in "/qdrant".chars() {
+            handle_key(key(KeyCode::Char(c)), &mut items, &mut state);
+        }
+        assert!(matches!(
+            handle_key(key(KeyCode::Enter), &mut items, &mut state),
+            Some(Ok(()))
+        ));
+        assert!(items[0].selected);
+        assert!(!items[1].selected);
+    }
+
+    #[test]
+    fn filter_enter_with_no_matches_does_not_select_or_accept() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        for c in "/no-match".chars() {
+            handle_key(key(KeyCode::Char(c)), &mut items, &mut state);
+        }
         assert!(handle_key(key(KeyCode::Enter), &mut items, &mut state).is_none());
-        assert!(!state.filter.focused);
+        assert!(items.iter().all(|item| !item.selected));
+    }
+
+    #[test]
+    fn filter_enter_in_review_never_confirms_removal() {
+        let mut items = three_items();
+        let mut state = TuiState::new(items.len(), 10);
+        state.mode = ListMode::Review;
+        handle_key(key(KeyCode::Char('/')), &mut items, &mut state);
+        assert!(matches!(
+            handle_key(key(KeyCode::Enter), &mut items, &mut state),
+            Some(Err(_))
+        ));
+        assert!(items.iter().all(|item| !item.selected));
     }
 
     #[test]

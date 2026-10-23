@@ -77,7 +77,9 @@ press `d` for full, scrollable details.
 | Arrows / `j` / `k` | Move through skills |
 | Page Up / Page Down / Home / End | Jump through the list or details |
 | `/` | Search names, descriptions, sources, versions and statuses; all words must match |
-| Enter / Esc while searching | Leave search, keeping the filter |
+| Esc while searching | Leave search, keeping the filter |
+| Space / Enter while searching in a picker | Toggle the focused match / continue; Enter selects the focused match if nothing is selected |
+| Alt-Space while searching | Insert a space between search words |
 | Ctrl-U while searching | Clear the query |
 | Space | Toggle the focused skill in a picker |
 | `a` / `n` | Select / clear every matching skill, including matches outside the viewport |
