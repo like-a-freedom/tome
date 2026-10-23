@@ -208,6 +208,37 @@ pub fn clone_repo_quiet(url: &str, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Materialize a tracked skill that sparse checkout may have omitted.
+/// Query the committed tree with a literal pathspec: absence from the working
+/// tree alone is never evidence that the source skill was deleted.
+pub(crate) fn materialize_tracked_skill(repo_path: &Path, skill_path: &Path) -> Result<()> {
+    let canonical_repo = repo_path
+        .canonicalize()
+        .context("Failed to resolve cloned repository")?;
+    let relative = skill_path
+        .strip_prefix(repo_path)
+        .or_else(|_| skill_path.strip_prefix(&canonical_repo))
+        .context("Skill path is outside the cloned repository")?;
+    let skill_md = relative.join("SKILL.md");
+    let literal = format!(":(literal){}", skill_md.to_string_lossy());
+    let entry = git_output(
+        repo_path,
+        &["ls-tree", "--name-only", "HEAD", "--", &literal],
+    )?;
+    if entry.is_empty() {
+        return Ok(());
+    }
+
+    // A full checkout is a safe fallback for custom paths and paths containing
+    // sparse-pattern metacharacters, without guessing cone/non-cone patterns.
+    git_output(repo_path, &["sparse-checkout", "disable"])
+        .context("Failed to materialize the tracked skill from sparse checkout")?;
+    if !crate::fs::skill_path_exists(&skill_path.join("SKILL.md"))? {
+        anyhow::bail!("Tracked SKILL.md exists in Git but could not be checked out");
+    }
+    Ok(())
+}
+
 pub fn get_commit_hash(repo_path: &Path) -> Result<String> {
     git_output(repo_path, &["rev-parse", "HEAD"])
 }

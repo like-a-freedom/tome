@@ -107,7 +107,10 @@ Add, update and remove stage filesystem changes with reversible backups until
 installed skill; a fatal error or failed manifest save rolls back the operation.
 Update can still save successful skills when other sources fail, and returns a
 nonzero exit status if any skill failed. A source changing a tracked skill's name
-is rejected and leaves its installed content intact.
+is rejected and leaves its installed content intact. Update checks the committed
+Git tree before treating a missing checkout file as deleted. Tracked custom paths
+omitted by sparse checkout use a full checkout fallback; broken source symlinks
+produce a failure while preserving the installed skill.
 
 Untracked paths, including dangling symlinks, are skipped without `add --force`.
 Replacing or removing a skill symlink changes the link itself, preserving its

@@ -39,7 +39,7 @@ pub fn resolve_path_within(root: &Path, relative: &str) -> Result<PathBuf> {
         .canonicalize()
         .with_context(|| format!("Failed to resolve source root {}", root.display()))?;
     let mut existing_ancestor = candidate.as_path();
-    while !existing_ancestor.exists() {
+    while !skill_path_exists(existing_ancestor)? {
         existing_ancestor = existing_ancestor
             .parent()
             .ok_or_else(|| anyhow::anyhow!("Path has no source ancestor: {relative}"))?;
@@ -525,5 +525,16 @@ mod tests {
             fs::read_to_string(outside.join("SKILL.md")).unwrap(),
             "keep outside"
         );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn source_path_rejects_dangling_symlink_in_directory_ancestors() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        std::os::unix::fs::symlink("missing", root.join("broken")).unwrap();
+        assert!(resolve_path_within(&root, "broken").is_err());
+        assert!(resolve_path_within(&root, "broken/skill").is_err());
+        assert!(resolve_path_within(&root, "actually-deleted/skill").is_ok());
     }
 }

@@ -1252,3 +1252,138 @@ fn cli_git_lifecycle_preserves_scope_and_reconciles_hundreds_of_skills() {
         run(&["remove", &url, "--force"]).failure();
     }
 }
+
+#[test]
+fn sparse_update_materializes_explicit_skill_paths_before_deciding_deletion() {
+    for custom_path in ["custom/keep", ".claude/skills/keep", "custom/keep[1] space"] {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        let custom = repo.join(custom_path);
+        fs::create_dir_all(repo.join("skills/standard")).unwrap();
+        fs::create_dir_all(&custom).unwrap();
+        fs::write(
+            repo.join("skills/standard/SKILL.md"),
+            "---\nname: standard\ndescription: standard\n---\n",
+        )
+        .unwrap();
+        let initial = "---\nname: keep\ndescription: initial\n---\n";
+        fs::write(custom.join("SKILL.md"), initial).unwrap();
+        common::init_git_repo(&repo);
+        let skills = temp.path().join("skills");
+        let url = format!("file://{}", repo.display());
+        let run = |args: &[&str]| {
+            Command::cargo_bin("tome")
+                .unwrap()
+                .env("SKILLS_DIR", &skills)
+                .args(args)
+                .assert()
+        };
+        let read_manifest = || -> serde_json::Value {
+            serde_json::from_slice(&fs::read(skills.join(".skills.json")).unwrap()).unwrap()
+        };
+        let commit = || {
+            for args in [
+                ["add", "-A"].as_slice(),
+                ["commit", "-m", "change"].as_slice(),
+            ] {
+                let output = ProcessCommand::new("git")
+                    .current_dir(&repo)
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        };
+        run(&["add", &url, "--path", custom_path]).success();
+        let installed = read_manifest();
+        run(&["update", "keep"]).success();
+        assert_eq!(
+            fs::read_to_string(skills.join("keep/SKILL.md")).unwrap(),
+            initial,
+            "sparse checkout hid {custom_path}"
+        );
+        assert_eq!(read_manifest(), installed);
+        assert!(
+            !skills.join("standard").exists(),
+            "targeted update must not discover other skills"
+        );
+
+        let changed = "---\nname: keep\ndescription: changed\n---\n";
+        fs::write(custom.join("SKILL.md"), changed).unwrap();
+        fs::write(custom.join("helper.txt"), "supporting content").unwrap();
+        commit();
+        run(&["update", "keep"]).success();
+        assert_eq!(
+            fs::read_to_string(skills.join("keep/SKILL.md")).unwrap(),
+            changed
+        );
+        assert_eq!(
+            fs::read_to_string(skills.join("keep/helper.txt")).unwrap(),
+            "supporting content"
+        );
+        assert!(read_manifest()["skills"].get("keep").is_some());
+
+        fs::remove_file(custom.join("SKILL.md")).unwrap();
+        commit();
+        run(&["update", "keep"]).success();
+        assert!(!skills.join("keep").exists());
+        assert!(read_manifest()["skills"].get("keep").is_none());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn update_preserves_installed_skill_when_source_becomes_dangling_symlink() {
+    for sparse in [false, true] {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        let source = repo.join("skills/keep");
+        fs::create_dir_all(&source).unwrap();
+        let content = "---\nname: keep\ndescription: valid\n---\n";
+        fs::write(source.join("SKILL.md"), content).unwrap();
+        common::init_git_repo(&repo);
+        let skills = temp.path().join("skills");
+        let url = format!("file://{}", repo.display());
+        Command::cargo_bin("tome")
+            .unwrap()
+            .env("SKILLS_DIR", &skills)
+            .args(["add", &url])
+            .assert()
+            .success();
+        let before: serde_json::Value =
+            serde_json::from_slice(&fs::read(skills.join(".skills.json")).unwrap()).unwrap();
+        fs::remove_file(source.join("SKILL.md")).unwrap();
+        std::os::unix::fs::symlink("missing.md", source.join("SKILL.md")).unwrap();
+        for args in [
+            ["add", "-A"].as_slice(),
+            ["commit", "-m", "broken source"].as_slice(),
+        ] {
+            assert!(
+                ProcessCommand::new("git")
+                    .current_dir(&repo)
+                    .args(args)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        }
+        let mut update = Command::cargo_bin("tome").unwrap();
+        update.env("SKILLS_DIR", &skills).args(["update", "keep"]);
+        if !sparse {
+            update.arg("--no-sparse");
+        }
+        update.assert().failure();
+        assert_eq!(
+            fs::read_to_string(skills.join("keep/SKILL.md")).unwrap(),
+            content
+        );
+        let after: serde_json::Value =
+            serde_json::from_slice(&fs::read(skills.join(".skills.json")).unwrap()).unwrap();
+        assert_eq!(after, before);
+    }
+}

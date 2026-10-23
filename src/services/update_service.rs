@@ -497,7 +497,7 @@ impl UpdateService {
             };
             let local_path = self.config.skills_dir.join(name);
 
-            if !source_path.join("SKILL.md").exists() {
+            if !fs::skill_path_exists(&source_path.join("SKILL.md"))? {
                 if let Err(error) = transaction.remove(&local_path) {
                     record_failure(&mut result, name, format!("remove failed: {error}"));
                     reporter.skill_checked();
@@ -686,11 +686,21 @@ fn record_failure(result: &mut UpdateResult, name: &str, reason: String) {
 }
 
 fn source_path(clone_dir: &Path, entry_path: &str) -> Result<PathBuf> {
-    if !entry_path.is_empty() {
-        crate::fs::resolve_path_within(clone_dir, entry_path)
-    } else {
-        repo_detect::sole_skill_dir(clone_dir)
+    let resolve = || {
+        if !entry_path.is_empty() {
+            crate::fs::resolve_path_within(clone_dir, entry_path)
+        } else {
+            repo_detect::sole_skill_dir(clone_dir)
+        }
+    };
+    let candidate = resolve()?;
+    if !fs::skill_path_exists(&candidate.join("SKILL.md"))? {
+        crate::core::git::materialize_tracked_skill(clone_dir, &candidate)?;
+        // Sparse materialization can reveal symlinks, so validate containment
+        // again before reading, copying, or treating a missing source as deleted.
+        return resolve();
     }
+    Ok(candidate)
 }
 
 #[cfg(test)]
