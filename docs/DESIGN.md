@@ -146,4 +146,4 @@ The spec defines how **agents** load skills at runtime. The CLI's role is to ins
 - `Skills/` directory support — Detects `Skills/<agent>/<skill-name>/SKILL.md` with deduplication across agents
 - `.agents/skills/` bundle support — Sparse checkout fetches a nested `.agents/skills/` when present
 - Top-level skill directories — Detects `skill-name/SKILL.md` at repo root
-- New-skill sync on update — `tome update` installs skills that newly appear in tracked repos, pinned to the source commit
+- New-skill sync on update — `tome update` installs skills that newly appear in tracked repos, pinned to the source commit; disabled for repos where the user selected only a subset of skills (the `partial` manifest flag)

@@ -84,6 +84,10 @@ pub struct ResolvedSkill {
     pub remote: String,
     /// Git branch name.
     pub branch: String,
+    /// True when the skill was explicitly selected from a subset of a
+    /// multi-skill repository; recorded on the manifest entry so update never
+    /// auto-adopts the declined siblings.
+    pub partial: bool,
 }
 
 impl ResolvedSkill {
@@ -113,6 +117,7 @@ impl ResolvedSkill {
             commit,
             remote,
             branch,
+            partial: false,
         }
     }
 
@@ -131,6 +136,7 @@ impl ResolvedSkill {
             commit: crate::core::manifest::FILE_URL_COMMIT.to_string(),
             remote: url,
             branch: String::new(),
+            partial: false,
         }
     }
 }
@@ -186,6 +192,7 @@ pub fn install_skills(
             &skill.remote,
         );
         entry.set_branch(&skill.branch);
+        entry.set_partial(skill.partial);
         manifest.add_skill(&skill.frontmatter.name, entry);
 
         let version_tag = format_version_tag(&skill.frontmatter);
@@ -241,6 +248,7 @@ mod tests {
             commit: "abc1234".to_string(),
             remote: "https://github.com/owner/repo.git".to_string(),
             branch: "main".to_string(),
+            partial: false,
         };
 
         let result = install_skills(&[skill], false, &skills_dir, &manifest_path).unwrap();
@@ -265,6 +273,7 @@ mod tests {
             commit: "abc1234".to_string(),
             remote: "https://github.com/owner/repo.git".to_string(),
             branch: "main".to_string(),
+            partial: false,
         };
 
         let result = install_skills(&[skill], false, &skills_dir, &manifest_path);
@@ -308,6 +317,7 @@ mod tests {
             commit: "new456".to_string(),
             remote: "https://example.com".to_string(),
             branch: "main".to_string(),
+            partial: false,
         };
 
         let result = install_skills(&[skill], false, &skills_dir, &manifest_path).unwrap();
@@ -347,6 +357,7 @@ mod tests {
             commit: "new789".to_string(),
             remote: "https://example.com".to_string(),
             branch: "main".to_string(),
+            partial: false,
         };
 
         let result = install_skills(&[skill], true, &skills_dir, &manifest_path).unwrap();
@@ -515,6 +526,7 @@ mod tests {
             commit: "new-commit".into(),
             remote: "remote".into(),
             branch: "main".into(),
+            partial: false,
         }
     }
 

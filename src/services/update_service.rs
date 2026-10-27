@@ -257,6 +257,13 @@ impl UpdateService {
         }
 
         for (index, (remote, skill_names)) in group_list.iter().enumerate() {
+            // Auto-adopting newly appearing skills is disabled for groups where
+            // the user installed only an explicitly selected subset: the skills
+            // missing from the manifest were declined, not "newly appeared".
+            let group_sync_new = matches!(scope, UpdateScope::All)
+                && skill_names
+                    .iter()
+                    .all(|name| !manifest.get_skill(name).is_some_and(|entry| entry.partial));
             let group_result = self.update_git_group(
                 &mut manifest,
                 &mut transaction,
@@ -264,7 +271,7 @@ impl UpdateService {
                     remote,
                     skill_names,
                     sparse,
-                    sync_new: matches!(scope, UpdateScope::All),
+                    sync_new: group_sync_new,
                     live,
                     position: SourcePosition {
                         index: file_names.len() + index + 1,
@@ -979,6 +986,85 @@ mod tests {
         assert!(skills_dir.join("good/SKILL.md").exists());
         assert!(!manifest.is_tracked("bad/name"));
         assert!(!skills_dir.join("bad/name").exists());
+    }
+
+    /// Fixture: a git repo with two skills (`chosen`, `extra`) plus a manifest
+    /// tracking only `chosen` from that remote.
+    fn two_skill_repo_with_tracked_chosen(
+        temp: &TempDir,
+        skills_dir: &Path,
+        partial: bool,
+    ) -> (String, Manifest) {
+        let repo_dir = temp.path().join("repo");
+        for (dir, name) in [("skills/chosen", "chosen"), ("skills/extra", "extra")] {
+            let skill_dir = repo_dir.join(dir);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {name}\n---\n"),
+            )
+            .unwrap();
+        }
+        testutil::init_git_repo(&repo_dir);
+        let remote = format!("file://{}", repo_dir.display());
+
+        let local = skills_dir.join("chosen");
+        fs::create_dir_all(&local).unwrap();
+        fs::write(
+            local.join("SKILL.md"),
+            "---\nname: chosen\ndescription: chosen\n---\n",
+        )
+        .unwrap();
+
+        let mut manifest = Manifest::new();
+        let mut entry = make_entry("chosen", "0000000", &remote);
+        entry.path = "skills/chosen".into();
+        entry.set_partial(partial);
+        manifest.add_skill("chosen", entry);
+        (remote, manifest)
+    }
+
+    #[test]
+    fn update_all_does_not_adopt_skills_from_partially_selected_group() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let (_remote, manifest) = two_skill_repo_with_tracked_chosen(&temp, &skills_dir, true);
+        let manifest_path = skills_dir.join(".skills.json");
+        manifest.save(&manifest_path).unwrap();
+
+        let service = UpdateService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
+        let mut reporter = RecordingReporter::default();
+        service.run(None, false, false, &mut reporter).unwrap();
+
+        let loaded = Manifest::load(&manifest_path).unwrap();
+        assert!(
+            !loaded.is_tracked("extra"),
+            "a partially selected group must not adopt unselected skills"
+        );
+        assert!(!skills_dir.join("extra").exists());
+        assert!(loaded.is_tracked("chosen"));
+    }
+
+    #[test]
+    fn update_all_still_adopts_new_skills_for_fully_tracked_group() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let (_remote, manifest) = two_skill_repo_with_tracked_chosen(&temp, &skills_dir, false);
+        let manifest_path = skills_dir.join(".skills.json");
+        manifest.save(&manifest_path).unwrap();
+
+        let service = UpdateService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
+        let mut reporter = RecordingReporter::default();
+        service.run(None, false, false, &mut reporter).unwrap();
+
+        let loaded = Manifest::load(&manifest_path).unwrap();
+        assert!(
+            loaded.is_tracked("extra"),
+            "fully tracked groups keep adopting newly appearing skills"
+        );
+        assert!(skills_dir.join("extra/SKILL.md").exists());
     }
 
     #[cfg(unix)]

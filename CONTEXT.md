@@ -46,7 +46,7 @@
 
 **SkillService** — Application service managing skill lifecycle: install (from git or file URL) and remove.
 
-**UpdateService** — Application service managing skill updates: stale detection, git-group updates, file-skill updates, and installing new skills that appear in tracked repositories (from an untargeted update).
+**UpdateService** — Application service managing skill updates: stale detection, git-group updates, file-skill updates, and installing new skills that appear in tracked repositories (from an untargeted update; skipped for groups where the user originally selected only a subset of the repository's skills).
 
 **UpdateReporter** — Pure observer trait for update progress events (start, repo_started, phase, skill_checked, clone_progress, checkout_progress, sync_found, repo_finished); the service never queries the reporter for policy. Terminal liveness is passed into `UpdateService::run` as an argument by the caller (see ADR-0010).
 

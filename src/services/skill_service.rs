@@ -77,10 +77,14 @@ impl SkillService {
         let remote = git::get_remote_url(temp_dir.path()).unwrap_or_else(|_| git_url.clone());
 
         // Detect repository type and resolve skills
+        let mut partial = false;
         let selected_skills = if let Some(custom_path) = &path_override {
             let repo_path = crate::fs::resolve_path_within(temp_dir.path(), custom_path)
                 .with_context(|| format!("Invalid skill path '{custom_path}'"))?;
             let frontmatter = spec::validate_skill(&repo_path).context("Invalid SKILL.md")?;
+            // Pointing at one skill of a multi-skill repository is a partial
+            // selection: update must not adopt the rest of the repository.
+            partial = repo_detect::resolve_skills(temp_dir.path()).is_ok_and(|s| s.len() > 1);
             vec![(repo_path, frontmatter)]
         } else {
             let skills = repo_detect::resolve_skills(temp_dir.path())
@@ -98,6 +102,7 @@ impl SkillService {
                 }
                 _ => match &skill_name {
                     Some(requested) => {
+                        partial = true;
                         let skill =
                             skills
                                 .iter()
@@ -115,10 +120,14 @@ impl SkillService {
                                 })?;
                         vec![skill.clone()]
                     }
-                    None => match picker {
-                        Some(pick) => pick(&skills)?,
-                        None => select_skills(&skills, &label)?,
-                    },
+                    None => {
+                        let picked = match picker {
+                            Some(pick) => pick(&skills)?,
+                            None => select_skills(&skills, &label)?,
+                        };
+                        partial = picked.len() < skills.len();
+                        picked
+                    }
                 },
             };
 
@@ -139,7 +148,7 @@ impl SkillService {
         let resolved: Vec<install::ResolvedSkill> = selected_skills
             .iter()
             .map(|(repo_path, fm)| {
-                install::ResolvedSkill::from_detected(
+                let mut skill = install::ResolvedSkill::from_detected(
                     repo_path.clone(),
                     temp_dir.path(),
                     fm.clone(),
@@ -147,7 +156,9 @@ impl SkillService {
                     commit.clone(),
                     remote.clone(),
                     branch.clone(),
-                )
+                );
+                skill.partial = partial;
+                skill
             })
             .collect();
 
@@ -424,6 +435,73 @@ mod tests {
 
         assert_eq!(result.installed, vec!["first v1.0.0"]);
         assert!(!skills_dir.join("second").exists());
+    }
+
+    /// Fixture: a local git repo with two skills under `skills/`.
+    fn two_skill_repo(temp: &TempDir) -> std::path::PathBuf {
+        let repo = temp.path().join("repo");
+        for (dir, name, desc) in [
+            ("skills/first", "first", "one"),
+            ("skills/second", "second", "two"),
+        ] {
+            fs::create_dir_all(repo.join(dir)).unwrap();
+            fs::write(
+                repo.join(dir).join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {desc}\nversion: 1.0.0\n---\n"),
+            )
+            .unwrap();
+        }
+        testutil::init_git_repo(&repo);
+        repo
+    }
+
+    #[test]
+    fn install_with_partial_picker_selection_marks_entry_partial() {
+        let temp = TempDir::new().unwrap();
+        let repo = two_skill_repo(&temp);
+
+        let skills_dir = temp.path().join("skills");
+        let manifest_path = skills_dir.join(".skills.json");
+        let service = SkillService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
+
+        let mut picker = |skills: &[repo_detect::SkillInfo]| {
+            Ok(skills
+                .iter()
+                .filter(|s| s.name == "first")
+                .cloned()
+                .collect())
+        };
+        let source_url = format!("file://{}", repo.display());
+        service
+            .install(&source_url, None, false, true, Some(&mut picker))
+            .unwrap();
+
+        let loaded = Manifest::load(&manifest_path).unwrap();
+        assert!(
+            loaded.get_skill("first").unwrap().is_partial(),
+            "selecting a subset must mark the entry so update never adopts the rest"
+        );
+        assert!(!loaded.is_tracked("second"));
+    }
+
+    #[test]
+    fn install_with_full_picker_selection_keeps_sync_enabled() {
+        let temp = TempDir::new().unwrap();
+        let repo = two_skill_repo(&temp);
+
+        let skills_dir = temp.path().join("skills");
+        let manifest_path = skills_dir.join(".skills.json");
+        let service = SkillService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
+
+        let mut picker = |skills: &[repo_detect::SkillInfo]| Ok(skills.to_vec());
+        let source_url = format!("file://{}", repo.display());
+        service
+            .install(&source_url, None, false, true, Some(&mut picker))
+            .unwrap();
+
+        let loaded = Manifest::load(&manifest_path).unwrap();
+        assert!(!loaded.get_skill("first").unwrap().is_partial());
+        assert!(!loaded.get_skill("second").unwrap().is_partial());
     }
 
     fn fake_skill(name: &str) -> repo_detect::SkillInfo {

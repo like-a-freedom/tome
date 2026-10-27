@@ -152,7 +152,7 @@ tome update [name] [--interactive]
   → clone/download each source
   → compare commits or file bytes
   → copy changed content and reconcile source deletions
-  → install skills that newly appeared in the repository (untargeted update)
+  → install skills that newly appeared in the repository (untargeted update; skipped for groups with a partial selection)
   → save manifest once
   → render reporter events and final summary
 ```

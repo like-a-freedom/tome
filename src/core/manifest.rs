@@ -25,6 +25,11 @@ pub struct SkillEntry {
     pub(crate) commit: String,
     pub(crate) branch: String,
     pub(crate) remote: String,
+    /// True when this entry was installed by explicitly selecting a subset of
+    /// a multi-skill repository. Update must never auto-adopt the skills the
+    /// user declined for such a source. Absent in pre-0.9.2 manifests → false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) partial: bool,
 }
 
 impl SkillEntry {
@@ -45,6 +50,7 @@ impl SkillEntry {
             commit: commit.to_string(),
             branch: crate::DEFAULT_BRANCH.to_string(),
             remote: remote.to_string(),
+            partial: false,
         }
     }
 
@@ -58,6 +64,17 @@ impl SkillEntry {
 
     pub fn set_branch(&mut self, branch: &str) {
         self.branch = branch.to_string();
+    }
+
+    /// Mark this entry as installed from an explicit subset of a multi-skill
+    /// repository (see [`SkillEntry::partial`]).
+    pub fn set_partial(&mut self, partial: bool) {
+        self.partial = partial;
+    }
+
+    /// True when the user selected only part of the source repository's skills.
+    pub fn is_partial(&self) -> bool {
+        self.partial
     }
 
     /// The source used to (re)install this skill: the remote URL when the
@@ -251,6 +268,7 @@ mod tests {
                 commit: "c".into(),
                 branch: "main".into(),
                 remote: "remote".into(),
+                partial: false,
             },
         );
         manifest.save(&path).unwrap();
@@ -273,6 +291,7 @@ mod tests {
             commit: "abc1234".into(),
             branch: "main".into(),
             remote: "https://github.com/test/repo.git".into(),
+            partial: false,
         };
         manifest.add_skill("test-skill", entry);
 
@@ -284,6 +303,48 @@ mod tests {
         let loaded_entry = loaded.get_skill("test-skill").unwrap();
         assert_eq!(loaded_entry.source, "test/repo");
         assert_eq!(loaded_entry.commit, "abc1234");
+        assert!(!loaded_entry.is_partial());
+    }
+
+    #[test]
+    fn legacy_entry_without_partial_field_loads_as_false() {
+        let json = r#"{
+            "skills": {
+                "legacy": {
+                    "source": "owner/repo",
+                    "path": "",
+                    "updated": "2026-01-01T00:00:00Z",
+                    "version": "",
+                    "description": "predates the partial flag",
+                    "commit": "abc1234",
+                    "branch": "main",
+                    "remote": "https://github.com/owner/repo.git"
+                }
+            }
+        }"#;
+        let manifest: Manifest = serde_json::from_str(json).unwrap();
+        assert!(!manifest.get_skill("legacy").unwrap().is_partial());
+    }
+
+    #[test]
+    fn partial_flag_roundtrips_through_save_and_load() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join(".skills.json");
+
+        let mut manifest = Manifest::new();
+        let mut entry = SkillEntry::new(
+            "owner/repo",
+            "",
+            &crate::testutil::make_fm("chosen"),
+            "abc1234",
+            "https://github.com/owner/repo.git",
+        );
+        entry.set_partial(true);
+        manifest.add_skill("chosen", entry);
+        manifest.save(&path).unwrap();
+
+        let loaded = Manifest::load(&path).unwrap();
+        assert!(loaded.get_skill("chosen").unwrap().is_partial());
     }
 
     #[test]
@@ -300,6 +361,7 @@ mod tests {
                 commit: "c".into(),
                 branch: "b".into(),
                 remote: "r".into(),
+                partial: false,
             },
         );
         assert!(manifest.is_tracked("tracked"));
@@ -320,6 +382,7 @@ mod tests {
                 commit: "c".into(),
                 branch: "b".into(),
                 remote: "r".into(),
+                partial: false,
             },
         );
         let removed = manifest.remove_skill("to-remove");
@@ -351,6 +414,7 @@ mod tests {
                 commit: "c".into(),
                 branch: "b".into(),
                 remote: "r".into(),
+                partial: false,
             },
         );
         manifest.add_skill(
@@ -364,6 +428,7 @@ mod tests {
                 commit: "c".into(),
                 branch: "b".into(),
                 remote: "r".into(),
+                partial: false,
             },
         );
 
@@ -395,6 +460,7 @@ mod tests {
                 commit: "abc123".into(),
                 branch: "main".into(),
                 remote: "https://github.com/owner/repo".into(),
+                partial: false,
             },
         );
 
@@ -484,6 +550,7 @@ mod tests {
             commit: "c".into(),
             branch: "main".into(),
             remote: "https://github.com/owner/repo.git".into(),
+            partial: false,
         };
         assert_eq!(entry.install_source(), "owner/repo");
     }
@@ -499,6 +566,7 @@ mod tests {
             commit: "c".into(),
             branch: "main".into(),
             remote: "file:///Users/test/SKILL.md".into(),
+            partial: false,
         };
         assert_eq!(entry.install_source(), "file:///Users/test/SKILL.md");
     }
@@ -514,6 +582,7 @@ mod tests {
             commit: "c".into(),
             branch: "main".into(),
             remote: "https://github.com/owner/repo".into(),
+            partial: false,
         };
         assert_eq!(entry.install_source(), "");
     }
@@ -568,6 +637,7 @@ mod tests {
                 commit: "c".into(),
                 branch: "b".into(),
                 remote: "https://github.com/".to_string() + source + ".git",
+                partial: false,
             },
         );
         manifest
@@ -611,6 +681,7 @@ mod tests {
                 commit: FILE_URL_COMMIT.into(),
                 branch: "".into(),
                 remote: "file:///tmp/SKILL.md".into(),
+                partial: false,
             },
         );
 
@@ -635,6 +706,7 @@ mod tests {
                     commit: "c".into(),
                     branch: "b".into(),
                     remote: "https://github.com/leonardomso/rust-skills.git".into(),
+                    partial: false,
                 },
             );
         }
