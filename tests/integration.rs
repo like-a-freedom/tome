@@ -1075,6 +1075,61 @@ fn add_root_skill_rejects_wrong_explicit_selector() {
     assert!(!skills.join("actual").exists());
 }
 
+/// Regression: a partial `tome add` must not turn the first `tome update`
+/// into a mass install of every skill the user declined.
+#[test]
+fn partial_add_then_update_does_not_adopt_declined_skills() {
+    let temp = TempDir::new().unwrap();
+    let repo = temp.path().join("repo");
+    for name in ["first", "second"] {
+        let dir = repo.join("skills").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {name}\n---\n"),
+        )
+        .unwrap();
+    }
+    common::init_git_repo(&repo);
+    let git_config = temp.path().join("gitconfig");
+    fs::write(
+        &git_config,
+        format!(
+            "[url \"file://{}\"]\n    insteadOf = https://github.com/probe/repo.git\n",
+            repo.display()
+        ),
+    )
+    .unwrap();
+    let skills = temp.path().join("skills");
+
+    Command::cargo_bin("tome")
+        .unwrap()
+        .env("SKILLS_DIR", &skills)
+        .env("GIT_CONFIG_GLOBAL", &git_config)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args(["add", "probe/repo@first", "--no-sparse"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("tome")
+        .unwrap()
+        .env("SKILLS_DIR", &skills)
+        .args(["update"])
+        .assert()
+        .success();
+
+    assert!(skills.join("first/SKILL.md").exists());
+    assert!(
+        !skills.join("second").exists(),
+        "update must not install a skill the user declined"
+    );
+    let manifest = fs::read_to_string(skills.join(".skills.json")).unwrap();
+    assert!(
+        manifest.contains("\"partial\": true"),
+        "the partial selection must be recorded: {manifest}"
+    );
+}
+
 #[test]
 fn failed_update_returns_failure_and_preserves_installed_skill() {
     let temp = TempDir::new().unwrap();

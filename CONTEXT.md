@@ -6,11 +6,11 @@
 
 **Manifest** — The `.skills.json` file that records all installed skills, their source repos, commit hashes, and installation metadata. Single source of truth for what's installed.
 
-**SkillEntry** — A single record in the manifest: tracks one installed skill's source, commit, remote URL, branch, path, version, and timestamps. A file-URL skill is identified by its `commit` value being the `FILE_URL_COMMIT` sentinel (`"file:"`).
+**SkillEntry** — A single record in the manifest: tracks one installed skill's source, commit, remote URL, branch, path, version, and timestamps, plus a `partial` flag marking an install that selected only a subset of a multi-skill repository (update must not adopt the skills the user declined). A file-URL skill is identified by its `commit` value being the `FILE_URL_COMMIT` sentinel (`"file:"`).
 
 **ScannedSkill** — A skill directory discovered in the Skills Directory by the read-side scan: the directory name plus its parsed frontmatter. The single definition of "what counts as a skill on disk" (see ADR-0009).
 
-**ResolvedSkill** — A skill that has been located in a repository and validated, ready for installation. Contains repo path, frontmatter, label, commit hash, remote URL, and branch.
+**ResolvedSkill** — A skill that has been located in a repository and validated, ready for installation. Contains repo path, frontmatter, label, commit hash, remote URL, branch, and whether it came from a partial selection.
 
 **InstallResult** — The outcome of an install operation: lists of installed, skipped-tracked, and skipped-existing skill names.
 
@@ -46,7 +46,7 @@
 
 **SkillService** — Application service managing skill lifecycle: install (from git or file URL) and remove.
 
-**UpdateService** — Application service managing skill updates: stale detection, git-group updates, file-skill updates, and installing new skills that appear in tracked repositories (from an untargeted update; skipped for groups where the user originally selected only a subset of the repository's skills).
+**UpdateService** — Application service managing skill updates: stale detection, git-group updates, file-skill updates, and installing new skills that appear in tracked repositories (from an untargeted update; skipped for groups where the user originally selected only a subset of the repository's skills — `tome add` clears that state once the repository is fully tracked).
 
 **UpdateReporter** — Pure observer trait for update progress events (start, repo_started, phase, skill_checked, clone_progress, checkout_progress, sync_found, repo_finished); the service never queries the reporter for policy. Terminal liveness is passed into `UpdateService::run` as an argument by the caller (see ADR-0010).
 

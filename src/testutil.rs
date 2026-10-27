@@ -21,6 +21,23 @@ pub fn create_git_repo_with_skill(temp: &TempDir, skill_content: &str) -> String
     format!("file://{}", repo_dir.display())
 }
 
+/// Create a git repository with one `skills/<name>/SKILL.md` per name and
+/// return its path.
+pub fn create_multi_skill_repo(temp: &TempDir, names: &[&str]) -> std::path::PathBuf {
+    let repo_dir = temp.path().join("repo");
+    for name in names {
+        let skill_dir = repo_dir.join("skills").join(name);
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {name}\nversion: 1.0.0\n---\n"),
+        )
+        .unwrap();
+    }
+    init_git_repo(&repo_dir);
+    repo_dir
+}
+
 /// Initialize an existing directory as a git repo with a local user identity
 /// so subsequent `git commit` calls succeed in CI runners (where $HOME points
 /// to a per-job temp dir with no global git config). Use this from test

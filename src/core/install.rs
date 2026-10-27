@@ -153,9 +153,15 @@ fn format_version_tag(frontmatter: &SkillFrontmatter) -> String {
 
 /// Install resolved skills: copy files, create manifest entries, save.
 ///
+/// `repo_skills` lists the skills the source repository offers (installable
+/// ones only). When the tracked set ends up covering all of them, stale
+/// `partial` flags for that source are cleared, so update resumes adopting
+/// genuinely new upstream skills.
+///
 /// Returns a list of display names (e.g. "my-skill v1.0.0") for output.
 pub fn install_skills(
     skills: &[ResolvedSkill],
+    repo_skills: &[String],
     force: bool,
     skills_dir: &Path,
     manifest_path: &Path,
@@ -197,6 +203,15 @@ pub fn install_skills(
 
         let version_tag = format_version_tag(&skill.frontmatter);
         installed.push(format!("{}{}", skill.frontmatter.name, version_tag));
+    }
+
+    // A selection that now tracks every installable skill of the repository
+    // means the user declined nothing: clear stale partial flags so `tome
+    // update` resumes adopting genuinely new upstream skills. This covers a
+    // full re-selection over already-installed skills (skipped above) and
+    // re-adding the last missing skill of a fully tracked repository.
+    if let Some(lead) = skills.first() {
+        manifest.complete_partial_selection(&lead.label, &lead.remote, repo_skills);
     }
 
     transaction.commit_with(|| manifest.save(manifest_path))?;
@@ -251,7 +266,7 @@ mod tests {
             partial: false,
         };
 
-        let result = install_skills(&[skill], false, &skills_dir, &manifest_path).unwrap();
+        let result = install_skills(&[skill], &[], false, &skills_dir, &manifest_path).unwrap();
         assert_eq!(result.installed.len(), 1);
         assert_eq!(result.installed[0], "my-skill v1.0.0");
         assert!(skills_dir.join("my-skill").join("SKILL.md").exists());
@@ -276,7 +291,7 @@ mod tests {
             partial: false,
         };
 
-        let result = install_skills(&[skill], false, &skills_dir, &manifest_path);
+        let result = install_skills(&[skill], &[], false, &skills_dir, &manifest_path);
 
         assert!(result.is_err());
         assert!(!temp.path().join("escape").exists());
@@ -320,7 +335,7 @@ mod tests {
             partial: false,
         };
 
-        let result = install_skills(&[skill], false, &skills_dir, &manifest_path).unwrap();
+        let result = install_skills(&[skill], &[], false, &skills_dir, &manifest_path).unwrap();
         assert!(result.installed.is_empty());
         assert_eq!(result.skipped_tracked.len(), 1);
     }
@@ -360,7 +375,7 @@ mod tests {
             partial: false,
         };
 
-        let result = install_skills(&[skill], true, &skills_dir, &manifest_path).unwrap();
+        let result = install_skills(&[skill], &[], true, &skills_dir, &manifest_path).unwrap();
         assert_eq!(result.installed.len(), 1);
         assert!(result.skipped_tracked.is_empty());
     }
@@ -371,7 +386,7 @@ mod tests {
         let skills_dir = temp.path().join("skills");
         let manifest_path = skills_dir.join(".skills.json");
 
-        let result = install_skills(&[], false, &skills_dir, &manifest_path).unwrap();
+        let result = install_skills(&[], &[], false, &skills_dir, &manifest_path).unwrap();
         assert!(result.installed.is_empty());
         assert!(result.skipped_tracked.is_empty());
         assert!(result.skipped_existing.is_empty());
@@ -536,14 +551,14 @@ mod tests {
         let skills = temp.path().join("skills");
         let manifest = skills.join(".skills.json");
         let first = resolved_fixture(temp.path(), "first");
-        install_skills(&[first], false, &skills, &manifest).unwrap();
+        install_skills(&[first], &[], false, &skills, &manifest).unwrap();
         std::fs::write(skills.join("first/SKILL.md"), "original").unwrap();
         let original_manifest = std::fs::read(&manifest).unwrap();
         let first = resolved_fixture(temp.path(), "first");
         let new = resolved_fixture(temp.path(), "new");
         let mut broken = resolved_fixture(temp.path(), "broken");
         broken.repo_path = temp.path().join("missing-source");
-        assert!(install_skills(&[first, new, broken], true, &skills, &manifest).is_err());
+        assert!(install_skills(&[first, new, broken], &[], true, &skills, &manifest).is_err());
         assert_eq!(
             std::fs::read_to_string(skills.join("first/SKILL.md")).unwrap(),
             "original"
@@ -562,7 +577,7 @@ mod tests {
         std::fs::create_dir_all(skills.join("first")).unwrap();
         std::fs::write(skills.join("first/SKILL.md"), "original").unwrap();
         let new = resolved_fixture(temp.path(), "new");
-        assert!(install_skills(&[first, new], true, &skills, &manifest).is_err());
+        assert!(install_skills(&[first, new], &[], true, &skills, &manifest).is_err());
         assert_eq!(
             std::fs::read_to_string(skills.join("first/SKILL.md")).unwrap(),
             "original"
@@ -580,7 +595,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, skills.join("linked")).unwrap();
         let skill = resolved_fixture(temp.path(), "linked");
         let result =
-            install_skills(&[skill], false, &skills, &skills.join(".skills.json")).unwrap();
+            install_skills(&[skill], &[], false, &skills, &skills.join(".skills.json")).unwrap();
         assert!(result.installed.is_empty());
         assert_eq!(result.skipped_existing, vec!["linked"]);
         assert_eq!(std::fs::read_link(skills.join("linked")).unwrap(), outside);

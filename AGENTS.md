@@ -107,5 +107,5 @@ Key design decisions in `docs/DESIGN.md`, full architecture in `docs/ARCHITECTUR
 - Top-level skill directories: detects `skill-name/SKILL.md` at repo root
 - `tome update` uses compact crossterm progress in interactive terminals and stays line-based in non-TTY output
 - `tome export` outputs `tome add` commands for all tracked skills (sorted alphabetically)
-- `tome update` installs skills that newly appear in tracked git repositories, pinned to the source commit; targeted `tome update <name>` does not sync new repo skills; sources installed with a partial skill selection (subset picked in the picker, `@skill-name`, or `--path` on a multi-skill repo) are never auto-expanded
+- `tome update` installs skills that newly appear in tracked git repositories, pinned to the source commit; targeted `tome update <name>` does not sync new repo skills; sources installed with a partial skill selection (subset picked in the picker, `@skill-name`, or `--path` on a multi-skill repo) are never auto-expanded until a later `tome add` tracks every skill in that repository
 - No telemetry, no server, no configuration beyond `.skills.json`

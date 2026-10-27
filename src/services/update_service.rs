@@ -260,10 +260,13 @@ impl UpdateService {
             // Auto-adopting newly appearing skills is disabled for groups where
             // the user installed only an explicitly selected subset: the skills
             // missing from the manifest were declined, not "newly appeared".
+            // `tome add` clears the flag once a repository is fully tracked.
             let group_sync_new = matches!(scope, UpdateScope::All)
-                && skill_names
-                    .iter()
-                    .all(|name| !manifest.get_skill(name).is_some_and(|entry| entry.partial));
+                && skill_names.iter().all(|name| {
+                    !manifest
+                        .get_skill(name)
+                        .is_some_and(|entry| entry.is_partial())
+                });
             let group_result = self.update_git_group(
                 &mut manifest,
                 &mut transaction,
@@ -995,17 +998,7 @@ mod tests {
         skills_dir: &Path,
         partial: bool,
     ) -> (String, Manifest) {
-        let repo_dir = temp.path().join("repo");
-        for (dir, name) in [("skills/chosen", "chosen"), ("skills/extra", "extra")] {
-            let skill_dir = repo_dir.join(dir);
-            fs::create_dir_all(&skill_dir).unwrap();
-            fs::write(
-                skill_dir.join("SKILL.md"),
-                format!("---\nname: {name}\ndescription: {name}\n---\n"),
-            )
-            .unwrap();
-        }
-        testutil::init_git_repo(&repo_dir);
+        let repo_dir = testutil::create_multi_skill_repo(temp, &["chosen", "extra"]);
         let remote = format!("file://{}", repo_dir.display());
 
         let local = skills_dir.join("chosen");
@@ -1033,6 +1026,15 @@ mod tests {
         let manifest_path = skills_dir.join(".skills.json");
         manifest.save(&manifest_path).unwrap();
 
+        // Give the tracked skill a new version so the update has work to do.
+        let repo_dir = temp.path().join("repo");
+        fs::write(
+            repo_dir.join("skills/chosen/SKILL.md"),
+            "---\nname: chosen\ndescription: chosen\nversion: 2.0.0\n---\n",
+        )
+        .unwrap();
+        testutil::init_git_repo(&repo_dir);
+
         let service = UpdateService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
         let mut reporter = RecordingReporter::default();
         service.run(None, false, false, &mut reporter).unwrap();
@@ -1044,6 +1046,53 @@ mod tests {
         );
         assert!(!skills_dir.join("extra").exists());
         assert!(loaded.is_tracked("chosen"));
+        assert_eq!(
+            loaded.get_skill("chosen").unwrap().version,
+            "2.0.0",
+            "tracked skills still update inside a partial group"
+        );
+        assert!(
+            loaded.get_skill("chosen").unwrap().is_partial(),
+            "updating must preserve the partial flag"
+        );
+    }
+
+    #[test]
+    fn update_all_skips_new_skills_for_mixed_partial_group() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+
+        let repo_dir = testutil::create_multi_skill_repo(&temp, &["chosen", "extra", "fresh"]);
+        let remote = format!("file://{}", repo_dir.display());
+
+        let mut manifest = Manifest::new();
+        for (name, partial) in [("chosen", false), ("extra", true)] {
+            let local = skills_dir.join(name);
+            fs::create_dir_all(&local).unwrap();
+            fs::write(
+                local.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {name}\n---\n"),
+            )
+            .unwrap();
+            let mut entry = make_entry(name, "0000000", &remote);
+            entry.path = format!("skills/{name}");
+            entry.set_partial(partial);
+            manifest.add_skill(name, entry);
+        }
+        let manifest_path = skills_dir.join(".skills.json");
+        manifest.save(&manifest_path).unwrap();
+
+        let service = UpdateService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
+        let mut reporter = RecordingReporter::default();
+        service.run(None, false, false, &mut reporter).unwrap();
+
+        let loaded = Manifest::load(&manifest_path).unwrap();
+        assert!(
+            !loaded.is_tracked("fresh"),
+            "one partial entry disables adoption for the whole source group"
+        );
+        assert!(loaded.get_skill("extra").unwrap().is_partial());
     }
 
     #[test]

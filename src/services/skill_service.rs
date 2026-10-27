@@ -4,6 +4,7 @@
 //! Commands call service methods, and services use core modules for actual operations.
 
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::core::{parse_source, repo_detect, spec};
@@ -78,17 +79,29 @@ impl SkillService {
 
         // Detect repository type and resolve skills
         let mut partial = false;
+        // Installable skill set of the repository, used to detect that a
+        // selection ended up tracking everything (nothing was declined).
+        let mut repo_skill_names: Vec<String> = Vec::new();
         let selected_skills = if let Some(custom_path) = &path_override {
             let repo_path = crate::fs::resolve_path_within(temp_dir.path(), custom_path)
                 .with_context(|| format!("Invalid skill path '{custom_path}'"))?;
             let frontmatter = spec::validate_skill(&repo_path).context("Invalid SKILL.md")?;
             // Pointing at one skill of a multi-skill repository is a partial
             // selection: update must not adopt the rest of the repository.
-            partial = repo_detect::resolve_skills(temp_dir.path()).is_ok_and(|s| s.len() > 1);
+            match repo_detect::resolve_skills(temp_dir.path()) {
+                Ok(detected) => {
+                    partial = detected.len() > 1;
+                    repo_skill_names = trackable_skill_names(&detected);
+                }
+                // Unknown repository shape: assume the worst rather than let a
+                // later update adopt siblings the user never saw.
+                Err(_) => partial = true,
+            }
             vec![(repo_path, frontmatter)]
         } else {
             let skills = repo_detect::resolve_skills(temp_dir.path())
                 .context("Failed to detect repository structure")?;
+            repo_skill_names = trackable_skill_names(&skills);
 
             let is_single = matches!(skills.as_slice(), [_]);
             let selected = match skills.as_slice() {
@@ -125,7 +138,13 @@ impl SkillService {
                             Some(pick) => pick(&skills)?,
                             None => select_skills(&skills, &label)?,
                         };
-                        partial = picked.len() < skills.len();
+                        // Compare as sets: a duplicated pick must not look like
+                        // a full selection.
+                        let picked_names: HashSet<&str> =
+                            picked.iter().map(|skill| skill.name.as_str()).collect();
+                        partial = !skills
+                            .iter()
+                            .all(|skill| picked_names.contains(skill.name.as_str()));
                         picked
                     }
                 },
@@ -165,6 +184,7 @@ impl SkillService {
         crate::fs::ensure_skills_dir(&self.config.skills_dir)?;
         install::install_skills(
             &resolved,
+            &repo_skill_names,
             force,
             &self.config.skills_dir,
             &self.config.manifest_path,
@@ -209,6 +229,7 @@ impl SkillService {
         crate::fs::ensure_skills_dir(&self.config.skills_dir)?;
         install::install_skills(
             &resolved,
+            &[],
             force,
             &self.config.skills_dir,
             &self.config.manifest_path,
@@ -263,6 +284,17 @@ impl SkillService {
         }
         transaction.commit_with(|| manifest.save(manifest_path))
     }
+}
+
+/// Names of repository skills that can actually be tracked. Uninstallable
+/// upstream names (e.g. `bad/name`) must not keep a repository permanently
+/// "incomplete", otherwise the partial flag could never be cleared.
+fn trackable_skill_names(skills: &[repo_detect::SkillInfo]) -> Vec<String> {
+    skills
+        .iter()
+        .filter(|skill| spec::validate_skill_name(&skill.name).is_ok())
+        .map(|skill| skill.name.clone())
+        .collect()
 }
 
 fn select_skills(
@@ -439,20 +471,7 @@ mod tests {
 
     /// Fixture: a local git repo with two skills under `skills/`.
     fn two_skill_repo(temp: &TempDir) -> std::path::PathBuf {
-        let repo = temp.path().join("repo");
-        for (dir, name, desc) in [
-            ("skills/first", "first", "one"),
-            ("skills/second", "second", "two"),
-        ] {
-            fs::create_dir_all(repo.join(dir)).unwrap();
-            fs::write(
-                repo.join(dir).join("SKILL.md"),
-                format!("---\nname: {name}\ndescription: {desc}\nversion: 1.0.0\n---\n"),
-            )
-            .unwrap();
-        }
-        testutil::init_git_repo(&repo);
-        repo
+        testutil::create_multi_skill_repo(temp, &["first", "second"])
     }
 
     #[test]
@@ -510,6 +529,173 @@ mod tests {
             path: std::path::PathBuf::from(name),
             description: Some(format!("{name} desc")),
         }
+    }
+
+    #[test]
+    fn install_with_path_override_on_multi_skill_repo_marks_entry_partial() {
+        let temp = TempDir::new().unwrap();
+        let repo = two_skill_repo(&temp);
+
+        let skills_dir = temp.path().join("skills");
+        let manifest_path = skills_dir.join(".skills.json");
+        let service = SkillService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
+
+        let source_url = format!("file://{}", repo.display());
+        service
+            .install(&source_url, Some("skills/first".into()), false, false, None)
+            .unwrap();
+
+        let loaded = Manifest::load(&manifest_path).unwrap();
+        assert!(
+            loaded.get_skill("first").unwrap().is_partial(),
+            "--path on a multi-skill repo is a partial selection"
+        );
+        assert!(!loaded.is_tracked("second"));
+    }
+
+    #[test]
+    fn install_with_duplicate_picker_entries_is_still_partial() {
+        let temp = TempDir::new().unwrap();
+        let repo = two_skill_repo(&temp);
+
+        let skills_dir = temp.path().join("skills");
+        let manifest_path = skills_dir.join(".skills.json");
+        let service = SkillService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
+
+        // Two entries for a two-skill repository, but only one distinct skill.
+        let mut picker = |skills: &[repo_detect::SkillInfo]| {
+            let first = skills.iter().find(|s| s.name == "first").unwrap();
+            Ok(vec![first.clone(), first.clone()])
+        };
+        let source_url = format!("file://{}", repo.display());
+        service
+            .install(&source_url, None, false, false, Some(&mut picker))
+            .unwrap();
+
+        let loaded = Manifest::load(&manifest_path).unwrap();
+        assert!(
+            loaded.get_skill("first").unwrap().is_partial(),
+            "selection is compared as a set, not by entry count"
+        );
+    }
+
+    #[test]
+    fn full_selection_of_valid_skills_clears_partial_despite_uninstallable_sibling() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        for (dir, name) in [("skills/good", "good"), ("skills/bad", "bad/name")] {
+            fs::create_dir_all(repo.join(dir)).unwrap();
+            fs::write(
+                repo.join(dir).join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {name}\n---\n"),
+            )
+            .unwrap();
+        }
+        testutil::init_git_repo(&repo);
+
+        let skills_dir = temp.path().join("skills");
+        let manifest_path = skills_dir.join(".skills.json");
+        let service = SkillService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
+
+        // `bad/name` can never be installed, so selecting every valid skill is
+        // the closest a user can get to a complete selection.
+        let mut picker = |skills: &[repo_detect::SkillInfo]| {
+            Ok(skills
+                .iter()
+                .filter(|s| s.name == "good")
+                .cloned()
+                .collect())
+        };
+        let source_url = format!("file://{}", repo.display());
+        service
+            .install(&source_url, None, false, false, Some(&mut picker))
+            .unwrap();
+
+        let loaded = Manifest::load(&manifest_path).unwrap();
+        assert!(loaded.is_tracked("good"));
+        assert!(
+            !loaded.get_skill("good").unwrap().is_partial(),
+            "uninstallable upstream names must not keep the repository incomplete"
+        );
+    }
+
+    #[test]
+    fn full_reinstall_clears_stale_partial_flag() {
+        let temp = TempDir::new().unwrap();
+        let repo = two_skill_repo(&temp);
+
+        let skills_dir = temp.path().join("skills");
+        let manifest_path = skills_dir.join(".skills.json");
+        let service = SkillService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
+        let source_url = format!("file://{}", repo.display());
+
+        let mut partial_picker = |skills: &[repo_detect::SkillInfo]| {
+            Ok(skills
+                .iter()
+                .filter(|s| s.name == "first")
+                .cloned()
+                .collect())
+        };
+        service
+            .install(&source_url, None, false, false, Some(&mut partial_picker))
+            .unwrap();
+        assert!(
+            Manifest::load(&manifest_path)
+                .unwrap()
+                .get_skill("first")
+                .unwrap()
+                .is_partial()
+        );
+
+        // Full re-selection: `first` already exists and is skipped by the
+        // installer, but the completed selection must clear its stale flag.
+        let mut full_picker = |skills: &[repo_detect::SkillInfo]| Ok(skills.to_vec());
+        service
+            .install(&source_url, None, false, false, Some(&mut full_picker))
+            .unwrap();
+
+        let loaded = Manifest::load(&manifest_path).unwrap();
+        assert!(loaded.is_tracked("second"));
+        assert!(
+            !loaded.get_skill("first").unwrap().is_partial(),
+            "a fully tracked repository must resume new-skill adoption"
+        );
+    }
+
+    #[test]
+    fn reinstalling_last_missing_skill_reenables_new_skill_sync() {
+        let temp = TempDir::new().unwrap();
+        let repo = two_skill_repo(&temp);
+
+        let skills_dir = temp.path().join("skills");
+        let manifest_path = skills_dir.join(".skills.json");
+        let service = SkillService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
+        let source_url = format!("file://{}", repo.display());
+
+        let mut full_picker = |skills: &[repo_detect::SkillInfo]| Ok(skills.to_vec());
+        service
+            .install(&source_url, None, false, false, Some(&mut full_picker))
+            .unwrap();
+        service.remove("first").unwrap();
+
+        // Re-adding the last missing skill completes the repository again.
+        let mut partial_picker = |skills: &[repo_detect::SkillInfo]| {
+            Ok(skills
+                .iter()
+                .filter(|s| s.name == "first")
+                .cloned()
+                .collect())
+        };
+        service
+            .install(&source_url, None, false, false, Some(&mut partial_picker))
+            .unwrap();
+
+        let loaded = Manifest::load(&manifest_path).unwrap();
+        assert!(loaded.is_tracked("second"));
+        assert!(
+            !loaded.get_skill("first").unwrap().is_partial(),
+            "the repository is fully tracked again, so the group must stay synced"
+        );
     }
 
     #[test]

@@ -27,9 +27,14 @@ pub struct SkillEntry {
     pub(crate) remote: String,
     /// True when this entry was installed by explicitly selecting a subset of
     /// a multi-skill repository. Update must never auto-adopt the skills the
-    /// user declined for such a source. Absent in pre-0.9.2 manifests → false.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// user declined for such a source. Absent in pre-0.10.0 manifests → false.
+    #[serde(default, skip_serializing_if = "is_false")]
     pub(crate) partial: bool,
+}
+
+/// Serde predicate keeping `partial: false` out of the manifest file.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl SkillEntry {
@@ -208,6 +213,39 @@ impl Manifest {
         }
     }
 
+    /// Clear the partial flag for every entry of `source` when the tracked
+    /// skills cover the whole repository.
+    ///
+    /// A selection that ends up tracking every skill in the repository means
+    /// nothing was declined, so new-skill adoption must resume even when an
+    /// earlier install marked entries partial. Returns `true` when any entry
+    /// changed, so callers can skip an unneeded manifest write.
+    pub fn complete_partial_selection(
+        &mut self,
+        source: &str,
+        remote: &str,
+        repo_skills: &[String],
+    ) -> bool {
+        let belongs_to_source =
+            |entry: &SkillEntry| entry.source == source || entry.remote == remote;
+        let fully_tracked = !repo_skills.is_empty()
+            && repo_skills
+                .iter()
+                .all(|name| self.skills.get(name).is_some_and(belongs_to_source));
+        if !fully_tracked {
+            return false;
+        }
+
+        let mut changed = false;
+        for entry in self.skills.values_mut() {
+            if entry.partial && belongs_to_source(entry) {
+                entry.partial = false;
+                changed = true;
+            }
+        }
+        changed
+    }
+
     pub fn rebuild_from_directory(skills_dir: &Path) -> Result<Self> {
         let mut manifest = Self::new();
 
@@ -345,6 +383,105 @@ mod tests {
 
         let loaded = Manifest::load(&path).unwrap();
         assert!(loaded.get_skill("chosen").unwrap().is_partial());
+    }
+
+    #[test]
+    fn partial_false_is_not_serialized() {
+        let mut manifest = Manifest::new();
+        manifest.add_skill(
+            "full",
+            SkillEntry::new(
+                "owner/repo",
+                "",
+                &crate::testutil::make_fm("full"),
+                "abc1234",
+                "https://github.com/owner/repo.git",
+            ),
+        );
+
+        let json = serde_json::to_string(&manifest).unwrap();
+        assert!(
+            !json.contains("partial"),
+            "false flags must not churn every existing manifest: {json}"
+        );
+    }
+
+    fn partial_entry(name: &str, source: &str, remote: &str) -> SkillEntry {
+        let mut entry = SkillEntry::new(
+            source,
+            "",
+            &crate::testutil::make_fm(name),
+            "abc1234",
+            remote,
+        );
+        entry.set_partial(true);
+        entry
+    }
+
+    #[test]
+    fn complete_partial_selection_clears_flags_when_repo_fully_tracked() {
+        let remote = "https://github.com/owner/repo.git";
+        let mut manifest = Manifest::new();
+        manifest.add_skill("first", partial_entry("first", "owner/repo", remote));
+        manifest.add_skill(
+            "second",
+            SkillEntry::new(
+                "owner/repo",
+                "",
+                &crate::testutil::make_fm("second"),
+                "abc1234",
+                remote,
+            ),
+        );
+        manifest.add_skill(
+            "elsewhere",
+            partial_entry(
+                "elsewhere",
+                "other/repo",
+                "https://github.com/other/repo.git",
+            ),
+        );
+
+        let changed = manifest.complete_partial_selection(
+            "owner/repo",
+            remote,
+            &["first".to_string(), "second".to_string()],
+        );
+
+        assert!(changed);
+        assert!(!manifest.get_skill("first").unwrap().is_partial());
+        assert!(
+            manifest.get_skill("elsewhere").unwrap().is_partial(),
+            "entries from other sources must keep their flag"
+        );
+    }
+
+    #[test]
+    fn complete_partial_selection_keeps_flags_for_incomplete_repo() {
+        let remote = "https://github.com/owner/repo.git";
+        let mut manifest = Manifest::new();
+        manifest.add_skill("first", partial_entry("first", "owner/repo", remote));
+
+        let changed = manifest.complete_partial_selection(
+            "owner/repo",
+            remote,
+            &["first".to_string(), "second".to_string()],
+        );
+
+        assert!(
+            !changed,
+            "an untracked repository skill means the selection is still partial"
+        );
+        assert!(manifest.get_skill("first").unwrap().is_partial());
+    }
+
+    #[test]
+    fn complete_partial_selection_ignores_unknown_repo() {
+        let mut manifest = Manifest::new();
+        manifest.add_skill("first", partial_entry("first", "owner/repo", "remote"));
+
+        assert!(!manifest.complete_partial_selection("owner/repo", "remote", &[]));
+        assert!(manifest.get_skill("first").unwrap().is_partial());
     }
 
     #[test]
