@@ -164,14 +164,6 @@ fn manage_inventory(
         let removed = service.remove_selected(&names)?;
         let old = std::mem::take(&mut rows);
         rows = inventory_rows(skills_dir, manifest_path)?;
-        let marked: std::collections::HashSet<String> = old
-            .iter()
-            .filter(|r| r.selected)
-            .map(|r| r.name.clone())
-            .collect();
-        for row in &mut rows {
-            row.selected = marked.contains(&row.name);
-        }
         resume = session;
         resume.focus = resume_focus(&old, &rows, resume.focus.as_deref());
         resume.notice = Some(format!("Removed {} skill(s)", removed.len()));
@@ -187,7 +179,9 @@ fn manage_inventory(
 }
 
 /// Keep the cursor near the action: the focused row if it survived, else the
-/// nearest surviving neighbour (forward first, then backward).
+/// nearest surviving neighbour in row order (forward first, then backward).
+/// A neighbour hidden by the restored filter leaves the cursor on the first
+/// visible match.
 fn resume_focus(
     old: &[crate::tui::ListItem],
     new: &[crate::tui::ListItem],
@@ -659,6 +653,7 @@ mod tests {
         let new = vec![row("a"), row("b")];
         assert_eq!(resume_focus(&old, &new, Some("b")).as_deref(), Some("b"));
         assert_eq!(resume_focus(&old, &new, None), None);
+        assert_eq!(resume_focus(&old, &new, Some("missing")), None);
     }
 
     #[test]

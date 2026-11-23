@@ -4,7 +4,7 @@
 
 - **Browse** — read-only reports (update and removal results).
 - **Manage** — the `list` inventory: mark and remove in place.
-- **Select** — install, remove, and export pickers.
+- **Select** — install, remove, update `--interactive`, and export pickers.
 - **Review** — deletion confirmation for `tome remove`.
 
 ## Keys
@@ -15,10 +15,10 @@
 | / | Focus the filter; every word must match name, description, source, version or status |
 | Esc in filter | Back to the list, keeping the query |
 | Ctrl-U / Alt-Space in filter | Clear the query / type a space |
-| Space | Toggle the focused mark (Select, Manage) |
-| a / n | Mark / clear every match, including rows outside the viewport |
+| Space | Toggle the focused mark (Select, Manage); works while the filter is focused |
+| a / n | Mark / clear every match, including rows outside the viewport (list focused, not the filter) |
 | Tab | Show only marked rows; hidden marks are kept and counted |
-| x / Delete (Manage) | Remove marked rows now; the focused row when nothing is marked |
+| x / Delete (Manage) | Remove marked rows now; the focused row when nothing is marked (list focused, not the filter) |
 | d, then Esc | Full scrollable details, then back |
 | Enter | Picker: continue. Manage/Browse: close. Manage filter: leave the filter |
 | q / Esc / Ctrl-C | Close or cancel; Ctrl-C also works while searching |
@@ -30,8 +30,8 @@
 - Footer shows `x: remove N marked | n: clear`, or `Removed N skill(s)` after a
   removal; the notice clears on the next keypress.
 - Untracked rows refuse marks with a notice — tome removes only what it owns.
-- After a removal the list reloads in place, keeping the filter, surviving
-  marks and the cursor.
+- After a removal the list reloads in place, keeping the filter and the cursor;
+  the marked-only view closes because every mark was deleted.
 
 ## Review specifics
 

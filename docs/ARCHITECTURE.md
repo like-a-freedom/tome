@@ -39,8 +39,9 @@ tome/
 │   │   ├── add.rs              # CLI adapter → SkillService
 │   │   ├── remove.rs           # CLI adapter → SkillService
 │   │   ├── update.rs           # CLI adapter → UpdateService + presentation
-│   │   ├── list.rs             # read-side list rendering and scanning
-│   │   └── export.rs           # read-side export rendering
+│   │   ├── list.rs             # inventory browser/table + in-place removal
+│   │   ├── export.rs           # read-side export rendering
+│   │   └── skill.rs            # prints the embedded agent manual
 │   ├── services.rs             # application-service module declaration
 │   ├── services/
 │   │   ├── skill_service.rs    # install/remove orchestration
@@ -63,7 +64,9 @@ tome/
 │   ├── output.rs               # shared terminal output formatting
 │   ├── progress.rs             # crossterm progress presentation
 │   ├── style.rs                # ANSI and box-drawing helpers
-│   ├── tui.rs                  # interactive multi-select
+│   ├── skill.rs                # manual topic resolution
+│   ├── skill/                  # embedded manual: SKILL.md + topic references
+│   ├── tui.rs                  # browse/manage/select/review browser
 │   └── testutil.rs             # test-only shared fixtures
 └── tests/
     ├── integration.rs          # public CLI regression tests
@@ -93,10 +96,16 @@ CLI arguments → application service → output formatting
   `SkillService::remove_selected`. All names are validated before any deletion.
 - `commands/update.rs` constructs `UpdateService`, supplies the
   `UpdateReporter`, and renders the returned result.
+- `commands/list.rs` builds inventory rows (tracked, stale, untracked), runs the
+  Manage browser, and reapplies the reloaded inventory with `ListResume`.
+- `commands/skill.rs` prints `skill::document(topic)`.
 
-`list` and `export` are read-side commands. Their orchestration remains local
-because no second read backend or separate read model is currently required;
-this is explicitly deferred in ADR-0001. The shared primitive for "what counts
+`export` is a read-side command, and `skill` only prints embedded text.
+`list` mixes read-side rendering with the inventory browser: in a TTY it marks
+and removes through `SkillService::remove_selected`, otherwise it renders the
+table or JSON. Its orchestration remains local because no second read backend or
+separate read model is currently required; this is explicitly deferred in
+ADR-0001. The shared primitive for "what counts
 as a skill on disk" lives in `core/scan.rs` (ADR-0009).
 
 ### Application services
@@ -201,8 +210,7 @@ or locking between writers.
 them, scans for manually placed skills, and renders the inventory in manage mode
 in usable interactive terminals: Space/a/n/Tab mark rows and `x` removes the marked
 set (or the focused row) immediately via `SkillService::remove_selected`, then
-reloads the inventory while preserving filter, surviving marks and cursor
-(`ListResume`). `--plain`, `--json` and redirected output bypass the TUI.
+reloads the inventory while preserving the filter and cursor (`ListResume`). `--plain`, `--json` and redirected output bypass the TUI.
 `export` loads the manifest, sorts entries by skill name, and prints equivalent
 `tome add` commands. `--interactive` filters these by exact selected manifest keys
 and keeps all picker output on stderr, including when stdout is redirected.
@@ -221,8 +229,9 @@ covered by tests for metadata, pointers, and unknown topics.
 item indices, metadata search, selected-only filtering, paging and scrollable
 details. Manage mode adds marking plus an immediate-removal outcome;
 `ListItem::removable` encodes ownership so untracked directories stay read-only.
-`run_list_resuming` restores the filter query, marked-only view, cursor row and
-a footer notice between sessions (`ListResume`).
+`run_list_resuming` restores the filter query, cursor row and a footer notice
+between sessions (`ListResume`); the marked-only view is not restored because a
+removal deletes every mark.
 The renderer respects current terminal cell dimensions and sanitizes control
 characters in metadata. A session guard owns raw mode, cursor visibility and the
 alternate screen on stderr; resize events recalculate the viewport. Tiny windows

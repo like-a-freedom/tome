@@ -36,7 +36,7 @@
 
 **Mark** — The transient selection in the `list` inventory (Space/a/n); `x` removes the marked set immediately. The mark never outlives the inventory session.
 
-**ListResume** — The browser session context restored after an in-place removal: filter query, marked-only view, focused row and footer notice.
+**ListResume** — The browser session context restored after an in-place removal: filter query, focused row and footer notice. The marked-only view is not restored because a removal deletes every mark.
 
 ## Paths
 

@@ -82,6 +82,15 @@ impl SkillEntry {
         self.partial
     }
 
+    /// Whether this entry belongs to the same source group: same canonical
+    /// source label or same remote URL. Placeholder values written by
+    /// `rebuild_from_directory` never match, so a rebuilt entry cannot pull
+    /// unrelated skills into a partial group.
+    pub fn belongs_to_source(&self, source: &str, remote: &str) -> bool {
+        let known = |value: &str| !value.is_empty() && value != "unknown";
+        (known(source) && self.source == source) || (known(remote) && self.remote == remote)
+    }
+
     /// The source used to (re)install this skill: the remote URL when the
     /// remote starts with the FILE_URL_COMMIT marker (a `file://` install),
     /// the tracked source otherwise.
@@ -226,19 +235,19 @@ impl Manifest {
         remote: &str,
         repo_skills: &[String],
     ) -> bool {
-        let belongs_to_source =
-            |entry: &SkillEntry| entry.source == source || entry.remote == remote;
         let fully_tracked = !repo_skills.is_empty()
-            && repo_skills
-                .iter()
-                .all(|name| self.skills.get(name).is_some_and(belongs_to_source));
+            && repo_skills.iter().all(|name| {
+                self.skills
+                    .get(name)
+                    .is_some_and(|entry| entry.belongs_to_source(source, remote))
+            });
         if !fully_tracked {
             return false;
         }
 
         let mut changed = false;
         for entry in self.skills.values_mut() {
-            if entry.partial && belongs_to_source(entry) {
+            if entry.partial && entry.belongs_to_source(source, remote) {
                 entry.partial = false;
                 changed = true;
             }
@@ -255,7 +264,7 @@ impl Manifest {
         for entry in self.skills.values_mut() {
             if removed
                 .iter()
-                .any(|(source, remote)| entry.source == *source || entry.remote == *remote)
+                .any(|(source, remote)| entry.belongs_to_source(source, remote))
             {
                 entry.partial = true;
             }
@@ -498,6 +507,53 @@ mod tests {
 
         assert!(!manifest.complete_partial_selection("owner/repo", "remote", &[]));
         assert!(manifest.get_skill("first").unwrap().is_partial());
+    }
+
+    #[test]
+    fn mark_partial_after_removal_scopes_to_the_removed_source() {
+        let remote = "https://github.com/owner/repo.git";
+        let mut manifest = Manifest::new();
+        for (name, source, remote) in [
+            ("first", "owner/repo", remote),
+            ("second", "owner/repo", remote),
+            (
+                "elsewhere",
+                "other/repo",
+                "https://github.com/other/repo.git",
+            ),
+        ] {
+            manifest.add_skill(
+                name,
+                SkillEntry::new(
+                    source,
+                    "",
+                    &crate::testutil::make_fm(name),
+                    "abc1234",
+                    remote,
+                ),
+            );
+        }
+        manifest.remove_skill("first");
+
+        manifest.mark_partial_after_removal(&[("owner/repo".into(), remote.into())]);
+
+        assert!(manifest.get_skill("second").unwrap().is_partial());
+        assert!(
+            !manifest.get_skill("elsewhere").unwrap().is_partial(),
+            "other sources must not be marked"
+        );
+    }
+
+    #[test]
+    fn belongs_to_source_ignores_rebuild_placeholders() {
+        let entry = SkillEntry::new(
+            "unknown",
+            "",
+            &crate::testutil::make_fm("rebuilt"),
+            "unknown",
+            "unknown",
+        );
+        assert!(!entry.belongs_to_source("unknown", "unknown"));
     }
 
     #[test]

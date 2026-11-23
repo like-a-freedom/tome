@@ -1,8 +1,7 @@
 ---
 name: tome
 description: "Manual for the tome CLI: install, list, update, remove, and export AI agent skills stored as SKILL.md directories. Use when running or scripting tome, choosing flags, driving the terminal browser, or managing tracked sources in .agents/skills."
-metadata:
-  version: "1.0"
+version: "1.0"
 ---
 # tome
 

@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tome list` is now an inventory browser: `Space` marks skills, `a`/`n`
   mark/clear all matches, `Tab` shows marked only, and `x`/`Delete` removes the
   marked set (or the focused skill) immediately. The list reloads in place,
-  keeping filter, surviving marks and cursor, and reports `Removed N skill(s)`.
+  keeping the filter and cursor, and reports `Removed N skill(s)`.
   Untracked skills stay read-only. `tome remove` keeps its review flow.
 - `tome skill [commands|tui|workflows]` prints the agent manual embedded in the
   binary (core SKILL.md plus topic references), for agents to read like a skill.

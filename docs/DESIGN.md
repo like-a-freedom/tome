@@ -141,7 +141,7 @@ The spec defines how **agents** load skills at runtime. The CLI's role is to ins
 
 ## Implemented Features
 
-- `tome list` inventory mode — Mark with Space/a/n, remove the marked set with `x` immediately; untracked rows are read-only; the reload keeps filter, marks and cursor
+- `tome list` inventory mode — Mark with Space/a/n, remove the marked set with `x` immediately; untracked rows are read-only; the reload keeps the filter and cursor
 - `tome skill` — Embedded agent manual (core SKILL.md plus `commands`/`tui`/`workflows` references) compiled into the binary
 - `tome export` — Outputs `tome add` commands for all tracked skills
 - `file:///` URL support — Install skills from local repos

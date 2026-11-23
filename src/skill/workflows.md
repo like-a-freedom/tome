@@ -3,7 +3,8 @@
 ## Batch-remove from the inventory
 
 1. `tome list`
-2. `/grafana` to filter, then `a` to mark every match — or Space per row.
+2. `/grafana`, then Enter or Esc to leave the filter, then `a` to mark every
+   match — or Space per row (Space works while the filter is focused).
 3. Check the footer count and press `x`. Removal is immediate; the notice
    reports the count.
 
@@ -13,8 +14,8 @@ Single skill: focus the row and press `x` with nothing marked.
 
 - Removing a subset marks the source partial; `tome update` skips new-skill
   adoption for partial sources.
-- Bring one skill back with `tome add owner/repo@name` (source stays partial),
-  or re-add the whole repo to clear the flag and resume adoption.
+- Bring one skill back with `tome add owner/repo@name`; re-adding the last
+  missing skill tracks the whole repo and clears the flag, resuming adoption.
 - Removing every skill of a source drops it from update entirely.
 
 ## Reproducible machines

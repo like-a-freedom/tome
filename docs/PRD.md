@@ -328,7 +328,7 @@ As a developer, I want to see all installed skills.
 - [ ] `tome list` shows skill names, versions, and sources
 - [ ] Output is table or simple list (`--plain`), JSON with `--json`
 - [ ] In the browser, Space/a/n mark skills and `x` removes the marked set immediately
-- [ ] After a removal the browser keeps the filter, surviving marks and cursor
+- [ ] After a removal the browser keeps the filter and cursor
 
 **Story 6: Run on existing .agents directory with manually-placed skills**
 As a developer, I want to start using `tome` on a project that already has a `.agents/skills/` directory with skills I added manually — without breaking anything.

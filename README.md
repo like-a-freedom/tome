@@ -96,9 +96,9 @@ press `d` for full, scrollable details.
 In `tome list`, marking works the same way but deletion is immediate: `x` removes
 every marked skill (or the focused one when nothing is marked) without a review
 screen; the footer shows the marked count before you press it. Untracked skills
-cannot be marked. After a removal the list refreshes in place, keeping the filter,
-surviving marks and the cursor, and reports `Removed N skill(s)` until the next
-keypress. `tome remove` keeps its select-then-review flow. Removing part of a
+cannot be marked. After a removal the list refreshes in place, keeping the filter and the cursor,
+and reports `Removed N skill(s)` until the next keypress; the marked-only view
+closes because every mark was deleted. `tome remove` keeps its select-then-review flow. Removing part of a
 repository marks the source partial, so `tome update` will not reinstall the
 removed skills; a full `tome add owner/repo` restores new-skill adoption.
 

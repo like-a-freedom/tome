@@ -72,9 +72,7 @@ trait Entry {
     fn status(&self) -> &str {
         ""
     }
-    fn removable(&self) -> bool {
-        true
-    }
+    fn removable(&self) -> bool;
 }
 impl Entry for SelectItem {
     fn name(&self) -> &str {
@@ -88,6 +86,9 @@ impl Entry for SelectItem {
     }
     fn set_selected(&mut self, selected: bool) {
         self.selected = selected;
+    }
+    fn removable(&self) -> bool {
+        true
     }
 }
 impl Entry for ListItem {
@@ -227,13 +228,13 @@ impl TuiState {
                 .map(|&i| items[i].name().to_string()),
             notice: self.notice.clone(),
             query: self.filter.query.clone(),
-            selected_only: self.selected_only,
         }
     }
-    /// Restore a previous session: filter, marked-only view, then cursor row.
+    /// Restore a previous session: filter, then cursor row. The marked-only
+    /// view is deliberately not restored: a removal deletes every mark, so it
+    /// could only reopen empty.
     fn resume_from<T: Entry>(&mut self, items: &[T], resume: ListResume) {
         self.notice = resume.notice;
-        self.selected_only = resume.selected_only;
         self.filter.query = resume.query;
         self.refilter(items);
         self.apply_resume(items, resume.focus.as_deref());
@@ -304,7 +305,7 @@ const HINTS_UNFOCUSED: &str =
     "Arrows/j/k: navigate | PgUp/PgDn | Home/End | /: filter | d: details";
 const HINTS_FOCUSED: &str = "Type to search | Alt-Space: space | Esc: list | Space/Enter: select";
 const HINTS_MANAGE: &str =
-    "Arrows/j/k | Space: mark | a/n: all/none | x: remove | /: filter | d: details";
+    "Arrows/jk | Space: mark | a/n all/none | x: remove | /: filter | d: info";
 const HINTS_MANAGE_NARROW: &str = "jk/Up/Dn Spc mark a/n all x rm /search d/info";
 const HINTS_FOCUSED_MANAGE: &str = "Type to search | Alt-Space: space | Esc: list | Space: mark";
 
@@ -489,6 +490,11 @@ fn build_render_buffer<T: Entry>(items: &[T], state: &TuiState, _desc_width: usi
             } else if position == state.offset && state.filtered.is_empty() {
                 if state.selected_only && state.filter.query.is_empty() {
                     "No skills selected. Tab: all skills".into()
+                } else if state.selected_only {
+                    format!(
+                        "No marked skills match \"{}\"; Tab: all skills",
+                        state.filter.query
+                    )
                 } else {
                     format!(
                         "No matches for \"{}\"; / then Ctrl-U: clear",
@@ -879,7 +885,19 @@ pub struct ListResume {
     pub focus: Option<String>,
     pub notice: Option<String>,
     pub query: String,
-    pub selected_only: bool,
+}
+
+/// Map the key handler's result and final state to the caller-visible outcome.
+fn exit_outcome(result: Result<()>, state: &TuiState) -> ListOutcome {
+    if result.is_err() {
+        ListOutcome::Cancelled
+    } else if state.remove {
+        ListOutcome::Remove
+    } else if state.back {
+        ListOutcome::Back
+    } else {
+        ListOutcome::Accepted
+    }
 }
 
 fn run_loop<T: Entry>(
@@ -911,16 +929,7 @@ fn run_loop<T: Entry>(
             Event::Resize(cols, rows) => state.resize(cols, rows),
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 if let Some(result) = handle_key(key, items, &mut state) {
-                    let outcome = if result.is_err() {
-                        ListOutcome::Cancelled
-                    } else if state.remove {
-                        ListOutcome::Remove
-                    } else if state.back {
-                        ListOutcome::Back
-                    } else {
-                        ListOutcome::Accepted
-                    };
-                    return Ok((outcome, state.resume(items)));
+                    return Ok((exit_outcome(result, &state), state.resume(items)));
                 }
             }
             _ => (),
@@ -2612,7 +2621,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_restores_filter_query_and_marked_view() {
+    fn resume_restores_filter_query_without_impossible_marked_view() {
         let mut items = vec![manage_item("grafana-one", true), manage_item("other", true)];
         items[0].selected = true;
         let mut state = manage_state(items.len());
@@ -2622,13 +2631,40 @@ mod tests {
         assert_eq!(state.filtered, vec![0]);
         let resume = state.resume(&items);
         assert_eq!(resume.query, "grafana");
-        assert!(resume.selected_only);
 
         let mut next = manage_state(items.len());
         next.resume_from(&items, resume);
         assert_eq!(next.filter.query, "grafana");
-        assert!(next.selected_only);
+        assert!(!next.selected_only, "a removal leaves no marks to view");
         assert_eq!(next.filtered, vec![0]);
+    }
+
+    #[test]
+    fn marked_view_with_filter_explains_empty_result() {
+        let items = vec![manage_item("alpha", true), manage_item("beta", true)];
+        let mut state = manage_state(items.len());
+        state.selected_only = true;
+        state.filter.query = "a".into();
+        state.refilter(&items);
+        let frame = plain_frame(&build_render_buffer(&items, &state, 0));
+        assert!(frame.contains("No marked skills match \"a\""), "{frame}");
+    }
+
+    #[test]
+    fn exit_outcome_maps_remove_back_and_cancel() {
+        let items = [manage_item("a", true)];
+        let mut state = manage_state(items.len());
+        state.remove = true;
+        assert_eq!(exit_outcome(Ok(()), &state), ListOutcome::Remove);
+        state.remove = false;
+        state.back = true;
+        assert_eq!(exit_outcome(Ok(()), &state), ListOutcome::Back);
+        assert_eq!(
+            exit_outcome(Err(anyhow::anyhow!("cancelled")), &state),
+            ListOutcome::Cancelled
+        );
+        state.back = false;
+        assert_eq!(exit_outcome(Ok(()), &state), ListOutcome::Accepted);
     }
 
     #[test]
@@ -2657,8 +2693,11 @@ mod tests {
     }
 
     #[test]
-    fn manage_hints_fit_80_columns() {
-        assert!(display_width(HINTS_MANAGE) <= MENU_FALLBACK_COLS as usize);
+    fn manage_hints_fit_their_render_width() {
+        assert!(
+            display_width(HINTS_MANAGE) <= WIDE_COLS,
+            "wide hint is only used from WIDE_COLS upwards"
+        );
         assert!(display_width(HINTS_FOCUSED_MANAGE) <= MENU_FALLBACK_COLS as usize);
     }
 
