@@ -139,17 +139,28 @@ fn manage_inventory(
     );
     let mut resume = ListResume::default();
     loop {
-        let (outcome, focused) =
+        let (outcome, session) =
             crate::tui::run_list_resuming("Installed skills", &mut rows, ListMode::Manage, resume)?;
-        resume = ListResume::default();
         if outcome != ListOutcome::Remove {
             break;
         }
+        // Only owned rows enter the batch: a stale mark on an untracked row
+        // must not make the whole transactional removal fail.
         let names: Vec<String> = rows
             .iter()
-            .filter(|r| r.selected)
+            .filter(|r| r.selected && r.removable)
             .map(|r| r.name.clone())
             .collect();
+        if names.is_empty() {
+            for row in &mut rows {
+                row.selected = false;
+            }
+            resume = ListResume {
+                notice: Some("Nothing removable is marked".into()),
+                ..session
+            };
+            continue;
+        }
         let removed = service.remove_selected(&names)?;
         let old = std::mem::take(&mut rows);
         rows = inventory_rows(skills_dir, manifest_path)?;
@@ -161,8 +172,12 @@ fn manage_inventory(
         for row in &mut rows {
             row.selected = marked.contains(&row.name);
         }
-        resume.focus = resume_focus(&old, &rows, focused.as_deref());
+        resume = session;
+        resume.focus = resume_focus(&old, &rows, resume.focus.as_deref());
         resume.notice = Some(format!("Removed {} skill(s)", removed.len()));
+        if resume.focus.is_none() {
+            resume.focus = rows.first().map(|r| r.name.clone());
+        }
         if rows.is_empty() {
             println!("No skills installed.");
             break;

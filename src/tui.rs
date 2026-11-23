@@ -218,6 +218,26 @@ impl TuiState {
             self.goto(pos);
         }
     }
+    /// Capture the session context before leaving the loop.
+    fn resume<T: Entry>(&self, items: &[T]) -> ListResume {
+        ListResume {
+            focus: self
+                .filtered
+                .get(self.cursor)
+                .map(|&i| items[i].name().to_string()),
+            notice: self.notice.clone(),
+            query: self.filter.query.clone(),
+            selected_only: self.selected_only,
+        }
+    }
+    /// Restore a previous session: filter, marked-only view, then cursor row.
+    fn resume_from<T: Entry>(&mut self, items: &[T], resume: ListResume) {
+        self.notice = resume.notice;
+        self.selected_only = resume.selected_only;
+        self.filter.query = resume.query;
+        self.refilter(items);
+        self.apply_resume(items, resume.focus.as_deref());
+    }
     fn resize(&mut self, cols: u16, rows: u16) {
         self.cols = cols;
         self.rows = rows;
@@ -854,10 +874,12 @@ impl Drop for TerminalSession {
     }
 }
 /// Cursor row and footer notice to restore when re-entering a session.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ListResume {
     pub focus: Option<String>,
     pub notice: Option<String>,
+    pub query: String,
+    pub selected_only: bool,
 }
 
 fn run_loop<T: Entry>(
@@ -865,7 +887,7 @@ fn run_loop<T: Entry>(
     items: &mut [T],
     mode: ListMode,
     resume: ListResume,
-) -> Result<(ListOutcome, Option<String>)> {
+) -> Result<(ListOutcome, ListResume)> {
     require_interactive()?;
     let _session = TerminalSession::enter()?;
     let (cols, rows) = size().unwrap_or((MENU_FALLBACK_COLS, DEFAULT_ROWS));
@@ -873,14 +895,13 @@ fn run_loop<T: Entry>(
     state.resize(cols, rows);
     state.title = title.into();
     state.mode = mode;
-    state.notice = resume.notice;
     state.filtered.sort_by(|&a, &b| {
         items[a]
             .source()
             .cmp(items[b].source())
             .then_with(|| items[a].name().cmp(items[b].name()))
     });
-    state.apply_resume(items, resume.focus.as_deref());
+    state.resume_from(items, resume.clone());
     let mut stderr = io::stderr();
     loop {
         write!(stderr, "{}", build_render_buffer(items, &state, 0))
@@ -899,11 +920,7 @@ fn run_loop<T: Entry>(
                     } else {
                         ListOutcome::Accepted
                     };
-                    let focused = state
-                        .filtered
-                        .get(state.cursor)
-                        .map(|&i| items[i].name().to_string());
-                    return Ok((outcome, focused));
+                    return Ok((outcome, state.resume(items)));
                 }
             }
             _ => (),
@@ -913,13 +930,14 @@ fn run_loop<T: Entry>(
 pub fn run_list(title: &str, items: &mut [ListItem], mode: ListMode) -> Result<ListOutcome> {
     run_list_resuming(title, items, mode, ListResume::default()).map(|(outcome, _)| outcome)
 }
-/// Like [`run_list`], but restores cursor/notice and reports the focused row on exit.
+/// Like [`run_list`], but restores filter/cursor/notice and returns the
+/// session context on exit.
 pub fn run_list_resuming(
     title: &str,
     items: &mut [ListItem],
     mode: ListMode,
     resume: ListResume,
-) -> Result<(ListOutcome, Option<String>)> {
+) -> Result<(ListOutcome, ListResume)> {
     run_loop(title, items, mode, resume)
 }
 pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
@@ -2591,6 +2609,26 @@ mod tests {
         items[0].selected = true;
         let frame = plain_frame(&build_render_buffer(&items, &state, 0));
         assert!(frame.contains("x: remove 1 marked"), "{frame}");
+    }
+
+    #[test]
+    fn resume_restores_filter_query_and_marked_view() {
+        let mut items = vec![manage_item("grafana-one", true), manage_item("other", true)];
+        items[0].selected = true;
+        let mut state = manage_state(items.len());
+        state.filter.query = "grafana".into();
+        state.selected_only = true;
+        state.refilter(&items);
+        assert_eq!(state.filtered, vec![0]);
+        let resume = state.resume(&items);
+        assert_eq!(resume.query, "grafana");
+        assert!(resume.selected_only);
+
+        let mut next = manage_state(items.len());
+        next.resume_from(&items, resume);
+        assert_eq!(next.filter.query, "grafana");
+        assert!(next.selected_only);
+        assert_eq!(next.filtered, vec![0]);
     }
 
     #[test]
