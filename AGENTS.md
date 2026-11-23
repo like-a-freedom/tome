@@ -67,6 +67,8 @@ cargo run -- update --verbose
 cargo run -- update my-skill
 cargo run -- update --no-sparse
 cargo run -- export
+cargo run -- skill
+cargo run -- skill tui
 SKILLS_DIR=/path/to/skills cargo run -- list
 ```
 
@@ -87,6 +89,7 @@ main.rs → lib.rs::run() → commands/{add,list,remove,update,export}
                            services.rs → services/{skill_service,update_service}
                                          ServiceConfig (shared paths)
                            core/{spec,manifest,git,git_sparse,repo_detect,commit,dirs,install,parse_source,scan}
+                           skill.rs + skill/ (embedded agent manual, include_str!)
                            output.rs (shared format/print functions)
                            fs.rs (temp dirs, directory copy)
                            progress.rs (compact update status)
@@ -108,4 +111,5 @@ Key design decisions in `docs/DESIGN.md`, full architecture in `docs/ARCHITECTUR
 - `tome update` uses compact crossterm progress in interactive terminals and stays line-based in non-TTY output
 - `tome export` outputs `tome add` commands for all tracked skills (sorted alphabetically)
 - `tome update` installs skills that newly appear in tracked git repositories, pinned to the source commit; targeted `tome update <name>` does not sync new repo skills; sources installed with a partial skill selection (subset picked in the picker, `@skill-name`, `--path` on a multi-skill repo, or removing part of a tracked repo) are never auto-expanded until a later `tome add` tracks every skill in that repository
+- `tome skill [topic]` prints the embedded agent manual (core SKILL.md plus `commands`, `tui`, `workflows` references) — progressive disclosure, shipped inside the binary
 - No telemetry, no server, no configuration beyond `.skills.json`

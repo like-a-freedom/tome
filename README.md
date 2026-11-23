@@ -60,6 +60,10 @@ tome remove owner/repo --force  # explicit target; skip confirmation
 # Export an install script for all tracked skills
 tome export > install.sh
 tome export --interactive > install.sh  # export only selected skills
+
+# Embedded agent manual
+tome skill                 # core manual; agents read it like a SKILL.md
+tome skill tui             # deeper topics: commands, tui, workflows
 ```
 
 Skills are installed to `~/.agents/skills/` by default. Override with

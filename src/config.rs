@@ -75,6 +75,12 @@ pub enum Commands {
         plain: bool,
     },
 
+    /// Print the embedded agent manual (core, or a topic)
+    Skill {
+        /// Manual topic: commands, tui, workflows
+        topic: Option<String>,
+    },
+
     /// Export install commands for all tracked skills
     Export {
         /// Choose skills before writing the install script
@@ -243,6 +249,12 @@ mod tests {
     fn scalable_remove_without_target_is_picker() {
         assert!(Cli::try_parse_from(["tome", "remove"]).is_ok());
         assert!(Cli::try_parse_from(["tome", "remove", "--force"]).is_err());
+    }
+
+    #[test]
+    fn skill_command_parses_with_and_without_topic() {
+        assert!(Cli::try_parse_from(["tome", "skill"]).is_ok());
+        assert!(Cli::try_parse_from(["tome", "skill", "tui"]).is_ok());
     }
 
     #[test]

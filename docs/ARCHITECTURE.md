@@ -207,6 +207,14 @@ reloads the inventory while preserving filter, surviving marks and cursor
 `tome add` commands. `--interactive` filters these by exact selected manifest keys
 and keeps all picker output on stderr, including when stdout is redirected.
 
+### Embedded agent manual
+
+`tome skill` prints a manual compiled into the binary with `include_str!`:
+`src/skill/SKILL.md` (core) plus `commands.md`, `tui.md`, and `workflows.md`
+loaded by topic. Progressive disclosure keeps the core small; topic files carry
+the flag and workflow detail. `src/skill.rs` owns topic resolution and is
+covered by tests for metadata, pointers, and unknown topics.
+
 ### Shared terminal lists
 
 `tui.rs` owns browse, manage, multiselect and destructive-review modes, original
