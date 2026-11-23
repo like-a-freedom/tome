@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tome skill [commands|tui|workflows]` prints the agent manual embedded in the
   binary (core SKILL.md plus topic references), for agents to read like a skill.
 
+### Changed
+- The terminal browser now renders a visual hierarchy via crossterm: a bold
+  title with progress counts, dimmed hints and metadata, colored statuses,
+  a reversed focused row, section rules and a structured details view.
+
 ### Fixed
 - Removing part of a tracked repository now marks the remaining entries
   `partial`, so `tome update` no longer reinstalls user-removed skills as
