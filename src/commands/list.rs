@@ -65,21 +65,11 @@ pub fn execute_options(
         && crate::tui::automatic_available()
         && !(manifest.is_empty() && untracked.is_empty())
     {
-        let mut rows = manifest_rows(&manifest);
-        for row in &mut rows {
-            if stale.contains(&row.name) {
-                row.status = "tracked; missing on disk".into();
-            }
-        }
-        rows.extend(untracked.iter().map(|skill| crate::tui::ListItem {
-            name: skill.name.clone(),
-            description: skill.description.clone(),
-            version: display_version(&skill.version).into(),
-            source: "no repository".into(),
-            status: "untracked".into(),
-            selected: false,
-        }));
-        crate::tui::run_list("Installed skills", &mut rows, crate::tui::ListMode::Browse)?;
+        manage_inventory(
+            skills_dir,
+            manifest_path,
+            build_rows(&manifest, &stale, &untracked),
+        )?;
     } else {
         output_table(&manifest, &untracked);
     }
@@ -99,10 +89,114 @@ pub(crate) fn manifest_rows(manifest: &Manifest) -> Vec<crate::tui::ListItem> {
             version: display_version(&entry.version).into(),
             status: "tracked".into(),
             selected: false,
+            removable: true,
         })
         .collect();
     rows.sort_by(|a, b| a.source.cmp(&b.source).then_with(|| a.name.cmp(&b.name)));
     rows
+}
+
+fn build_rows(
+    manifest: &Manifest,
+    stale: &[String],
+    untracked: &[UntrackedSkill],
+) -> Vec<crate::tui::ListItem> {
+    let mut rows = manifest_rows(manifest);
+    for row in &mut rows {
+        if stale.contains(&row.name) {
+            row.status = "tracked; missing on disk".into();
+        }
+    }
+    rows.extend(untracked.iter().map(|skill| crate::tui::ListItem {
+        name: skill.name.clone(),
+        description: skill.description.clone(),
+        version: display_version(&skill.version).into(),
+        source: "no repository".into(),
+        status: "untracked".into(),
+        selected: false,
+        removable: false,
+    }));
+    rows
+}
+
+fn inventory_rows(skills_dir: &Path, manifest_path: &Path) -> Result<Vec<crate::tui::ListItem>> {
+    let manifest = Manifest::load(manifest_path)?;
+    let stale = manifest.find_stale(skills_dir);
+    let untracked = scan_untracked_skills(skills_dir, &manifest)?;
+    Ok(build_rows(&manifest, &stale, &untracked))
+}
+
+/// Interactive inventory: mark skills and remove them in place, batch or single.
+fn manage_inventory(
+    skills_dir: &Path,
+    manifest_path: &Path,
+    mut rows: Vec<crate::tui::ListItem>,
+) -> Result<()> {
+    use crate::tui::{ListMode, ListOutcome, ListResume};
+    let service = crate::services::SkillService::with_manifest_path(
+        skills_dir.to_path_buf(),
+        manifest_path.to_path_buf(),
+    );
+    let mut resume = ListResume::default();
+    loop {
+        let (outcome, session) =
+            crate::tui::run_list_resuming("Installed skills", &mut rows, ListMode::Manage, resume)?;
+        if outcome != ListOutcome::Remove {
+            break;
+        }
+        // Only owned rows enter the batch: a stale mark on an untracked row
+        // must not make the whole transactional removal fail.
+        let names: Vec<String> = rows
+            .iter()
+            .filter(|r| r.selected && r.removable)
+            .map(|r| r.name.clone())
+            .collect();
+        if names.is_empty() {
+            for row in &mut rows {
+                row.selected = false;
+            }
+            resume = ListResume {
+                notice: Some("Nothing removable is marked".into()),
+                ..session
+            };
+            continue;
+        }
+        let removed = service.remove_selected(&names)?;
+        let old = std::mem::take(&mut rows);
+        rows = inventory_rows(skills_dir, manifest_path)?;
+        resume = session;
+        resume.focus = resume_focus(&old, &rows, resume.focus.as_deref());
+        resume.notice = Some(format!("Removed {} skill(s)", removed.len()));
+        if resume.focus.is_none() {
+            resume.focus = rows.first().map(|r| r.name.clone());
+        }
+        if rows.is_empty() {
+            println!("No skills installed.");
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Keep the cursor near the action: the focused row if it survived, else the
+/// nearest surviving neighbour in row order (forward first, then backward).
+/// A neighbour hidden by the restored filter leaves the cursor on the first
+/// visible match.
+fn resume_focus(
+    old: &[crate::tui::ListItem],
+    new: &[crate::tui::ListItem],
+    focused: Option<&str>,
+) -> Option<String> {
+    let focused = focused?;
+    if new.iter().any(|r| r.name == focused) {
+        return Some(focused.to_string());
+    }
+    let pos = old.iter().position(|r| r.name == focused)?;
+    old[pos + 1..]
+        .iter()
+        .chain(old[..pos].iter().rev())
+        .find(|r| new.iter().any(|n| n.name == r.name))
+        .map(|r| r.name.clone())
 }
 
 fn scan_untracked_skills(skills_dir: &Path, manifest: &Manifest) -> Result<Vec<UntrackedSkill>> {
@@ -516,6 +610,90 @@ mod tests {
 
         let result = execute(true, &skills_dir, &manifest_path);
         assert!(result.is_ok());
+    }
+
+    fn row(name: &str) -> crate::tui::ListItem {
+        crate::tui::ListItem {
+            name: name.into(),
+            ..crate::tui::ListItem::default()
+        }
+    }
+
+    #[test]
+    fn test_build_rows_ownership_and_stale_status() {
+        let mut manifest = Manifest::new();
+        manifest.add_skill(
+            "Tracked",
+            SkillEntry::new("test/repo", "", &testutil::make_fm("Tracked"), "abc", "url"),
+        );
+        manifest.add_skill(
+            "Ghost",
+            SkillEntry::new("test/repo", "", &testutil::make_fm("Ghost"), "abc", "url"),
+        );
+        let untracked = vec![UntrackedSkill {
+            name: "Manual".into(),
+            description: "m".into(),
+            version: NO_VERSION_SENTINEL.into(),
+        }];
+        let rows = build_rows(&manifest, &["Ghost".to_string()], &untracked);
+        let tracked = rows.iter().find(|r| r.name == "Tracked").unwrap();
+        assert!(tracked.removable);
+        let ghost = rows.iter().find(|r| r.name == "Ghost").unwrap();
+        assert!(ghost.removable);
+        assert_eq!(ghost.status, "tracked; missing on disk");
+        let manual = rows.iter().find(|r| r.name == "Manual").unwrap();
+        assert!(!manual.removable);
+        assert_eq!(manual.status, "untracked");
+        assert_eq!(manual.version, "-");
+    }
+
+    #[test]
+    fn test_resume_focus_keeps_surviving_focused_row() {
+        let old = vec![row("a"), row("b")];
+        let new = vec![row("a"), row("b")];
+        assert_eq!(resume_focus(&old, &new, Some("b")).as_deref(), Some("b"));
+        assert_eq!(resume_focus(&old, &new, None), None);
+        assert_eq!(resume_focus(&old, &new, Some("missing")), None);
+    }
+
+    #[test]
+    fn test_resume_focus_falls_forward_then_backward() {
+        let old = vec![row("a"), row("b"), row("c")];
+        let new = vec![row("a"), row("c")];
+        assert_eq!(resume_focus(&old, &new, Some("b")).as_deref(), Some("c"));
+        let only_a = vec![row("a")];
+        assert_eq!(resume_focus(&old, &only_a, Some("c")).as_deref(), Some("a"));
+        assert_eq!(resume_focus(&old, &[], Some("b")), None);
+    }
+
+    #[test]
+    fn test_inventory_rows_reflects_removal() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        let manifest_path = skills_dir.join(".skills.json");
+        let mut manifest = Manifest::new();
+        for name in ["One", "Two"] {
+            fs::create_dir_all(skills_dir.join(name)).unwrap();
+            fs::write(
+                skills_dir.join(name).join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: d\n---\n"),
+            )
+            .unwrap();
+            manifest.add_skill(
+                name,
+                SkillEntry::new("test/repo", "", &testutil::make_fm(name), "abc", "url"),
+            );
+        }
+        manifest.save(&manifest_path).unwrap();
+        let service = crate::services::SkillService::with_manifest_path(
+            skills_dir.clone(),
+            manifest_path.clone(),
+        );
+        service.remove_selected(&["One".to_string()]).unwrap();
+        let rows = inventory_rows(&skills_dir, &manifest_path).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "Two");
+        assert!(rows[0].removable);
     }
 
     #[test]

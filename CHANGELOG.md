@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `tome list` is now an inventory browser: `Space` marks skills, `a`/`n`
+  mark/clear all matches, `Tab` shows marked only, and `x`/`Delete` removes the
+  marked set (or the focused skill) immediately. The list reloads in place,
+  keeping the filter and cursor, and reports `Removed N skill(s)`.
+  Untracked skills stay read-only. `tome remove` keeps its review flow.
+- `tome skill [commands|tui|workflows]` prints the agent manual embedded in the
+  binary (core SKILL.md plus topic references), for agents to read like a skill.
+
+### Changed
+- The terminal browser now renders a visual hierarchy via crossterm: a bold
+  title with progress counts, dimmed hints and metadata, colored statuses,
+  a reversed focused row, section rules and a structured details view.
+
+### Fixed
+- Removing part of a tracked repository now marks the remaining entries
+  `partial`, so `tome update` no longer reinstalls user-removed skills as
+  newly appeared. A full `tome add <repo>` re-enables new-skill adoption.
+
 ## [0.10.1] - 2026-10-27
 
 ### Fixed

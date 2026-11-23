@@ -6,6 +6,7 @@ pub mod fs;
 pub mod output;
 pub mod progress;
 pub mod services;
+pub mod skill;
 pub mod style;
 pub mod tui;
 
@@ -58,5 +59,6 @@ pub fn run(cli: Cli) -> Result<()> {
         config::Commands::Export { interactive } => {
             commands::export::execute_options(interactive, &skills_dir, &manifest_path)
         }
+        config::Commands::Skill { topic } => commands::skill::execute(topic.as_deref()),
     }
 }

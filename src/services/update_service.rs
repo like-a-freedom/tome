@@ -1058,6 +1058,50 @@ mod tests {
     }
 
     #[test]
+    fn update_all_does_not_readopt_skills_removed_by_user() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let repo_dir = testutil::create_multi_skill_repo(&temp, &["chosen", "extra"]);
+        let remote = format!("file://{}", repo_dir.display());
+        let mut manifest = Manifest::new();
+        for name in ["chosen", "extra"] {
+            let local = skills_dir.join(name);
+            fs::create_dir_all(&local).unwrap();
+            fs::write(
+                local.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {name}\n---\n"),
+            )
+            .unwrap();
+            let mut entry = make_entry(name, "0000000", &remote);
+            entry.path = format!("skills/{name}");
+            manifest.add_skill(name, entry);
+        }
+        let manifest_path = skills_dir.join(".skills.json");
+        manifest.save(&manifest_path).unwrap();
+
+        // The user removes one skill of a fully tracked repository
+        // (tome remove or the list inventory batch delete).
+        let remover = crate::services::SkillService::with_manifest_path(
+            skills_dir.clone(),
+            manifest_path.clone(),
+        );
+        remover.remove_selected(&["extra".to_string()]).unwrap();
+
+        let service = UpdateService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
+        let mut reporter = RecordingReporter::default();
+        service.run(None, false, false, &mut reporter).unwrap();
+
+        let loaded = Manifest::load(&manifest_path).unwrap();
+        assert!(
+            !loaded.is_tracked("extra"),
+            "a user-removed skill must not be re-adopted by update"
+        );
+        assert!(!skills_dir.join("extra").exists());
+        assert!(loaded.is_tracked("chosen"));
+    }
+
+    #[test]
     fn update_all_skips_new_skills_for_mixed_partial_group() {
         let temp = TempDir::new().unwrap();
         let skills_dir = temp.path().join("skills");

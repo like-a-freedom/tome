@@ -4,7 +4,7 @@ use crossterm::{
     Command,
     cursor::{Hide, MoveTo, Show},
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
-    style::{Attribute, SetAttribute},
+    style::{Attribute, Color, SetAttribute, SetForegroundColor},
     terminal::{
         Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
         enable_raw_mode, size,
@@ -38,11 +38,14 @@ pub struct ListItem {
     pub version: String,
     pub status: String,
     pub selected: bool,
+    /// Tome owns this skill and may remove it; untracked directories are read-only.
+    pub removable: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ListMode {
     Browse,
+    Manage,
     Select,
     Review,
 }
@@ -51,6 +54,8 @@ pub enum ListOutcome {
     Accepted,
     Cancelled,
     Back,
+    /// Manage mode: the caller should remove the marked items.
+    Remove,
 }
 
 trait Entry {
@@ -67,6 +72,7 @@ trait Entry {
     fn status(&self) -> &str {
         ""
     }
+    fn removable(&self) -> bool;
 }
 impl Entry for SelectItem {
     fn name(&self) -> &str {
@@ -80,6 +86,9 @@ impl Entry for SelectItem {
     }
     fn set_selected(&mut self, selected: bool) {
         self.selected = selected;
+    }
+    fn removable(&self) -> bool {
+        true
     }
 }
 impl Entry for ListItem {
@@ -103,6 +112,9 @@ impl Entry for ListItem {
     }
     fn status(&self) -> &str {
         &self.status
+    }
+    fn removable(&self) -> bool {
+        self.removable
     }
 }
 
@@ -157,6 +169,8 @@ struct TuiState {
     details: bool,
     detail_offset: usize,
     back: bool,
+    notice: Option<String>,
+    remove: bool,
 }
 impl TuiState {
     fn new(item_count: usize, height: usize) -> Self {
@@ -174,6 +188,8 @@ impl TuiState {
             details: false,
             detail_offset: 0,
             back: false,
+            notice: None,
+            remove: false,
         }
     }
     fn refilter<T: Entry>(&mut self, items: &[T]) {
@@ -195,6 +211,33 @@ impl TuiState {
         self.cursor = pos.min(self.filtered.len().saturating_sub(1));
         self.offset = clamp_view_offset(self.cursor, self.offset, self.height, self.filtered.len());
         self.detail_offset = 0;
+    }
+    fn apply_resume<T: Entry>(&mut self, items: &[T], focus: Option<&str>) {
+        if let Some(name) = focus
+            && let Some(pos) = self.filtered.iter().position(|&i| items[i].name() == name)
+        {
+            self.goto(pos);
+        }
+    }
+    /// Capture the session context before leaving the loop.
+    fn resume<T: Entry>(&self, items: &[T]) -> ListResume {
+        ListResume {
+            focus: self
+                .filtered
+                .get(self.cursor)
+                .map(|&i| items[i].name().to_string()),
+            notice: self.notice.clone(),
+            query: self.filter.query.clone(),
+        }
+    }
+    /// Restore a previous session: filter, then cursor row. The marked-only
+    /// view is deliberately not restored: a removal deletes every mark, so it
+    /// could only reopen empty.
+    fn resume_from<T: Entry>(&mut self, items: &[T], resume: ListResume) {
+        self.notice = resume.notice;
+        self.filter.query = resume.query;
+        self.refilter(items);
+        self.apply_resume(items, resume.focus.as_deref());
     }
     fn resize(&mut self, cols: u16, rows: u16) {
         self.cols = cols;
@@ -259,8 +302,12 @@ pub fn format_item(
 }
 
 const HINTS_UNFOCUSED: &str =
-    "Arrows/j/k: navigate | PgUp/PgDn | Home/End | /: filter | d: details";
-const HINTS_FOCUSED: &str = "Type to search | Alt-Space: space | Esc: list | Space/Enter: select";
+    "Arrows/j/k: navigate · PgUp/PgDn · Home/End · /: filter · d: details";
+const HINTS_NARROW: &str = "jk/Up/Dn PgUp/Dn /search d/info";
+const HINTS_FOCUSED: &str = "Type to search · Alt-Space: space · Esc: list · Space/Enter: select";
+const HINTS_MANAGE: &str = "Arrows/jk · Space mark · a/n all · Tab marked · x remove · / filter";
+const HINTS_MANAGE_NARROW: &str = "jk/Up/Dn Spc mark a/n all x rm /search d/info";
+const HINTS_FOCUSED_MANAGE: &str = "Type to search · Alt-Space: space · Esc: list · Space: mark";
 
 fn clean(text: &str) -> String {
     text.chars()
@@ -291,15 +338,125 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     lines.push(line);
     lines
 }
-fn detail_text<T: Entry>(item: &T) -> String {
-    format!(
-        "Name: {}  Source: {}  Version: {}  Status: {}  Description: {}",
-        item.name(),
-        item.source(),
-        item.version(),
-        item.status(),
-        item.description()
-    )
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ink {
+    Plain,
+    Dim,
+    Title,
+    Accent,
+    Ok,
+    Warn,
+    Danger,
+}
+
+impl Ink {
+    /// Emit the crossterm style command for this ink into the render buffer.
+    fn apply(self, buf: &mut String) {
+        match self {
+            Ink::Plain => return,
+            Ink::Dim => SetAttribute(Attribute::Dim).write_ansi(buf),
+            Ink::Title => SetAttribute(Attribute::Bold).write_ansi(buf),
+            Ink::Accent => SetForegroundColor(Color::Cyan).write_ansi(buf),
+            Ink::Ok => SetForegroundColor(Color::Green).write_ansi(buf),
+            Ink::Warn => SetForegroundColor(Color::Yellow).write_ansi(buf),
+            Ink::Danger => SetForegroundColor(Color::Red).write_ansi(buf),
+        }
+        .expect("String write");
+    }
+}
+
+#[derive(Clone)]
+struct Span {
+    text: String,
+    ink: Ink,
+}
+
+fn span(text: impl Into<String>, ink: Ink) -> Span {
+    Span {
+        text: text.into(),
+        ink,
+    }
+}
+
+fn spans(text: impl Into<String>) -> Vec<Span> {
+    vec![span(text, Ink::Plain)]
+}
+
+fn status_ink(status: &str) -> Ink {
+    let status = status.to_ascii_lowercase();
+    if status.contains("failed") || status.contains("missing") || status.contains("error") {
+        Ink::Danger
+    } else if status.contains("untracked") {
+        Ink::Warn
+    } else if status.contains("tracked")
+        || status.contains("updated")
+        || status.contains("installed")
+    {
+        Ink::Ok
+    } else {
+        Ink::Dim
+    }
+}
+
+fn rule_line(label: &str, width: usize) -> String {
+    let mut line = format!("─ {label} ");
+    line.push_str(&"─".repeat(width.saturating_sub(display_width(&line))));
+    line
+}
+
+fn detail_lines<T: Entry>(item: &T, width: usize) -> Vec<Vec<Span>> {
+    let mut lines = vec![
+        vec![
+            span("  ", Ink::Dim),
+            span(item.name().to_string(), Ink::Title),
+        ],
+        Vec::new(),
+        vec![
+            span("  Source    ", Ink::Dim),
+            span(item.source().to_string(), Ink::Plain),
+        ],
+        vec![
+            span("  Version   ", Ink::Dim),
+            span(item.version().to_string(), Ink::Plain),
+        ],
+        vec![
+            span("  Status    ", Ink::Dim),
+            span(item.status().to_string(), status_ink(item.status())),
+        ],
+        Vec::new(),
+        vec![span("  Description", Ink::Dim)],
+    ];
+    for line in wrap(item.description(), width.saturating_sub(2)) {
+        lines.push(vec![span("  ", Ink::Dim), span(line, Ink::Plain)]);
+    }
+    lines
+}
+
+fn write_spans(buf: &mut String, spans: &[Span], width: usize, focused: bool) {
+    let mut remaining = width;
+    for part in spans {
+        if remaining == 0 {
+            break;
+        }
+        let text = clip(&part.text, remaining);
+        if text.is_empty() {
+            continue;
+        }
+        if focused {
+            SetAttribute(Attribute::Reverse)
+                .write_ansi(buf)
+                .expect("String write");
+        } else {
+            part.ink.apply(buf);
+        }
+        buf.push_str(&text);
+        if focused || part.ink != Ink::Plain {
+            SetAttribute(Attribute::Reset)
+                .write_ansi(buf)
+                .expect("String write");
+        }
+        remaining = remaining.saturating_sub(display_width(&text));
+    }
 }
 
 fn build_render_buffer<T: Entry>(items: &[T], state: &TuiState, _desc_width: usize) -> String {
@@ -319,83 +476,132 @@ fn build_render_buffer<T: Entry>(items: &[T], state: &TuiState, _desc_width: usi
         .iter()
         .filter(|&&i| items[i].selected())
         .count();
-    let mut lines = Vec::new();
-    lines.push(if state.mode == ListMode::Select {
-        format!("{} ({}/{}):", state.title, selected, items.len())
+    let mut lines: Vec<Vec<Span>> = Vec::new();
+
+    // Title: name, marked/selected progress, hidden marks.
+    let noun = if state.mode == ListMode::Manage {
+        "marked"
     } else {
-        format!("{} ({} skills)", state.title, items.len())
-    });
-    lines.push(if state.mode == ListMode::Select {
-        format!(
-            "{}/{} | {} selected | {} hidden{}",
-            state.filtered.len(),
-            items.len(),
-            selected,
-            selected - visible_selected,
-            if state.selected_only {
-                " | selected only"
-            } else {
-                ""
-            }
-        )
-    } else {
-        format!("{} matches | {} total", state.filtered.len(), items.len())
-    });
-    lines.push(if state.filter.focused {
-        HINTS_FOCUSED.into()
-    } else if width < WIDE_COLS {
-        "jk/Up/Dn PgUp/Dn /search d/info".into()
-    } else {
-        HINTS_UNFOCUSED.into()
-    });
-    lines.push(match state.mode {
-        ListMode::Browse => "Enter/q/Esc: close".into(),
-        ListMode::Select if width < WIDE_COLS => "Space toggle a/n all/none Tab selected".into(),
-        ListMode::Select => {
-            "Space: toggle | a/n: matches all/none | Tab: selected | Enter: next".into()
+        "selected"
+    };
+    let hidden = selected - visible_selected;
+    let mut counts = Vec::new();
+    if matches!(state.mode, ListMode::Select | ListMode::Manage) && selected > 0 {
+        counts.push(span(
+            format!("{selected}/{} {noun}", items.len()),
+            Ink::Accent,
+        ));
+        if hidden > 0 {
+            counts.push(span("  ·  ", Ink::Dim));
+            counts.push(span(format!("{hidden} hidden"), Ink::Warn));
         }
-        ListMode::Review if width < WIDE_COLS => "y remove ALL | Enter/q cancel | b back".into(),
-        ListMode::Review => "y: remove ALL reviewed skills | Enter/q: cancel | b: back".into(),
-    });
-    lines.push(format!(
-        "Filter: {}{} [{}/{} shown]",
-        clip(
-            &state.filter.query,
-            MAX_QUERY_DISPLAY.min(width.saturating_sub(ROW_PREFIX))
-        ),
-        if state.filter.focused { "█" } else { "" },
-        state.filtered.len(),
-        items.len()
+    }
+    let title = if width < WIDE_COLS && !counts.is_empty() {
+        // Narrow terminals: leading counts stay visible even when the title clips.
+        let mut line = counts;
+        line.push(span("  ·  ", Ink::Dim));
+        line.push(span(state.title.clone(), Ink::Dim));
+        line
+    } else {
+        let mut line = vec![
+            span(state.title.clone(), Ink::Title),
+            span("  ·  ", Ink::Dim),
+        ];
+        if counts.is_empty() {
+            line.push(span(format!("{} skills", items.len()), Ink::Dim));
+        } else {
+            line.extend(counts);
+        }
+        line
+    };
+    lines.push(title);
+
+    // Filter line with a visible caret while the query is focused.
+    let query = clip(
+        &state.filter.query,
+        MAX_QUERY_DISPLAY.min(width.saturating_sub(ROW_PREFIX)),
+    );
+    let mut filter = vec![span("Filter  ", Ink::Dim)];
+    if query.is_empty() {
+        filter.push(span("(type to filter)", Ink::Dim));
+    } else {
+        filter.push(span(query, Ink::Plain));
+    }
+    if state.filter.focused {
+        filter.push(span("█", Ink::Accent));
+    }
+    filter.push(span(
+        format!("  [{}/{} shown]", state.filtered.len(), items.len()),
+        Ink::Dim,
     ));
+    lines.push(filter);
+
+    let hints = if state.filter.focused {
+        if state.mode == ListMode::Manage {
+            HINTS_FOCUSED_MANAGE
+        } else {
+            HINTS_FOCUSED
+        }
+    } else if width < WIDE_COLS {
+        if state.mode == ListMode::Manage {
+            HINTS_MANAGE_NARROW
+        } else {
+            HINTS_NARROW
+        }
+    } else if state.mode == ListMode::Manage {
+        HINTS_MANAGE
+    } else {
+        HINTS_UNFOCUSED
+    };
+    lines.push(vec![span(hints, Ink::Dim)]);
+
+    lines.push(vec![span(
+        match state.mode {
+            ListMode::Manage => "Space mark · x remove · d details · q close",
+            ListMode::Browse => "d details · / search · q close",
+            ListMode::Select if width < WIDE_COLS => "Space toggle · a/n all/none · Tab selected",
+            ListMode::Select => "Space toggle · a/n all/none · Tab selected · Enter continue",
+            ListMode::Review if width < WIDE_COLS => "y remove ALL · Enter/q cancel · b back",
+            ListMode::Review => "y remove ALL · Enter/q cancel · b back",
+        },
+        Ink::Dim,
+    )]);
+
+    // A rule keeps the dense header away from the rows.
+    lines.push(vec![span("─".repeat(width), Ink::Dim)]);
+
     if state.details {
         let available = usize::from(state.rows).saturating_sub(DETAIL_CHROME);
         let content = state
             .filtered
             .get(state.cursor)
-            .map(|&i| wrap(&detail_text(&items[i]), width))
-            .unwrap_or_else(|| vec!["No focused skill".into()]);
+            .map(|&i| detail_lines(&items[i], width))
+            .unwrap_or_else(|| vec![spans("No focused skill")]);
         let offset = state
             .detail_offset
             .min(content.len().saturating_sub(available));
         lines.extend(content.iter().skip(offset).take(available).cloned());
         while lines.len() < usize::from(state.rows).saturating_sub(1) {
-            lines.push(String::new());
+            lines.push(Vec::new());
         }
-        lines.push(if width < WIDE_COLS {
-            format!("Details {}/{} | Esc: back", offset + 1, content.len())
+        lines.push(spans(if width < WIDE_COLS {
+            format!("Details {}/{} · Esc: back", offset + 1, content.len())
         } else {
             format!(
-                "Details {}/{} | arrows/PgUp/PgDn/Home/End | Esc: back",
+                "Details {}/{} · arrows/PgUp/PgDn/Home/End · Esc: back",
                 offset + 1,
                 content.len()
             )
-        });
+        }));
     } else {
         for position in state.offset..state.offset + state.height {
-            let row = if let Some(&i) = state.filtered.get(position) {
+            if let Some(&i) = state.filtered.get(position) {
                 let item = &items[i];
-                let marker = if position == state.cursor { ">" } else { " " };
-                let check = if state.mode == ListMode::Select {
+                let focused = position == state.cursor;
+                let marker = if focused { "> " } else { "  " };
+                let check = if state.mode == ListMode::Select
+                    || (state.mode == ListMode::Manage && selected > 0)
+                {
                     if item.selected() { "[x] " } else { "[ ] " }
                 } else {
                     ""
@@ -406,35 +612,56 @@ fn build_render_buffer<T: Entry>(items: &[T], state: &TuiState, _desc_width: usi
                     width.saturating_sub(ROW_PREFIX)
                 };
                 let name = clip(item.name(), name_width);
-                if width >= WIDE_COLS {
-                    let pad = name_width.saturating_sub(display_width(&name));
-                    format!(
-                        "{marker} {check}{name}{}  {} | {}",
-                        " ".repeat(pad),
-                        item.status(),
-                        if item.source().is_empty() {
-                            item.description()
+                let mut row = vec![
+                    span(marker, if focused { Ink::Accent } else { Ink::Dim }),
+                    span(
+                        check,
+                        if item.selected() {
+                            Ink::Accent
                         } else {
-                            item.source()
-                        }
-                    )
-                } else {
-                    format!("{marker} {check}{name}")
+                            Ink::Dim
+                        },
+                    ),
+                    span(name.clone(), Ink::Plain),
+                ];
+                if width >= WIDE_COLS {
+                    row.push(span(
+                        " ".repeat(name_width.saturating_sub(display_width(&name))),
+                        Ink::Plain,
+                    ));
+                    row.push(span("  ", Ink::Plain));
+                    row.push(span(item.status().to_string(), status_ink(item.status())));
+                    row.push(span("  ·  ", Ink::Dim));
+                    row.push(span(
+                        if item.source().is_empty() {
+                            item.description().to_string()
+                        } else {
+                            item.source().to_string()
+                        },
+                        Ink::Dim,
+                    ));
                 }
+                lines.push(row);
             } else if position == state.offset && state.filtered.is_empty() {
-                if state.selected_only && state.filter.query.is_empty() {
-                    "No skills selected. Tab: all skills".into()
+                let message = if state.selected_only && state.filter.query.is_empty() {
+                    "No skills selected. Tab: all skills".to_string()
+                } else if state.selected_only {
+                    format!(
+                        "No marked skills match \"{}\"; Tab: all skills",
+                        state.filter.query
+                    )
                 } else {
                     format!(
                         "No matches for \"{}\"; / then Ctrl-U: clear",
                         state.filter.query
                     )
-                }
+                };
+                lines.push(vec![span(message, Ink::Warn)]);
             } else {
-                String::new()
-            };
-            lines.push(row);
+                lines.push(Vec::new());
+            }
         }
+
         let end = (state.offset + state.height).min(state.filtered.len());
         let mut range = format!(
             "{}-{} of {}",
@@ -443,45 +670,81 @@ fn build_render_buffer<T: Entry>(items: &[T], state: &TuiState, _desc_width: usi
             state.filtered.len()
         );
         if state.offset > 0 {
-            range.push_str(&format!(" | {} more above", state.offset));
+            range.push_str(&format!(" · {} more above", state.offset));
         }
         if end < state.filtered.len() {
-            range.push_str(&format!(" | {} more below", state.filtered.len() - end));
+            range.push_str(&format!(" · {} more below", state.filtered.len() - end));
         }
-        lines.push(range);
+        lines.push(vec![span(rule_line(&range, width), Ink::Dim)]);
+
         if let Some(&i) = state.filtered.get(state.cursor) {
             let item = &items[i];
-            lines.push(format!("{}  [d: full details]", item.name()));
-            lines.push(format!(
-                "{} | version {} | {}",
-                item.source(),
-                item.version(),
-                item.status()
-            ));
-            lines.push(item.description().into());
+            lines.push(vec![
+                span(format!("  {}", item.name()), Ink::Title),
+                span("  d details", Ink::Dim),
+            ]);
+            lines.push(vec![
+                span("  ", Ink::Dim),
+                span(item.source().to_string(), Ink::Dim),
+                span("  ·  ", Ink::Dim),
+                span(format!("v{}", item.version()), Ink::Dim),
+                span("  ·  ", Ink::Dim),
+                span(item.status().to_string(), status_ink(item.status())),
+            ]);
+            lines.push(vec![
+                span("  ", Ink::Dim),
+                span(
+                    clip(item.description(), width.saturating_sub(2)),
+                    Ink::Plain,
+                ),
+            ]);
         } else {
-            lines.extend([String::new(), String::new(), String::new()]);
+            lines.extend([Vec::new(), Vec::new(), Vec::new()]);
         }
+
         lines.push(match state.mode {
-            ListMode::Select if selected == 0 => {
-                "Select at least one skill, or press q to cancel".into()
-            }
-            ListMode::Select => format!(
-                "Press Enter to {} {} skill(s)",
-                if state.title == "Select skills to install" {
-                    "install"
+            ListMode::Select if selected == 0 => vec![
+                span("Select at least one skill", Ink::Warn),
+                span("  ·  q to cancel", Ink::Dim),
+            ],
+            ListMode::Select => vec![
+                span("Enter", Ink::Accent),
+                span(
+                    format!(
+                        "  {} {} skill(s)",
+                        if state.title == "Select skills to install" {
+                            "install"
+                        } else {
+                            "continue with"
+                        },
+                        selected
+                    ),
+                    Ink::Plain,
+                ),
+                span("  ·  q cancel", Ink::Dim),
+            ],
+            ListMode::Manage => {
+                if let Some(notice) = &state.notice {
+                    vec![span(notice.clone(), Ink::Ok)]
+                } else if selected > 0 {
+                    vec![
+                        span("x:", Ink::Accent),
+                        span(format!(" remove {} marked", selected), Ink::Plain),
+                        span("  ·  n clear", Ink::Dim),
+                    ]
                 } else {
-                    "continue with"
-                },
-                selected
-            ),
-            ListMode::Browse => "Browse skills | /: search | d: full details | q: close".into(),
-            ListMode::Review => format!(
-                "Remove {} reviewed skill(s)? y confirms; default: No",
-                items.len()
-            ),
+                    vec![span("Space mark · x remove focused · q close", Ink::Dim)]
+                }
+            }
+            ListMode::Browse => vec![span("d details · / search · q close", Ink::Dim)],
+            ListMode::Review => vec![
+                span("y", Ink::Accent),
+                span(format!(" remove {} reviewed", items.len()), Ink::Plain),
+                span("  ·  Enter cancel · b back", Ink::Dim),
+            ],
         });
     }
+
     for (i, line) in lines.iter().take(usize::from(state.rows)).enumerate() {
         if i > 0 {
             buf.push_str("\r\n");
@@ -489,17 +752,7 @@ fn build_render_buffer<T: Entry>(items: &[T], state: &TuiState, _desc_width: usi
         let focused_row = !state.details
             && i == 5 + state.cursor.saturating_sub(state.offset)
             && state.filtered.get(state.cursor).is_some();
-        if focused_row {
-            SetAttribute(Attribute::Bold)
-                .write_ansi(&mut buf)
-                .expect("String write");
-        }
-        buf.push_str(&clip(line, width));
-        if focused_row {
-            SetAttribute(Attribute::Reset)
-                .write_ansi(&mut buf)
-                .expect("String write");
-        }
+        write_spans(&mut buf, line, width, focused_row);
     }
     buf
 }
@@ -534,6 +787,7 @@ fn handle_key<T: Entry>(
     if event.kind == KeyEventKind::Release {
         return None;
     }
+    state.notice = None;
     if event.kind == KeyEventKind::Repeat {
         let navigation = matches!(
             event.code,
@@ -581,11 +835,7 @@ fn handle_key<T: Entry>(
             _ => (),
         }
         if let Some(&i) = state.filtered.get(state.cursor) {
-            let count = wrap(
-                &detail_text(&items[i]),
-                usize::from(state.cols.saturating_sub(1)),
-            )
-            .len();
+            let count = detail_lines(&items[i], usize::from(state.cols.saturating_sub(1))).len();
             state.detail_offset = state
                 .detail_offset
                 .min(count.saturating_sub(usize::from(state.rows).saturating_sub(DETAIL_CHROME)));
@@ -623,27 +873,57 @@ fn handle_key<T: Entry>(
             state.goto(state.cursor.saturating_add(1));
             None
         }
-        KeyCode::Tab if state.mode == ListMode::Select => {
+        KeyCode::Tab if matches!(state.mode, ListMode::Select | ListMode::Manage) => {
             state.selected_only = !state.selected_only;
             state.refilter(items);
             None
         }
-        KeyCode::Char(' ') if state.mode == ListMode::Select => {
+        KeyCode::Char(' ') if matches!(state.mode, ListMode::Select | ListMode::Manage) => {
             if let Some(&i) = state.filtered.get(state.cursor) {
-                items[i].set_selected(!items[i].selected());
+                if state.mode == ListMode::Manage && !items[i].removable() {
+                    state.notice = Some(format!(
+                        "{}: untracked, not removable by tome",
+                        items[i].name()
+                    ));
+                } else {
+                    items[i].set_selected(!items[i].selected());
+                }
             }
             if state.selected_only {
                 state.refilter(items);
             }
             None
         }
-        KeyCode::Char('a' | 'A' | 'n' | 'N') if state.mode == ListMode::Select => {
+        KeyCode::Char('a' | 'A' | 'n' | 'N')
+            if matches!(state.mode, ListMode::Select | ListMode::Manage) =>
+        {
             let select = matches!(event.code, KeyCode::Char('a' | 'A'));
             for &i in &state.filtered {
+                if select && state.mode == ListMode::Manage && !items[i].removable() {
+                    continue;
+                }
                 items[i].set_selected(select);
             }
             if state.selected_only {
                 state.refilter(items);
+            }
+            None
+        }
+        KeyCode::Char('x') | KeyCode::Delete if state.mode == ListMode::Manage => {
+            if items.iter().any(Entry::selected) {
+                state.remove = true;
+                return Some(Ok(()));
+            }
+            if let Some(&i) = state.filtered.get(state.cursor) {
+                if items[i].removable() {
+                    items[i].set_selected(true);
+                    state.remove = true;
+                    return Some(Ok(()));
+                }
+                state.notice = Some(format!(
+                    "{}: untracked, not removable by tome",
+                    items[i].name()
+                ));
             }
             None
         }
@@ -655,7 +935,10 @@ fn handle_key<T: Entry>(
         KeyCode::Enter if state.mode == ListMode::Review => {
             Some(Err(anyhow::anyhow!("Removal cancelled")))
         }
-        KeyCode::Enter if state.mode == ListMode::Browse || items.iter().any(Entry::selected) => {
+        KeyCode::Enter
+            if matches!(state.mode, ListMode::Browse | ListMode::Manage)
+                || items.iter().any(Entry::selected) =>
+        {
             Some(Ok(()))
         }
         _ => None,
@@ -675,12 +958,15 @@ fn handle_filter_key<T: Entry>(
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
     {
-        if event.code == KeyCode::Tab && state.mode == ListMode::Select {
+        if event.code == KeyCode::Tab && matches!(state.mode, ListMode::Select | ListMode::Manage) {
             state.filter.focused = false;
             return handle_key(event, items, state);
         }
         if event.code == KeyCode::Enter {
             state.filter.focused = false;
+            if state.mode == ListMode::Manage {
+                return None;
+            }
             if state.mode == ListMode::Select
                 && !items.iter().any(Entry::selected)
                 && let Some(&i) = state.filtered.get(state.cursor)
@@ -691,7 +977,7 @@ fn handle_filter_key<T: Entry>(
         }
         if event.code == KeyCode::Char(' ')
             && !event.modifiers.contains(KeyModifiers::SHIFT)
-            && state.mode == ListMode::Select
+            && matches!(state.mode, ListMode::Select | ListMode::Manage)
         {
             state.filter.focused = false;
             let result = handle_key(event, items, state);
@@ -762,7 +1048,33 @@ impl Drop for TerminalSession {
         let _ = disable_raw_mode();
     }
 }
-fn run_loop<T: Entry>(title: &str, items: &mut [T], mode: ListMode) -> Result<ListOutcome> {
+/// Cursor row and footer notice to restore when re-entering a session.
+#[derive(Clone, Default)]
+pub struct ListResume {
+    pub focus: Option<String>,
+    pub notice: Option<String>,
+    pub query: String,
+}
+
+/// Map the key handler's result and final state to the caller-visible outcome.
+fn exit_outcome(result: Result<()>, state: &TuiState) -> ListOutcome {
+    if result.is_err() {
+        ListOutcome::Cancelled
+    } else if state.remove {
+        ListOutcome::Remove
+    } else if state.back {
+        ListOutcome::Back
+    } else {
+        ListOutcome::Accepted
+    }
+}
+
+fn run_loop<T: Entry>(
+    title: &str,
+    items: &mut [T],
+    mode: ListMode,
+    resume: ListResume,
+) -> Result<(ListOutcome, ListResume)> {
     require_interactive()?;
     let _session = TerminalSession::enter()?;
     let (cols, rows) = size().unwrap_or((MENU_FALLBACK_COLS, DEFAULT_ROWS));
@@ -776,6 +1088,7 @@ fn run_loop<T: Entry>(title: &str, items: &mut [T], mode: ListMode) -> Result<Li
             .cmp(items[b].source())
             .then_with(|| items[a].name().cmp(items[b].name()))
     });
+    state.resume_from(items, resume.clone());
     let mut stderr = io::stderr();
     loop {
         write!(stderr, "{}", build_render_buffer(items, &state, 0))
@@ -785,13 +1098,7 @@ fn run_loop<T: Entry>(title: &str, items: &mut [T], mode: ListMode) -> Result<Li
             Event::Resize(cols, rows) => state.resize(cols, rows),
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 if let Some(result) = handle_key(key, items, &mut state) {
-                    return Ok(if result.is_err() {
-                        ListOutcome::Cancelled
-                    } else if state.back {
-                        ListOutcome::Back
-                    } else {
-                        ListOutcome::Accepted
-                    });
+                    return Ok((exit_outcome(result, &state), state.resume(items)));
                 }
             }
             _ => (),
@@ -799,13 +1106,30 @@ fn run_loop<T: Entry>(title: &str, items: &mut [T], mode: ListMode) -> Result<Li
     }
 }
 pub fn run_list(title: &str, items: &mut [ListItem], mode: ListMode) -> Result<ListOutcome> {
-    run_loop(title, items, mode)
+    run_list_resuming(title, items, mode, ListResume::default()).map(|(outcome, _)| outcome)
+}
+/// Like [`run_list`], but restores filter/cursor/notice and returns the
+/// session context on exit.
+pub fn run_list_resuming(
+    title: &str,
+    items: &mut [ListItem],
+    mode: ListMode,
+    resume: ListResume,
+) -> Result<(ListOutcome, ListResume)> {
+    run_loop(title, items, mode, resume)
 }
 pub fn multi_select(items: &mut [SelectItem]) -> Result<()> {
     if items.is_empty() {
         bail!("No items to select");
     }
-    if run_loop("Select skills to install", items, ListMode::Select)? != ListOutcome::Accepted {
+    if run_loop(
+        "Select skills to install",
+        items,
+        ListMode::Select,
+        ListResume::default(),
+    )?
+    .0 != ListOutcome::Accepted
+    {
         bail!("Selection cancelled");
     }
     Ok(())
@@ -1048,7 +1372,8 @@ mod tests {
             selected: true,
         }];
         let buf = render_at(&items, 0);
-        assert!(buf.contains("Select skills to install (1/1):"));
+        assert!(buf.contains("Select skills to install"));
+        assert!(buf.contains("1/1 selected"));
         assert!(buf.contains("Arrows/j/k: navigate"));
     }
 
@@ -1072,7 +1397,8 @@ mod tests {
             },
         ];
         let buf = render_at(&items, 0);
-        assert!(buf.contains("Select skills to install (2/3):"));
+        assert!(buf.contains("Select skills to install"));
+        assert!(buf.contains("2/3 selected"));
     }
 
     #[test]
@@ -1132,42 +1458,23 @@ mod tests {
         // Cursor on item 1 (middle)
         let buf = render_at(&items, 1);
 
-        let bold_on = "\x1B[1m";
-        let bold_off = "\x1B[0m";
-
-        let bold_start = buf.find(bold_on).unwrap();
-        let bold_end = buf.find(bold_off).unwrap();
-        assert!(bold_end > bold_start, "Bold-off must appear after bold-on");
-
-        // The slice between bold codes must be a single item line
-        let between = &buf[bold_start + bold_on.len()..bold_end];
-
-        // Must contain the focused item's name (full name, no substring risk)
+        let focused_line = buf
+            .lines()
+            .find(|line| line.contains("\x1B[7m"))
+            .expect("focused row uses reverse video");
+        let plain = plain_frame(focused_line);
         assert!(
-            between.contains(&items[1].name),
-            "Bold span must contain focused item name"
-        );
-
-        // Must start with focused marker ">"
-        assert!(
-            between.starts_with('>'),
-            "Bold span must start with '>' marker, got: {:?}",
-            &between[..between.len().min(5)]
-        );
-
-        // Bold span must be exactly one line — no CR/LF between codes
-        assert!(
-            !between.contains('\r'),
-            "Bold span must not span multiple lines"
+            plain.contains(&items[1].name),
+            "focused row must contain the item name"
         );
         assert!(
-            !between.contains('\n'),
-            "Bold span must not span multiple lines"
+            plain.starts_with('>'),
+            "focused row starts with '>': {plain}"
         );
     }
 
     #[test]
-    fn test_buffer_only_one_bold_pair() {
+    fn test_buffer_only_one_focused_reverse_row() {
         let items: Vec<SelectItem> = (0..10)
             .map(|i| SelectItem {
                 name: format!("skill-{}", i),
@@ -1178,15 +1485,11 @@ mod tests {
         let buf = render_at(&items, 5);
 
         assert_eq!(
-            buf.matches("\x1B[1m").count(),
+            buf.lines().filter(|line| line.contains("\x1B[7m")).count(),
             1,
-            "Exactly one bold-on code"
+            "exactly one focused row"
         );
-        assert_eq!(
-            buf.matches("\x1B[0m").count(),
-            1,
-            "Exactly one bold-off code"
-        );
+        assert!(buf.contains("\x1B[1m"), "the title is bold");
     }
 
     #[test]
@@ -1204,8 +1507,8 @@ mod tests {
             },
         ];
         let buf = render_at(&items, 0);
-        assert!(buf.contains("Press Enter to install 2 skill(s)"));
-        assert!(!buf.contains("Select at least one skill, or press q to cancel"));
+        assert!(buf.contains("install 2 skill(s)"));
+        assert!(!buf.contains("Select at least one skill"));
     }
 
     #[test]
@@ -1216,8 +1519,8 @@ mod tests {
             selected: false,
         }];
         let buf = render_at(&items, 0);
-        assert!(buf.contains("Select at least one skill, or press q to cancel"));
-        assert!(!buf.contains("Press Enter to install"));
+        assert!(buf.contains("Select at least one skill"));
+        assert!(!buf.contains("install 1 skill(s)"));
     }
 
     #[test]
@@ -1237,13 +1540,14 @@ mod tests {
         // Focus first item
         let buf = render_at(&items, 0);
 
-        // After the bold-off code on the focused line, there must be \r\n
-        let reset_pos = buf.find("\x1B[0m").unwrap();
-        let after_reset = &buf[reset_pos..];
+        // The focused row is reset before its line break in raw mode.
+        let focused_line = buf
+            .lines()
+            .find(|line| line.contains("\x1B[7m"))
+            .expect("focused row");
         assert!(
-            after_reset.starts_with("\x1B[0m\r\n"),
-            "Bold-off must be immediately followed by CRLF, got: {:?}",
-            &after_reset[..after_reset.find('\n').unwrap_or(20) + 1]
+            focused_line.ends_with("\x1B[0m"),
+            "focused row resets before CRLF"
         );
     }
 
@@ -2275,9 +2579,9 @@ mod tests {
         state.filter.query = "skill-0000".into();
         state.refilter(&items);
         let frame = plain_frame(&build_render_buffer(&items, &state, 0));
-        let summary = frame.lines().nth(1).unwrap();
-        assert!(summary.contains("2 selected"), "{summary}");
-        assert!(summary.contains("1 hidden"), "{summary}");
+        let title = frame.lines().next().unwrap();
+        assert!(title.contains("2/1000 selected"), "{title}");
+        assert!(title.contains("1 hidden"), "{title}");
     }
     #[test]
     fn scalable_read_only_headers_show_reviewed_count() {
@@ -2286,7 +2590,7 @@ mod tests {
         for mode in [ListMode::Browse, ListMode::Review] {
             state.mode = mode;
             let frame = plain_frame(&build_render_buffer(&items, &state, 0));
-            assert!(frame.lines().next().unwrap().contains("(2 skills)"));
+            assert!(frame.lines().next().unwrap().contains("2 skills"));
             assert!(!frame.lines().nth(1).unwrap().contains("selected"));
         }
     }
@@ -2325,6 +2629,293 @@ mod tests {
         let frame = plain_frame(&build_render_buffer(&items, &state, 0));
         assert!(frame.lines().last().unwrap().contains("Esc: back"));
     }
+    // === Manage mode (inventory mark & delete) ===
+
+    fn manage_item(name: &str, removable: bool) -> ListItem {
+        ListItem {
+            name: name.into(),
+            removable,
+            ..ListItem::default()
+        }
+    }
+
+    fn manage_state(count: usize) -> TuiState {
+        let mut state = TuiState::new(count, 10);
+        state.mode = ListMode::Manage;
+        state
+    }
+
+    #[test]
+    fn manage_space_toggles_mark() {
+        let mut items = vec![manage_item("a", true), manage_item("b", true)];
+        let mut state = manage_state(items.len());
+        handle_key(key(KeyCode::Char(' ')), &mut items, &mut state);
+        assert!(items[0].selected);
+        handle_key(key(KeyCode::Char(' ')), &mut items, &mut state);
+        assert!(!items[0].selected);
+        assert!(!items[1].selected);
+    }
+
+    #[test]
+    fn manage_space_on_untracked_sets_notice_without_mark() {
+        let mut items = vec![manage_item("manual", false)];
+        let mut state = manage_state(items.len());
+        handle_key(key(KeyCode::Char(' ')), &mut items, &mut state);
+        assert!(!items[0].selected);
+        assert!(state.notice.as_deref().unwrap_or("").contains("untracked"));
+    }
+
+    #[test]
+    fn manage_a_marks_only_removable_matches_and_n_clears() {
+        let mut items = vec![
+            manage_item("azure-a", true),
+            manage_item("azure-manual", false),
+            manage_item("other", true),
+        ];
+        let mut state = manage_state(items.len());
+        state.filter.query = "azure".into();
+        state.refilter(&items);
+        handle_key(key(KeyCode::Char('a')), &mut items, &mut state);
+        assert!(items[0].selected);
+        assert!(!items[1].selected);
+        assert!(!items[2].selected);
+        handle_key(key(KeyCode::Char('n')), &mut items, &mut state);
+        assert!(items.iter().all(|i| !i.selected));
+    }
+
+    #[test]
+    fn manage_tab_shows_only_marked() {
+        let mut items = vec![manage_item("a", true), manage_item("b", true)];
+        items[1].selected = true;
+        let mut state = manage_state(items.len());
+        handle_key(key(KeyCode::Tab), &mut items, &mut state);
+        assert!(state.selected_only);
+        assert_eq!(state.filtered, vec![1]);
+    }
+
+    #[test]
+    fn manage_x_requests_removal_of_marked_including_hidden() {
+        let mut items = vec![manage_item("a", true), manage_item("b", true)];
+        items[1].selected = true;
+        let mut state = manage_state(items.len());
+        state.filter.query = "a".into();
+        state.refilter(&items);
+        let result = handle_key(key(KeyCode::Char('x')), &mut items, &mut state);
+        assert!(matches!(result, Some(Ok(()))));
+        assert!(state.remove);
+        assert!(items[1].selected);
+    }
+
+    #[test]
+    fn manage_x_without_marks_auto_marks_focused() {
+        let mut items = vec![manage_item("a", true), manage_item("b", true)];
+        let mut state = manage_state(items.len());
+        state.cursor = 1;
+        let result = handle_key(key(KeyCode::Delete), &mut items, &mut state);
+        assert!(matches!(result, Some(Ok(()))));
+        assert!(state.remove);
+        assert!(!items[0].selected);
+        assert!(items[1].selected);
+    }
+
+    #[test]
+    fn manage_x_on_untracked_focused_notices_without_removal() {
+        let mut items = vec![manage_item("manual", false)];
+        let mut state = manage_state(items.len());
+        assert!(handle_key(key(KeyCode::Char('x')), &mut items, &mut state).is_none());
+        assert!(!state.remove);
+        assert!(!items[0].selected);
+        assert!(state.notice.as_deref().unwrap_or("").contains("untracked"));
+    }
+
+    #[test]
+    fn manage_enter_closes_without_removal() {
+        let mut items = vec![manage_item("a", true)];
+        let mut state = manage_state(items.len());
+        assert!(matches!(
+            handle_key(key(KeyCode::Enter), &mut items, &mut state),
+            Some(Ok(()))
+        ));
+        assert!(!state.remove);
+    }
+
+    #[test]
+    fn manage_render_shows_checkboxes_and_marked_count_only_when_marked() {
+        let mut items = vec![manage_item("a", true), manage_item("b", true)];
+        let mut state = manage_state(items.len());
+        let unmarked = plain_frame(&build_render_buffer(&items, &state, 0));
+        assert!(!unmarked.contains("[ ]"));
+        assert!(!unmarked.contains("/2 marked"), "{unmarked}");
+        items[0].selected = true;
+        let marked = plain_frame(&build_render_buffer(&items, &state, 0));
+        assert!(marked.contains("[x] a"), "{marked}");
+        assert!(marked.contains("[ ] b"), "{marked}");
+        assert!(marked.contains("1/2 marked"), "{marked}");
+        state.mode = ListMode::Browse;
+        let browse = plain_frame(&build_render_buffer(&items, &state, 0));
+        assert!(!browse.contains("[x]"));
+    }
+
+    #[test]
+    fn manage_footer_shows_notice_then_marked_prompt() {
+        let mut items = vec![manage_item("a", true)];
+        let mut state = manage_state(items.len());
+        state.notice = Some("Removed 2 skill(s)".into());
+        let frame = plain_frame(&build_render_buffer(&items, &state, 0));
+        assert!(frame.contains("Removed 2 skill(s)"));
+        state.notice = None;
+        items[0].selected = true;
+        let frame = plain_frame(&build_render_buffer(&items, &state, 0));
+        assert!(frame.contains("x: remove 1 marked"), "{frame}");
+    }
+
+    #[test]
+    fn resume_restores_filter_query_without_impossible_marked_view() {
+        let mut items = vec![manage_item("grafana-one", true), manage_item("other", true)];
+        items[0].selected = true;
+        let mut state = manage_state(items.len());
+        state.filter.query = "grafana".into();
+        state.selected_only = true;
+        state.refilter(&items);
+        assert_eq!(state.filtered, vec![0]);
+        let resume = state.resume(&items);
+        assert_eq!(resume.query, "grafana");
+
+        let mut next = manage_state(items.len());
+        next.resume_from(&items, resume);
+        assert_eq!(next.filter.query, "grafana");
+        assert!(!next.selected_only, "a removal leaves no marks to view");
+        assert_eq!(next.filtered, vec![0]);
+    }
+
+    #[test]
+    fn marked_view_with_filter_explains_empty_result() {
+        let items = vec![manage_item("alpha", true), manage_item("beta", true)];
+        let mut state = manage_state(items.len());
+        state.selected_only = true;
+        state.filter.query = "a".into();
+        state.refilter(&items);
+        let frame = plain_frame(&build_render_buffer(&items, &state, 0));
+        assert!(frame.contains("No marked skills match \"a\""), "{frame}");
+    }
+
+    #[test]
+    fn renderer_uses_hierarchy_styles() {
+        let mut items = vec![manage_item("alpha", true), manage_item("beta", true)];
+        let mut state = manage_state(items.len());
+        items[0].selected = true;
+        let buf = render_at_list(&items, &state);
+        assert!(buf.contains("\x1B[1m"), "title is bold");
+        assert!(buf.contains("\x1B[2m"), "secondary text is dim");
+        assert!(
+            buf.contains("\x1B[38;5;"),
+            "accent and status colors come from crossterm"
+        );
+        assert!(buf.contains("\x1B[7m"), "the focused row is reversed");
+        assert!(buf.contains("  ·  "), "sections use a dot separator");
+        assert!(buf.contains('─'), "a rule separates header and rows");
+        state.mode = ListMode::Browse;
+        let browse = render_at_list(&items, &state);
+        assert!(!browse.contains("[x]"), "reports stay read-only");
+    }
+
+    fn render_at_list(items: &[ListItem], state: &TuiState) -> String {
+        build_render_buffer(items, state, 0)
+    }
+
+    #[test]
+    fn exit_outcome_maps_remove_back_and_cancel() {
+        let items = [manage_item("a", true)];
+        let mut state = manage_state(items.len());
+        state.remove = true;
+        assert_eq!(exit_outcome(Ok(()), &state), ListOutcome::Remove);
+        state.remove = false;
+        state.back = true;
+        assert_eq!(exit_outcome(Ok(()), &state), ListOutcome::Back);
+        assert_eq!(
+            exit_outcome(Err(anyhow::anyhow!("cancelled")), &state),
+            ListOutcome::Cancelled
+        );
+        state.back = false;
+        assert_eq!(exit_outcome(Ok(()), &state), ListOutcome::Accepted);
+    }
+
+    #[test]
+    fn manage_notice_clears_on_next_key() {
+        let mut items = vec![manage_item("a", true)];
+        let mut state = manage_state(items.len());
+        state.notice = Some("Removed 1 skill(s)".into());
+        handle_key(key(KeyCode::Down), &mut items, &mut state);
+        assert!(state.notice.is_none());
+    }
+
+    #[test]
+    fn resume_focus_moves_cursor_to_named_row() {
+        let items = vec![
+            manage_item("a", true),
+            manage_item("b", true),
+            manage_item("c", true),
+        ];
+        let mut state = manage_state(items.len());
+        state.apply_resume(&items, Some("c"));
+        assert_eq!(state.cursor, 2);
+        state.apply_resume(&items, Some("missing"));
+        assert_eq!(state.cursor, 2);
+        state.apply_resume(&items, None);
+        assert_eq!(state.cursor, 2);
+    }
+
+    #[test]
+    fn manage_hints_fit_their_render_width() {
+        assert!(
+            display_width(HINTS_MANAGE) <= WIDE_COLS,
+            "wide hint is only used from WIDE_COLS upwards"
+        );
+        assert!(display_width(HINTS_FOCUSED_MANAGE) <= MENU_FALLBACK_COLS as usize);
+    }
+
+    #[test]
+    fn manage_filter_enter_unfocuses_without_closing_or_marking() {
+        let mut items = vec![manage_item("a", true), manage_item("b", true)];
+        let mut state = manage_state(items.len());
+        for c in "/b".chars() {
+            handle_key(key(KeyCode::Char(c)), &mut items, &mut state);
+        }
+        assert!(state.filter.focused);
+        assert!(handle_key(key(KeyCode::Enter), &mut items, &mut state).is_none());
+        assert!(!state.filter.focused);
+        assert!(items.iter().all(|i| !i.selected));
+        assert!(!state.remove);
+    }
+
+    #[test]
+    fn manage_filter_space_marks_match_and_keeps_focus() {
+        let mut items = vec![manage_item("a", true), manage_item("b", true)];
+        let mut state = manage_state(items.len());
+        for c in "/b".chars() {
+            handle_key(key(KeyCode::Char(c)), &mut items, &mut state);
+        }
+        handle_key(key(KeyCode::Char(' ')), &mut items, &mut state);
+        assert!(items[1].selected);
+        assert!(!items[0].selected);
+        assert!(state.filter.focused);
+        assert_eq!(state.filter.query, "b");
+    }
+
+    #[test]
+    fn manage_filter_tab_opens_marked_view() {
+        let mut items = vec![manage_item("a", true), manage_item("b", true)];
+        items[1].selected = true;
+        let mut state = manage_state(items.len());
+        for c in "/b".chars() {
+            handle_key(key(KeyCode::Char(c)), &mut items, &mut state);
+        }
+        handle_key(key(KeyCode::Tab), &mut items, &mut state);
+        assert!(state.selected_only);
+        assert!(!state.filter.focused);
+        assert_eq!(state.filtered, vec![1]);
+    }
+
     #[test]
     fn review_bmp_emoji_frames_fit_independent_cell_budget() {
         let items = vec![ListItem {

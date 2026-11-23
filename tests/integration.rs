@@ -1442,3 +1442,25 @@ fn update_preserves_installed_skill_when_source_becomes_dangling_symlink() {
         assert_eq!(after, before);
     }
 }
+
+#[test]
+fn skill_command_prints_embedded_manual_and_rejects_unknown_topic() {
+    let mut cmd = Command::cargo_bin("tome").unwrap();
+    cmd.arg("skill")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("name: tome"));
+
+    let mut topic = Command::cargo_bin("tome").unwrap();
+    topic
+        .args(["skill", "tui"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Manage"));
+
+    let mut bad = Command::cargo_bin("tome").unwrap();
+    bad.args(["skill", "bogus"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("commands"));
+}

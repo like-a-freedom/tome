@@ -75,6 +75,8 @@ pub fn execute_options(
                     println!("Aborted.");
                     return Ok(());
                 }
+                // Review cannot request removal; treat any stray value as a cancel.
+                ListOutcome::Remove => return Ok(()),
             }
         }
     };

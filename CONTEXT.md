@@ -6,7 +6,7 @@
 
 **Manifest** — The `.skills.json` file that records all installed skills, their source repos, commit hashes, and installation metadata. Single source of truth for what's installed.
 
-**SkillEntry** — A single record in the manifest: tracks one installed skill's source, commit, remote URL, branch, path, version, and timestamps, plus a `partial` flag marking an install that selected only a subset of a multi-skill repository (update must not adopt the skills the user declined). A file-URL skill is identified by its `commit` value being the `FILE_URL_COMMIT` sentinel (`"file:"`).
+**SkillEntry** — A single record in the manifest: tracks one installed skill's source, commit, remote URL, branch, path, version, and timestamps, plus a `partial` flag marking a source the user declined part of — a subset install, or removing part of a tracked repository (update must not adopt the skills the user declined). A file-URL skill is identified by its `commit` value being the `FILE_URL_COMMIT` sentinel (`"file:"`).
 
 **ScannedSkill** — A skill directory discovered in the Skills Directory by the read-side scan: the directory name plus its parsed frontmatter. The single definition of "what counts as a skill on disk" (see ADR-0009).
 
@@ -32,7 +32,11 @@
 
 **Stale Entry** — A manifest entry whose skill directory no longer exists on disk. Preserved in the manifest (not deleted) to avoid data loss.
 
-**Untracked Skill** — A skill directory on disk that exists in the skills directory but is not tracked in the manifest.
+**Untracked Skill** — A skill directory on disk that exists in the skills directory but is not tracked in the manifest. `list` shows it read-only (`removable = false`).
+
+**Mark** — The transient selection in the `list` inventory (Space/a/n); `x` removes the marked set immediately. The mark never outlives the inventory session.
+
+**ListResume** — The browser session context restored after an in-place removal: filter query, focused row and footer notice. The marked-only view is not restored because a removal deletes every mark.
 
 ## Paths
 
@@ -44,9 +48,9 @@
 
 ## Services
 
-**SkillService** — Application service managing skill lifecycle: install (from git or file URL) and remove.
+**SkillService** — Application service managing skill lifecycle: install (from git or file URL) and remove. Removal validates every target, deletes transactionally, and marks the remaining entries of each affected source partial.
 
-**UpdateService** — Application service managing skill updates: stale detection, git-group updates, file-skill updates, and installing new skills that appear in tracked repositories (from an untargeted update; skipped for groups where the user originally selected only a subset of the repository's skills — `tome add` clears that state once the repository is fully tracked).
+**UpdateService** — Application service managing skill updates: stale detection, git-group updates, file-skill updates, and installing new skills that appear in tracked repositories (from an untargeted update; skipped for groups containing a partial entry — a subset install or a partial removal; `tome add` clears that state once the repository is fully tracked).
 
 **UpdateReporter** — Pure observer trait for update progress events (start, repo_started, phase, skill_checked, clone_progress, checkout_progress, sync_found, repo_finished); the service never queries the reporter for policy. Terminal liveness is passed into `UpdateService::run` as an argument by the caller (see ADR-0010).
 
