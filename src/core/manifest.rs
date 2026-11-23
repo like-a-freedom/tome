@@ -246,6 +246,22 @@ impl Manifest {
         changed
     }
 
+    /// Record an explicit user removal: remaining entries of each affected
+    /// source become partial, so update cannot re-adopt the removed skills as
+    /// "newly appeared". Removing part of a repository is a decline, exactly
+    /// like installing a subset. `tome add` clears the flag once the repository
+    /// is fully tracked again (see [`Self::complete_partial_selection`]).
+    pub fn mark_partial_after_removal(&mut self, removed: &[(String, String)]) {
+        for entry in self.skills.values_mut() {
+            if removed
+                .iter()
+                .any(|(source, remote)| entry.source == *source || entry.remote == *remote)
+            {
+                entry.partial = true;
+            }
+        }
+    }
+
     pub fn rebuild_from_directory(skills_dir: &Path) -> Result<Self> {
         let mut manifest = Self::new();
 

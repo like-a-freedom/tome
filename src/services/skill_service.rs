@@ -276,12 +276,21 @@ impl SkillService {
         if names.is_empty() {
             return Ok(());
         }
+        let affected: Vec<(String, String)> = names
+            .iter()
+            .filter_map(|name| {
+                manifest
+                    .get_skill(name)
+                    .map(|entry| (entry.source.clone(), entry.remote.clone()))
+            })
+            .collect();
         let mut transaction = crate::fs::SkillTransaction::new(&self.config.skills_dir)?;
         for name in names {
             let skill_dir = self.config.skills_dir.join(name);
             transaction.remove(&skill_dir)?;
             manifest.remove_skill(name);
         }
+        manifest.mark_partial_after_removal(&affected);
         transaction.commit_with(|| manifest.save(manifest_path))
     }
 }
@@ -472,6 +481,38 @@ mod tests {
     /// Fixture: a local git repo with two skills under `skills/`.
     fn two_skill_repo(temp: &TempDir) -> std::path::PathBuf {
         testutil::create_multi_skill_repo(temp, &["first", "second"])
+    }
+
+    #[test]
+    fn remove_subset_marks_remaining_source_entries_partial() {
+        let temp = TempDir::new().unwrap();
+        let skills_dir = temp.path().join("skills");
+        let manifest_path = skills_dir.join(".skills.json");
+        let mut manifest = Manifest::new();
+        for name in ["first", "second"] {
+            fs::create_dir_all(skills_dir.join(name)).unwrap();
+            fs::write(
+                skills_dir.join(name).join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: d\n---\n"),
+            )
+            .unwrap();
+            manifest.add_skill(
+                name,
+                SkillEntry::new("test/repo", "", &testutil::make_fm(name), "abc", "url"),
+            );
+        }
+        manifest.save(&manifest_path).unwrap();
+        let service = SkillService::with_manifest_path(skills_dir.clone(), manifest_path.clone());
+        service.remove_selected(&["first".to_string()]).unwrap();
+        let loaded = Manifest::load(&manifest_path).unwrap();
+        assert!(!loaded.is_tracked("first"));
+        assert!(
+            loaded.get_skill("second").unwrap().is_partial(),
+            "remaining entries must block re-adoption of the removed skill"
+        );
+        service.remove_selected(&["second".to_string()]).unwrap();
+        let loaded = Manifest::load(&manifest_path).unwrap();
+        assert!(loaded.is_empty());
     }
 
     #[test]
