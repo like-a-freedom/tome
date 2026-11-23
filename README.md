@@ -43,7 +43,7 @@ tome add owner/repo@skill-name
 tome add file:///path/to/SKILL.md
 
 # List installed skills
-tome list                  # searchable browser in a terminal
+tome list                  # searchable browser; Space marks, x removes
 tome list --plain          # full table, without the browser
 tome list --json
 
@@ -81,12 +81,20 @@ press `d` for full, scrollable details.
 | Space / Enter while searching in a picker | Toggle the focused match / continue; Enter selects the focused match if nothing is selected |
 | Alt-Space while searching | Insert a space between search words |
 | Ctrl-U while searching | Clear the query |
-| Space | Toggle the focused skill in a picker |
+| Space | Toggle the focused skill in a picker or the inventory |
 | `a` / `n` | Select / clear every matching skill, including matches outside the viewport |
 | Tab | Show only selected skills; hidden selections are retained and counted |
+| `x` / Delete in the inventory | Remove marked skills immediately; the focused skill if none are marked |
 | Enter in a picker | Continue with the selected skills |
 | `d`, then Esc | Open full details, then return |
 | `q` / Esc / Ctrl-C | Close or cancel; Ctrl-C also works during search |
+
+In `tome list`, marking works the same way but deletion is immediate: `x` removes
+every marked skill (or the focused one when nothing is marked) without a review
+screen; the footer shows the marked count before you press it. Untracked skills
+cannot be marked. After a removal the list refreshes in place, keeping the filter,
+surviving marks and the cursor, and reports `Removed N skill(s)` until the next
+keypress. `tome remove` keeps its select-then-review flow.
 
 Removal starts with nothing selected. Its review lists the entire deletion set;
 searching the review does not narrow that set. Only `y` confirms deletion. Enter

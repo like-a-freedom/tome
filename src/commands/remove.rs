@@ -75,6 +75,7 @@ pub fn execute_options(
                     println!("Aborted.");
                     return Ok(());
                 }
+                ListOutcome::Remove => unreachable!("Review mode never requests removal"),
             }
         }
     };

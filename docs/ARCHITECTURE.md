@@ -198,16 +198,22 @@ or locking between writers.
 ### List and export
 
 `list` loads or rebuilds the manifest, reports stale entries without deleting
-them, scans for manually placed skills, and renders the shared browser in usable
-interactive terminals. `--plain`, `--json` and redirected output bypass the TUI.
+them, scans for manually placed skills, and renders the inventory in manage mode
+in usable interactive terminals: Space/a/n/Tab mark rows and `x` removes the marked
+set (or the focused row) immediately via `SkillService::remove_selected`, then
+reloads the inventory while preserving filter, surviving marks and cursor
+(`ListResume`). `--plain`, `--json` and redirected output bypass the TUI.
 `export` loads the manifest, sorts entries by skill name, and prints equivalent
 `tome add` commands. `--interactive` filters these by exact selected manifest keys
 and keeps all picker output on stderr, including when stdout is redirected.
 
 ### Shared terminal lists
 
-`tui.rs` owns browse, multiselect and destructive-review modes, original item
-indices, metadata search, selected-only filtering, paging and scrollable details.
+`tui.rs` owns browse, manage, multiselect and destructive-review modes, original
+item indices, metadata search, selected-only filtering, paging and scrollable
+details. Manage mode adds marking plus an immediate-removal outcome;
+`ListItem::removable` encodes ownership so untracked directories stay read-only.
+`run_list_resuming` restores the cursor row and a footer notice between sessions.
 The renderer respects current terminal cell dimensions and sanitizes control
 characters in metadata. A session guard owns raw mode, cursor visibility and the
 alternate screen on stderr; resize events recalculate the viewport. Tiny windows
