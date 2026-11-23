@@ -85,7 +85,7 @@ SKILLS_DIR=/path/to/skills cargo run -- list
 ## Architecture
 
 ```ascii
-main.rs → lib.rs::run() → commands/{add,list,remove,update,export}
+main.rs → lib.rs::run() → commands/{add,list,remove,update,export,skill}
                            services.rs → services/{skill_service,update_service}
                                          ServiceConfig (shared paths)
                            core/{spec,manifest,git,git_sparse,repo_detect,commit,dirs,install,parse_source,scan}
@@ -94,7 +94,7 @@ main.rs → lib.rs::run() → commands/{add,list,remove,update,export}
                            fs.rs (temp dirs, directory copy)
                            progress.rs (compact update status)
                            style.rs (ANSI helpers, box-drawing)
-                           tui.rs (interactive multi-select)
+                           tui.rs (browse/manage/select/review modes)
 ```
 
 Key design decisions in `docs/DESIGN.md`, full architecture in `docs/ARCHITECTURE.md`.

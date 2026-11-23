@@ -98,11 +98,18 @@ tome update
 # Update specific skill
 tome update skill-name
 
-# Remove a skill
+# Remove skills: picker + review, or an explicit target
+tome remove
 tome remove skill-name
 
-# List installed skills
+# List installed skills: mark with Space, remove with x
 tome list
+tome list --plain   # table
+tome list --json
+
+# Export reinstall commands / read the embedded agent manual
+tome export
+tome skill [commands|tui|workflows]
 ```
 
 ### Command Flags
@@ -113,12 +120,16 @@ tome list
 | `add` | `--force` | Overwrite if already installed |
 | `add` | `--no-sparse` | Download full repo (disable sparse clone) |
 | `update` | `<name>` | Update only the named skill (optional) |
+| `update` | `--interactive` | Choose exact skills; targets never adopt new repo skills |
 | `update` | `--verbose` | Show full update details |
 | `update` | `--no-sparse` | Download full repo (disable sparse clone) |
-| `remove` | `--force` | Skip confirmation prompt |
+| `remove` | `<name>` | Optional target; without it, picker then review |
+| `remove` | `--force` | Skip confirmation prompt (requires a name) |
 | `list` | `--json` | Output as JSON |
+| `list` | `--plain` | Print a table instead of the browser |
 | all | `--dir <path>` | Override skills directory (or `SKILLS_DIR` env) |
-| `export` | — | Print `tome add` commands for all tracked skills |
+| `export` | `--interactive` | Print commands for the picked subset |
+| `skill` | `[topic]` | Embedded agent manual: core, `commands`, `tui`, `workflows` |
 
 ### Skill Directory Structure (per spec)
 
@@ -315,8 +326,9 @@ As a developer, I want to see all installed skills.
 
 **Acceptance Criteria:**
 - [ ] `tome list` shows skill names, versions, and sources
-- [ ] Output is table or simple list
-- [ ] `--json` flag outputs as JSON
+- [ ] Output is table or simple list (`--plain`), JSON with `--json`
+- [ ] In the browser, Space/a/n mark skills and `x` removes the marked set immediately
+- [ ] After a removal the browser keeps the filter, surviving marks and cursor
 
 **Story 6: Run on existing .agents directory with manually-placed skills**
 As a developer, I want to start using `tome` on a project that already has a `.agents/skills/` directory with skills I added manually — without breaking anything.
@@ -326,7 +338,7 @@ As a developer, I want to start using `tome` on a project that already has a `.a
 - [ ] Untracked skills are marked with `?` source (not installed by tome)
 - [ ] `tome add` does NOT overwrite untracked skills (error, requires `--force`)
 - [ ] `tome update` only updates skills in the manifest (skips untracked)
-- [ ] `tome remove` only removes tracked skills (rejects untracked)
+- [ ] `tome remove` and the `list` browser only remove tracked skills (untracked rows are read-only)
 - [ ] `tome list --json` includes `"tracked": true/false` field
 - [ ] No data loss on any operation
 
@@ -338,6 +350,14 @@ As a developer, I want `tome` to detect when the manifest is missing or incomple
 - [ ] Rebuilt manifest marks all skills as `source: "unknown"` (untracked)
 - [ ] `tome update` with no manifest runs against an empty manifest (reports "No skills to update"); `tome list` rebuilds the manifest
 - [ ] No skills are deleted during rebuild
+
+**Story 8: Read the agent manual from the CLI**
+As an agent, I want tome's own usage guide without leaving the terminal.
+
+**Acceptance Criteria:**
+- [ ] `tome skill` prints the core manual embedded in the binary; no network or files
+- [ ] `tome skill commands|tui|workflows` prints the deeper reference (progressive disclosure)
+- [ ] An unknown topic fails and lists the available topics
 
 ### Constraints
 - SKILL.md format is the only supported format (per spec)

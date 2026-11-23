@@ -221,7 +221,8 @@ covered by tests for metadata, pointers, and unknown topics.
 item indices, metadata search, selected-only filtering, paging and scrollable
 details. Manage mode adds marking plus an immediate-removal outcome;
 `ListItem::removable` encodes ownership so untracked directories stay read-only.
-`run_list_resuming` restores the cursor row and a footer notice between sessions.
+`run_list_resuming` restores the filter query, marked-only view, cursor row and
+a footer notice between sessions (`ListResume`).
 The renderer respects current terminal cell dimensions and sanitizes control
 characters in metadata. A session guard owns raw mode, cursor visibility and the
 alternate screen on stderr; resize events recalculate the viewport. Tiny windows
